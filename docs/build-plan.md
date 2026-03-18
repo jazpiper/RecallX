@@ -21,6 +21,19 @@ This plan follows the project guardrails:
 
 ---
 
+## 1.1 Progress snapshot (2026-03-18)
+
+- Phase 0 foundation is implemented as a local Node/TypeScript service with SQLite-backed workspaces, migrations, and runtime workspace switching.
+- Phase 1 human-readable workspace is in first-pass shape through the renderer home/search/review/settings flows and durable node inspection patterns.
+- Phase 2 fast retrieval is present through local search, related lookups, decision/open-question helpers, and compact context bundle assembly.
+- Phase 3 local API and CLI bridge is live through the loopback API, the `pnw` wrapper, service index discovery at `GET /api/v1`, and runtime workspace catalog operations.
+- Phase 4 append-first write-back is live through node, relation, activity, and artifact writes with provenance and governance-aware review creation.
+- Phase 5 review and curation is partially implemented: review queue endpoints and renderer actions exist, but the curation UX still needs tightening.
+- Phase 6 real integrations has started through the first-pass stdio MCP bridge for coding agents, but broader cross-tool workflows still need validation.
+- Phase 7 retrieval enhancement remains deferred until real usage proves deterministic retrieval is insufficient.
+
+---
+
 ## 2. Build philosophy
 
 ## 2.1 Start with the smallest useful core

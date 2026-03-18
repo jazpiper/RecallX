@@ -190,11 +190,20 @@ If they have even less time, the most important docs are probably:
 
 ## 9. Overall status
 
-The project is still at the documentation/design stage, but the current document set is already strong enough to support:
-- serious external review
-- stack challenge / architecture critique
-- implementation planning
-- initial scaffold start
+The project has moved beyond a docs-only concept into a working local implementation scaffold.
+
+What is now real:
+- local Node/TypeScript service with SQLite-backed workspaces
+- loopback HTTP API and thin `pnw` CLI
+- runtime workspace create/open switching without restarting the service
+- append-first governance and review queue behavior
+- React renderer with live API-first loading and first-pass review/search/settings flows
+- stdio MCP bridge for coding-agent tool calls over the existing local API
+
+What is still early:
+- renderer polish and end-to-end UX refinement
+- broader real-world multi-tool workflows
+- packaging/distribution beyond the local development scaffold
 
 The biggest remaining risk is not lack of ideas.
 It is preserving discipline so the product stays fast, compact, and useful.

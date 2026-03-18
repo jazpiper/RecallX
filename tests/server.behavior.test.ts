@@ -311,3 +311,39 @@ describe("workspace switching", () => {
     }
   });
 });
+
+describe("service index", () => {
+  it("returns a discoverable root index for external agents", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1`);
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.data.service.name).toBe("Memforge");
+      expect(body.data.service.baseUrl).toContain(`/api/v1`);
+      expect(body.data.startHere.some((item: { path: string }) => item.path === "/api/v1/health")).toBe(true);
+      expect(body.data.endpoints.some((item: { path: string }) => item.path === "/api/v1/nodes/search")).toBe(true);
+      expect(body.data.cli.examples.some((example: string) => example.includes("pnw search"))).toBe(true);
+      expect(body.data.mcp.command).toBe("node dist/server/app/mcp/index.js");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+});

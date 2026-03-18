@@ -11,22 +11,25 @@
   "scripts": {
     "dev": "concurrently -n server,renderer -c blue,green \"npm:dev:server\" \"npm:dev:renderer\"",
     "dev:server": "tsx watch app/server/index.ts",
+    "dev:mcp": "tsx app/mcp/index.ts",
     "dev:renderer": "vite",
     "build": "npm run build:server && npm run build:renderer",
     "build:server": "tsc -p tsconfig.server.json",
     "build:renderer": "vite build",
+    "mcp": "node dist/server/app/mcp/index.js",
     "start": "node dist/server/app/server/index.js",
     "test": "vitest run",
     "check": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "mime-types": "^2.1.35",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "ulid": "^2.3.0",
-    "zod": "^3.24.2"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

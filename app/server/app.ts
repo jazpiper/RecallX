@@ -58,6 +58,182 @@ function errorEnvelope(requestId: string, error: AppError): ApiErrorEnvelope {
   };
 }
 
+function buildServiceIndex(workspaceInfo: {
+  rootPath: string;
+  workspaceName: string;
+  schemaVersion: number;
+  bindAddress: string;
+  enabledIntegrationModes: string[];
+  authMode: string;
+}) {
+  return {
+    service: {
+      name: "Memforge",
+      description: "Local-first personal knowledge layer for humans and agents.",
+      apiVersion: "v1",
+      baseUrl: `http://${workspaceInfo.bindAddress}/api/v1`,
+      authMode: workspaceInfo.authMode,
+      workspaceName: workspaceInfo.workspaceName,
+      workspaceRoot: workspaceInfo.rootPath
+    },
+    startHere: [
+      {
+        method: "GET",
+        path: "/api/v1",
+        purpose: "Discover service capabilities, important endpoints, and request examples."
+      },
+      {
+        method: "GET",
+        path: "/api/v1/health",
+        purpose: "Check whether the running local Memforge service is healthy."
+      },
+      {
+        method: "GET",
+        path: "/api/v1/workspace",
+        purpose: "Read the currently active workspace identity and configuration."
+      },
+      {
+        method: "GET",
+        path: "/api/v1/workspaces",
+        purpose: "List known workspaces and the currently active one."
+      }
+    ],
+    capabilities: [
+      "search nodes by keyword and structured filters",
+      "read node detail, related nodes, activities, and artifacts",
+      "create nodes, relations, activities, and artifacts with provenance",
+      "list and act on review queue items",
+      "build compact context bundles for coding/research/writing",
+      "create or open workspaces without restarting the server"
+    ],
+    cli: {
+      binary: "pnw",
+      examples: [
+        "pnw health --api http://127.0.0.1:8787/api/v1",
+        "pnw search --api http://127.0.0.1:8787/api/v1 \"agent memory\"",
+        "pnw create --api http://127.0.0.1:8787/api/v1 --type note --title \"Idea\" --body \"...\"",
+        "pnw context --api http://127.0.0.1:8787/api/v1 <node-id> --mode compact --preset for-coding",
+        "pnw review list --api http://127.0.0.1:8787/api/v1 --status pending",
+        "pnw workspace list --api http://127.0.0.1:8787/api/v1"
+      ]
+    },
+    mcp: {
+      transport: "stdio",
+      command: "node dist/server/app/mcp/index.js",
+      env: {
+        MEMFORGE_API_URL: `http://${workspaceInfo.bindAddress}/api/v1`,
+        MEMFORGE_API_TOKEN: workspaceInfo.authMode === "bearer" ? "<set the active bearer token here>" : null
+      },
+      docs: "docs/mcp.md"
+    },
+    endpoints: [
+      {
+        method: "POST",
+        path: "/api/v1/nodes/search",
+        purpose: "Search nodes by keyword and filters.",
+        requestExample: {
+          query: "agent memory",
+          filters: {},
+          limit: 10,
+          offset: 0,
+          sort: "relevance"
+        }
+      },
+      {
+        method: "POST",
+        path: "/api/v1/nodes",
+        purpose: "Create a durable node.",
+        requestExample: {
+          type: "note",
+          title: "Example note",
+          body: "Shared memory for agents.",
+          tags: [],
+          source: {
+            actorType: "agent",
+            actorLabel: "Claude Code",
+            toolName: "claude-code"
+          },
+          metadata: {}
+        }
+      },
+      {
+        method: "GET",
+        path: "/api/v1/nodes/:id/related",
+        purpose: "Fetch directly related nodes for a node."
+      },
+      {
+        method: "POST",
+        path: "/api/v1/relations",
+        purpose: "Create a relation between two nodes.",
+        requestExample: {
+          fromNodeId: "node_...",
+          toNodeId: "node_...",
+          relationType: "supports",
+          status: "suggested",
+          source: {
+            actorType: "agent",
+            actorLabel: "Claude Code",
+            toolName: "claude-code"
+          },
+          metadata: {}
+        }
+      },
+      {
+        method: "GET",
+        path: "/api/v1/review-queue?status=pending",
+        purpose: "Read pending governance items."
+      },
+      {
+        method: "POST",
+        path: "/api/v1/context/bundles",
+        purpose: "Build compact context bundles for downstream agents.",
+        requestExample: {
+          target: {
+            type: "node",
+            id: "node_..."
+          },
+          mode: "compact",
+          preset: "for-coding",
+          options: {
+            includeRelated: true,
+            includeRecentActivities: true,
+            includeDecisions: true,
+            includeOpenQuestions: true,
+            maxItems: 12
+          }
+        }
+      },
+      {
+        method: "POST",
+        path: "/api/v1/workspaces",
+        purpose: "Create and switch to a new workspace at runtime.",
+        requestExample: {
+          rootPath: "/Users/name/Documents/Memforge-Work",
+          workspaceName: "Work"
+        }
+      },
+      {
+        method: "POST",
+        path: "/api/v1/workspaces/open",
+        purpose: "Switch the running service to another existing workspace.",
+        requestExample: {
+          rootPath: "/Users/name/Documents/Memforge-Personal"
+        }
+      }
+    ],
+    references: {
+      readme: "README.md",
+      cliGuide: "app/cli/README.md",
+      fullApiContract: "docs/api.md"
+    },
+    notes: [
+      "Do not expect GET /api/v1/nodes/search. Search is POST-based.",
+      "Reuse the existing running local service instead of starting a second instance when possible.",
+      "All durable writes should include a source object for provenance."
+    ]
+  };
+}
+
 export function createMemforgeApp(params: {
   workspaceSessionManager: WorkspaceSessionManager;
   apiToken: string | null;
@@ -107,6 +283,10 @@ export function createMemforgeApp(params: {
         schemaVersion: workspaceInfo.schemaVersion
       })
     );
+  });
+
+  app.get("/api/v1", (_request, response) => {
+    response.json(envelope(response.locals.requestId, buildServiceIndex(currentWorkspaceInfo())));
   });
 
   app.get("/api/v1/workspace", (_request, response) => {

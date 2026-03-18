@@ -206,6 +206,26 @@ Returns workspace identity and high-level configuration.
 - API bind info (sanitized)
 - enabled integration modes
 
+## 8.3 Get service index
+### HTTP
+`GET /api/v1`
+
+### Purpose
+Return a discoverable machine-friendly service index for external coding agents and local automation.
+
+### Should include
+- service identity
+- current workspace
+- auth mode
+- major capabilities
+- important endpoints
+- example request payloads
+- CLI examples
+- MCP launch hints when a local stdio bridge is available
+
+### Why
+This allows another agent to receive one base URL and self-discover how to use Memforge without needing a separate MCP bridge or a human-written prompt for every endpoint.
+
 ---
 
 ## 9. Node endpoints
