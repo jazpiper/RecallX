@@ -472,6 +472,7 @@ The `settings` table stores workspace-level configuration.
 - `api.auth.mode`
 - `search.semantic.enabled`
 - `review.autoApproveLowRisk`
+- `review.trustedSourceToolNames`
 - `export.defaultFormat`
 
 ---

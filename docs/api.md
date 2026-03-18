@@ -715,6 +715,10 @@ May be separate actions or integrated into PATCH depending on implementation.
 Keep settings patchable in small subsets.
 Avoid giant replace-whole-config behavior.
 
+Useful review-related settings:
+- `review.autoApproveLowRisk`: boolean toggle for letting low-risk agent-authored nodes bypass review
+- `review.trustedSourceToolNames`: array of trusted agent `toolName` values that may bypass review for non-decision nodes and default relations to `active`
+
 ---
 
 ## 18. CLI contract

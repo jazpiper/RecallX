@@ -155,6 +155,55 @@ describe("review queue filtering", () => {
   });
 });
 
+describe("recent ordering", () => {
+  it("bumps a node when activity is appended so recent views can surface it", async () => {
+    const repository = createRepository();
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "memforge-test"
+    };
+
+    const older = repository.createNode({
+      type: "note",
+      title: "Older node",
+      body: "Created first",
+      tags: [],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const newer = repository.createNode({
+      type: "note",
+      title: "Newer node",
+      body: "Created second",
+      tags: [],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+
+    expect(repository.listNodes(2)[0]?.id).toBe(newer.id);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    repository.appendActivity({
+      targetNodeId: older.id,
+      activityType: "agent_run_summary",
+      body: "Touched by recent activity",
+      source,
+      metadata: {}
+    });
+
+    expect(repository.listNodes(2)[0]?.id).toBe(older.id);
+  });
+});
+
 describe("bootstrap auth metadata", () => {
   it("keeps bootstrap public without leaking the bearer token", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
@@ -308,6 +357,235 @@ describe("workspace switching", () => {
       expect(finalSearchBody.data.items.map((item: { title: string }) => item.title)).not.toContain("Workspace Beta Project");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+});
+
+describe("node governance behavior", () => {
+  it("stores low-risk agent notes as active appended nodes without review items", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      const response = await fetch(`${baseUrl}/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "note",
+          title: "Agent-authored implementation note",
+          body: "This is a longer note body that should land as append-only active content rather than review because it is low-risk project context. ".repeat(30),
+          source: {
+            actorType: "agent",
+            actorLabel: "Codex",
+            toolName: "codex",
+          },
+          tags: [],
+          metadata: {},
+        }),
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(201);
+      expect(payload.data.node.canonicality).toBe("appended");
+      expect(payload.data.node.status).toBe("active");
+      expect(payload.data.reviewItem).toBeNull();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("keeps durable agent notes in the review flow", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      const response = await fetch(`${baseUrl}/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "note",
+          title: "Durable agent architecture note",
+          body: "This is a longer durable note body that should remain in review because it is intended for reuse across future sessions and tools. ".repeat(30),
+          source: {
+            actorType: "agent",
+            actorLabel: "Codex",
+            toolName: "codex",
+          },
+          tags: [],
+          metadata: {
+            durable: true,
+          },
+        }),
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(201);
+      expect(payload.data.node.canonicality).toBe("suggested");
+      expect(payload.data.node.status).toBe("review");
+      expect(payload.data.reviewItem.reviewType).toBe("node_promotion");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("lets trusted source tool names bypass review for durable notes and relations", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      await fetch(`${baseUrl}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          values: {
+            "review.trustedSourceToolNames": ["codex"]
+          }
+        }),
+      });
+
+      const nodeResponse = await fetch(`${baseUrl}/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "note",
+          title: "Trusted durable note",
+          body: "This durable note should skip review because its toolName is in the trusted source list. ".repeat(30),
+          source: {
+            actorType: "agent",
+            actorLabel: "Codex",
+            toolName: "codex",
+          },
+          tags: [],
+          metadata: {
+            durable: true,
+          },
+        }),
+      });
+      const nodePayload = await nodeResponse.json();
+
+      const relationResponse = await fetch(`${baseUrl}/relations`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          fromNodeId: nodePayload.data.node.id,
+          toNodeId: nodePayload.data.node.id,
+          relationType: "related_to",
+          source: {
+            actorType: "agent",
+            actorLabel: "Codex",
+            toolName: "codex",
+          },
+          metadata: {},
+        }),
+      });
+      const relationPayload = await relationResponse.json();
+
+      expect(nodeResponse.status).toBe(201);
+      expect(nodePayload.data.node.canonicality).toBe("appended");
+      expect(nodePayload.data.node.status).toBe("active");
+      expect(nodePayload.data.reviewItem).toBeNull();
+
+      expect(relationResponse.status).toBe(201);
+      expect(relationPayload.data.relation.status).toBe("active");
+      expect(relationPayload.data.reviewItem).toBeNull();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("preserves trusted source settings across server reopen", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+
+    const openServer = async () => {
+      const workspaceSessionManager = createWorkspaceSessionManager(root);
+      const app = createMemforgeApp({
+        workspaceSessionManager,
+        apiToken: null,
+      });
+      const server = createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      return {
+        server,
+        baseUrl: `http://127.0.0.1:${address.port}/api/v1`,
+      };
+    };
+
+    const first = await openServer();
+
+    try {
+      await fetch(`${first.baseUrl}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          values: {
+            "review.trustedSourceToolNames": ["codex"],
+          },
+        }),
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => first.server.close((error) => (error ? reject(error) : resolve())));
+    }
+
+    const second = await openServer();
+
+    try {
+      const settingsResponse = await fetch(
+        `${second.baseUrl}/settings?keys=review.autoApproveLowRisk,review.trustedSourceToolNames`
+      );
+      const settingsPayload = await settingsResponse.json();
+
+      expect(settingsResponse.status).toBe(200);
+      expect(settingsPayload.data.values["review.autoApproveLowRisk"]).toBe(true);
+      expect(settingsPayload.data.values["review.trustedSourceToolNames"]).toEqual(["codex"]);
+    } finally {
+      await new Promise<void>((resolve, reject) => second.server.close((error) => (error ? reject(error) : resolve())));
     }
   });
 });

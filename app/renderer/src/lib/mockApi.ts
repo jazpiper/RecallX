@@ -5,6 +5,7 @@ import type {
   Integration,
   Node,
   Relation,
+  ReviewSettings,
   ReviewQueueItem,
   Workspace,
   WorkspaceCatalogItem,
@@ -41,6 +42,11 @@ export interface WorkspaceCatalog {
   current: Workspace;
   items: WorkspaceCatalogItem[];
 }
+
+const DEFAULT_REVIEW_SETTINGS: ReviewSettings = {
+  autoApproveLowRisk: true,
+  trustedSourceToolNames: [],
+};
 
 function cloneWorkspace(seed: WorkspaceSeed) {
   return structuredClone(seed);
@@ -266,6 +272,47 @@ export async function getBootstrap(): Promise<BootstrapInfo> {
       hasToken: false,
     }),
   );
+}
+
+export async function getReviewSettings(): Promise<ReviewSettings> {
+  return withFallback(
+    async () => {
+      const payload = await requestJson('/settings?keys=review.autoApproveLowRisk,review.trustedSourceToolNames');
+      const values = payload?.data?.values ?? {};
+      return {
+        autoApproveLowRisk:
+          typeof values['review.autoApproveLowRisk'] === 'boolean'
+            ? values['review.autoApproveLowRisk']
+            : DEFAULT_REVIEW_SETTINGS.autoApproveLowRisk,
+        trustedSourceToolNames: Array.isArray(values['review.trustedSourceToolNames'])
+          ? values['review.trustedSourceToolNames'].filter((value: unknown): value is string => typeof value === 'string')
+          : DEFAULT_REVIEW_SETTINGS.trustedSourceToolNames,
+      };
+    },
+    async () => DEFAULT_REVIEW_SETTINGS,
+  );
+}
+
+export async function updateReviewSettings(input: ReviewSettings): Promise<ReviewSettings> {
+  const payload = await requestJson('/settings', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      values: {
+        'review.autoApproveLowRisk': input.autoApproveLowRisk,
+        'review.trustedSourceToolNames': input.trustedSourceToolNames,
+      },
+    }),
+  });
+  const values = payload?.data?.values ?? {};
+  return {
+    autoApproveLowRisk:
+      typeof values['review.autoApproveLowRisk'] === 'boolean'
+        ? values['review.autoApproveLowRisk']
+        : input.autoApproveLowRisk,
+    trustedSourceToolNames: Array.isArray(values['review.trustedSourceToolNames'])
+      ? values['review.trustedSourceToolNames'].filter((value: unknown): value is string => typeof value === 'string')
+      : input.trustedSourceToolNames,
+  };
 }
 
 export async function createWorkspace(input: { rootPath: string; workspaceName?: string }): Promise<WorkspaceCatalog> {

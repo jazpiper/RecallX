@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 import {
+  activityTypes,
   bundleModes,
   bundlePresets,
   canonicalities,
@@ -237,6 +238,22 @@ export function createMemforgeMcpServer(params?: {
       }
       return toolResult(await apiClient.get(`/nodes/${encodeURIComponent(nodeId)}/related?${query.toString()}`));
     }
+  );
+
+  server.registerTool(
+    "memforge_append_activity",
+    {
+      title: "Append Activity",
+      description: "Append an activity entry to a Memforge node timeline with provenance.",
+      inputSchema: {
+        targetNodeId: z.string().min(1).describe("Target node id."),
+        activityType: z.enum(activityTypes),
+        body: z.string().default(""),
+        source: sourceSchema,
+        metadata: jsonRecordSchema
+      }
+    },
+    async (input) => toolResult(await apiClient.post("/activities", input))
   );
 
   server.registerTool(

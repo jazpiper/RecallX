@@ -24,6 +24,7 @@ import { AppError } from "./errors.js";
 import {
   applyReviewDecision,
   maybeCreatePromotionCandidate,
+  resolveGovernancePolicy,
   resolveNodeGovernance,
   resolveRelationStatus,
   shouldPromoteActivitySummary
@@ -358,7 +359,10 @@ export function createMemforgeApp(params: {
   app.post("/api/v1/nodes", (request, response) => {
     const repository = currentRepository();
     const input = createNodeSchema.parse(request.body ?? {});
-    const governance = resolveNodeGovernance(input);
+    const governance = resolveNodeGovernance(
+      input,
+      resolveGovernancePolicy(repository.getSettings(["review.autoApproveLowRisk", "review.trustedSourceToolNames"]))
+    );
     const node = repository.createNode({
       ...input,
       resolvedCanonicality: governance.canonicality,
@@ -418,7 +422,10 @@ export function createMemforgeApp(params: {
   app.post("/api/v1/relations", (request, response) => {
     const repository = currentRepository();
     const input = createRelationSchema.parse(request.body ?? {});
-    const governance = resolveRelationStatus(input);
+    const governance = resolveRelationStatus(
+      input,
+      resolveGovernancePolicy(repository.getSettings(["review.autoApproveLowRisk", "review.trustedSourceToolNames"]))
+    );
     const relation = repository.createRelation({
       ...input,
       resolvedStatus: governance.status

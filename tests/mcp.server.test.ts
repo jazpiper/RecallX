@@ -50,6 +50,7 @@ describe("Memforge MCP server", () => {
     expect(toolNames).toContain("memforge_health");
     expect(toolNames).toContain("memforge_workspace_current");
     expect(toolNames).toContain("memforge_search_nodes");
+    expect(toolNames).toContain("memforge_append_activity");
     expect(toolNames).toContain("memforge_create_node");
     expect(toolNames).toContain("memforge_review_decide");
     expect(toolNames).toContain("memforge_context_bundle");
@@ -114,6 +115,42 @@ describe("Memforge MCP server", () => {
         title: "Captured from MCP",
         body: "",
         tags: [],
+        metadata: {},
+        source: expect.objectContaining({
+          actorType: "agent",
+          actorLabel: "Memforge MCP",
+          toolName: "memforge-mcp"
+        })
+      })
+    );
+  });
+
+  it("fills default provenance when append_activity omits source", async () => {
+    const appendPost = vi.fn().mockResolvedValue({
+      activity: {
+        id: "activity_1"
+      },
+      promotion: {}
+    });
+    const { client } = await connectTestClient({
+      post: appendPost
+    });
+
+    await client.callTool({
+      name: "memforge_append_activity",
+      arguments: {
+        targetNodeId: "node_1",
+        activityType: "agent_run_summary",
+        body: "Summarized the latest task outcome."
+      }
+    });
+
+    expect(appendPost).toHaveBeenCalledWith(
+      "/activities",
+      expect.objectContaining({
+        targetNodeId: "node_1",
+        activityType: "agent_run_summary",
+        body: "Summarized the latest task outcome.",
         metadata: {},
         source: expect.objectContaining({
           actorType: "agent",

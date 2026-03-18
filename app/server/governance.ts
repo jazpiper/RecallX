@@ -17,7 +17,34 @@ export interface GovernanceDecision {
   reason: string;
 }
 
-export function resolveNodeGovernance(input: CreateNodeInput): GovernanceDecision {
+export interface GovernancePolicy {
+  autoApproveLowRisk: boolean;
+  trustedSourceToolNames: string[];
+}
+
+export function resolveGovernancePolicy(settings?: Record<string, unknown>): GovernancePolicy {
+  const autoApproveLowRisk =
+    typeof settings?.["review.autoApproveLowRisk"] === "boolean" ? Boolean(settings["review.autoApproveLowRisk"]) : true;
+  const trustedSourceToolNames = Array.isArray(settings?.["review.trustedSourceToolNames"])
+    ? settings?.["review.trustedSourceToolNames"].filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : typeof settings?.["review.trustedSourceToolNames"] === "string"
+      ? settings["review.trustedSourceToolNames"]
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : [];
+
+  return {
+    autoApproveLowRisk,
+    trustedSourceToolNames
+  };
+}
+
+function isTrustedAgentSource(toolName: string, policy: GovernancePolicy): boolean {
+  return policy.trustedSourceToolNames.includes(toolName);
+}
+
+export function resolveNodeGovernance(input: CreateNodeInput, policy: GovernancePolicy = resolveGovernancePolicy()): GovernanceDecision {
   if (input.source.actorType === "human") {
     return {
       canonicality: input.canonicality ?? "canonical",
@@ -38,6 +65,8 @@ export function resolveNodeGovernance(input: CreateNodeInput): GovernanceDecisio
 
   const tokenCount = countTokensApprox(input.body);
   const reusable = Boolean(input.metadata.reusable || input.metadata.durable || input.metadata.promoteCandidate);
+  const trustedAgentSource =
+    input.source.actorType === "agent" ? isTrustedAgentSource(input.source.toolName, policy) : false;
 
   if (input.type === "decision") {
     return {
@@ -59,12 +88,30 @@ export function resolveNodeGovernance(input: CreateNodeInput): GovernanceDecisio
   }
 
   if (input.source.actorType === "agent") {
+    if (trustedAgentSource) {
+      return {
+        canonicality: "appended",
+        status: "active",
+        createReview: false,
+        reason: "Trusted agent-authored nodes land as append-only active content."
+      };
+    }
+
+    if (!reusable && policy.autoApproveLowRisk) {
+      return {
+        canonicality: "appended",
+        status: "active",
+        createReview: false,
+        reason: "Low-risk agent-authored nodes land as append-only active content."
+      };
+    }
+
     return {
       canonicality: "suggested",
       status: "review",
       createReview: true,
       reviewType: "node_promotion",
-      reason: "Reusable or longer agent-authored knowledge lands as suggested and enters review."
+      reason: "Reusable agent-authored knowledge lands as suggested and enters review."
     };
   }
 
@@ -76,8 +123,16 @@ export function resolveNodeGovernance(input: CreateNodeInput): GovernanceDecisio
   };
 }
 
-export function resolveRelationStatus(input: CreateRelationInput): { status: string; createReview: boolean } {
+export function resolveRelationStatus(
+  input: CreateRelationInput,
+  policy: GovernancePolicy = resolveGovernancePolicy()
+): { status: string; createReview: boolean } {
   if (input.source.actorType === "agent") {
+    if (isTrustedAgentSource(input.source.toolName, policy)) {
+      const status = input.status ?? "active";
+      return { status, createReview: status === "suggested" };
+    }
+
     return { status: "suggested", createReview: true };
   }
 

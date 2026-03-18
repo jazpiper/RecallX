@@ -10,6 +10,7 @@ import {
   getNode,
   getPinnedNodes,
   getRecentNodes,
+  getReviewSettings,
   getRelatedNodes,
   getReviewQueue,
   getSnapshot,
@@ -20,12 +21,14 @@ import {
   rejectReview,
   saveRendererToken,
   searchNodes,
+  updateReviewSettings,
 } from './lib/mockApi';
 import type {
   Activity,
   Artifact,
   NavView,
   Node,
+  ReviewSettings,
   ReviewQueueItem,
   WorkspaceCatalogItem,
   WorkspaceSeed,
@@ -109,13 +112,31 @@ export default function App() {
   const [workspaceNameInput, setWorkspaceNameInput] = useState('');
   const [workspaceActionError, setWorkspaceActionError] = useState<string | null>(null);
   const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false);
+  const [reviewSettings, setReviewSettings] = useState<ReviewSettings>({
+    autoApproveLowRisk: true,
+    trustedSourceToolNames: [],
+  });
+  const [trustedToolNamesInput, setTrustedToolNamesInput] = useState('');
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isSettingsDirty, setIsSettingsDirty] = useState(false);
 
   async function refreshWorkspaceState() {
-    const [workspaceResult, snapshotResult, catalog] = await Promise.all([getWorkspace(), getSnapshot(), getWorkspaceCatalog()]);
+    const [workspaceResult, snapshotResult, catalog, nextReviewSettings] = await Promise.all([
+      getWorkspace(),
+      getSnapshot(),
+      getWorkspaceCatalog(),
+      getReviewSettings(),
+    ]);
     setWorkspace(workspaceResult);
     setSnapshot(snapshotResult);
     setWorkspaceCatalog(catalog.items);
     setWorkspaceRootInput(catalog.current.rootPath);
+    if (!isSettingsDirty) {
+      setReviewSettings(nextReviewSettings);
+      setTrustedToolNamesInput(nextReviewSettings.trustedSourceToolNames.join(', '));
+    }
     setSelectedReviewId((current) => current ?? snapshotResult.reviewQueue[0]?.id ?? null);
     setLoadError(null);
     return snapshotResult;
@@ -169,6 +190,35 @@ export default function App() {
       mounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (isLoading || authRequired) {
+      return;
+    }
+
+    function refreshIfVisible() {
+      if (document.hidden) {
+        return;
+      }
+      void refreshWorkspaceState();
+    }
+
+    function handleVisibilityChange() {
+      if (!document.hidden) {
+        refreshIfVisible();
+      }
+    }
+
+    const intervalId = window.setInterval(refreshIfVisible, 5000);
+    window.addEventListener('focus', refreshIfVisible);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', refreshIfVisible);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [authRequired, isLoading]);
 
   const nodeMap = useMemo(() => {
     const map = new Map<string, Node>();
@@ -402,6 +452,40 @@ export default function App() {
     }
   }
 
+  async function handleSaveReviewSettings(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSavingSettings(true);
+    setSettingsError(null);
+    setSettingsNotice(null);
+
+    const trustedSourceToolNames = trustedToolNamesInput
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    try {
+      const saved = await updateReviewSettings({
+        autoApproveLowRisk: reviewSettings.autoApproveLowRisk,
+        trustedSourceToolNames,
+      });
+      setReviewSettings(saved);
+      setTrustedToolNamesInput(saved.trustedSourceToolNames.join(', '));
+      setIsSettingsDirty(false);
+      setSettingsNotice('Review settings saved.');
+      await refreshWorkspaceState();
+    } catch (error) {
+      if (isAuthError(error)) {
+        clearRendererToken();
+        setAuthRequired(true);
+        setAuthError('Enter the Memforge API token to continue.');
+      } else {
+        setSettingsError(error instanceof Error ? error.message : 'Failed to save review settings.');
+      }
+    } finally {
+      setIsSavingSettings(false);
+    }
+  }
+
   function selectView(next: NavView) {
     startTransition(() => {
       setView(next);
@@ -632,6 +716,48 @@ export default function App() {
                 onClick={() => void handleOpenWorkspace(workspaceRootInput)}
               >
                 Open existing
+              </button>
+            </div>
+          </form>
+          <form className="capture-form" onSubmit={(event) => void handleSaveReviewSettings(event)}>
+            <label className="search-box">
+              <span>Review policy</span>
+              <div className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={reviewSettings.autoApproveLowRisk}
+                  onChange={(event) => {
+                    setReviewSettings((current) => ({
+                      ...current,
+                      autoApproveLowRisk: event.target.checked,
+                    }));
+                    setIsSettingsDirty(true);
+                    setSettingsNotice(null);
+                  }}
+                />
+                <span>Auto-approve low-risk agent notes</span>
+              </div>
+            </label>
+            <label className="search-box">
+              <span>Trusted source tool names</span>
+              <input
+                value={trustedToolNamesInput}
+                onChange={(event) => {
+                  setTrustedToolNamesInput(event.target.value);
+                  setIsSettingsDirty(true);
+                  setSettingsNotice(null);
+                }}
+                placeholder="codex, claude-code"
+              />
+            </label>
+            <div className="empty-state">
+              Trusted tools can bypass review for non-decision nodes and default relations to active.
+            </div>
+            {settingsError ? <div className="empty-state">{settingsError}</div> : null}
+            {settingsNotice ? <div className="empty-state">{settingsNotice}</div> : null}
+            <div className="action-row">
+              <button type="submit" disabled={isSavingSettings}>
+                {isSavingSettings ? 'Saving...' : 'Save review settings'}
               </button>
             </div>
           </form>

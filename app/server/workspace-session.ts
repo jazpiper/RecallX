@@ -101,13 +101,14 @@ export class WorkspaceSessionManager {
         ? String(storedSettings["workspace.name"])
         : options.workspaceName?.trim() || defaultWorkspaceName(resolvedRoot);
 
-    repository.upsertBaseSettings({
-      "workspace.name": resolvedName,
-      "workspace.version": "0.1.0",
-      "api.bind": `${this.serverConfig.bindAddress}:${this.serverConfig.port}`,
-      "api.auth.mode": this.authMode,
+    repository.setSetting("workspace.name", resolvedName);
+    repository.setSetting("workspace.version", "0.1.0");
+    repository.setSetting("api.bind", `${this.serverConfig.bindAddress}:${this.serverConfig.port}`);
+    repository.setSetting("api.auth.mode", this.authMode);
+    repository.ensureBaseSettings({
       "search.semantic.enabled": false,
-      "review.autoApproveLowRisk": false,
+      "review.autoApproveLowRisk": true,
+      "review.trustedSourceToolNames": [],
       "export.defaultFormat": "markdown",
     });
 

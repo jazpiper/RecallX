@@ -76,6 +76,7 @@ Rules:
 | `memforge_search_nodes` | Search nodes with filters | `POST /nodes/search` |
 | `memforge_get_node` | Read node detail bundle | `GET /nodes/:id` |
 | `memforge_get_related` | Read related nodes | `GET /nodes/:id/related` |
+| `memforge_append_activity` | Append node activity | `POST /activities` |
 | `memforge_create_node` | Create durable node | `POST /nodes` |
 | `memforge_create_relation` | Create relation | `POST /relations` |
 | `memforge_review_list` | Read review queue | `GET /review-queue` |

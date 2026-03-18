@@ -136,6 +136,10 @@ function mapIntegration(row: Record<string, unknown>): IntegrationRecord {
 export class MemforgeRepository {
   constructor(private readonly db: DatabaseSync, private readonly workspaceRoot: string) {}
 
+  private touchNode(id: string): void {
+    this.db.prepare(`UPDATE nodes SET updated_at = ? WHERE id = ?`).run(nowIso(), id);
+  }
+
   listNodes(limit = 20): SearchResultItem[] {
     const rows = this.db
       .prepare(
@@ -486,6 +490,7 @@ export class MemforgeRepository {
         now,
         JSON.stringify(input.metadata)
       );
+    this.touchNode(input.targetNodeId);
     return this.getActivity(id);
   }
 
@@ -708,6 +713,22 @@ export class MemforgeRepository {
          ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json`
       )
       .run(key, JSON.stringify(value));
+  }
+
+  setSettingIfMissing(key: string, value: unknown): void {
+    this.db
+      .prepare(
+        `INSERT INTO settings (key, value_json)
+         VALUES (?, ?)
+         ON CONFLICT(key) DO NOTHING`
+      )
+      .run(key, JSON.stringify(value));
+  }
+
+  ensureBaseSettings(settings: Record<string, unknown>): void {
+    for (const [key, value] of Object.entries(settings)) {
+      this.setSettingIfMissing(key, value);
+    }
   }
 
   upsertBaseSettings(settings: Record<string, unknown>): void {

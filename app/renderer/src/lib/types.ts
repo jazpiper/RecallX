@@ -53,6 +53,11 @@ export interface WorkspaceCatalogItem extends Workspace {
   lastOpenedAt: string;
 }
 
+export interface ReviewSettings {
+  autoApproveLowRisk: boolean;
+  trustedSourceToolNames: string[];
+}
+
 export interface Node {
   id: string;
   type: NodeType;
