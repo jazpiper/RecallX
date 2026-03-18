@@ -243,6 +243,50 @@ textarea {
   margin: 6px 0 0;
 }
 
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.settings-card {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--panel-border);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.settings-card--wide {
+  grid-column: 1 / -1;
+}
+
+.settings-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.settings-head h3 {
+  margin: 4px 0 0;
+  font-size: 1.05rem;
+}
+
+.settings-head-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-copy {
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
 .search-box {
   display: grid;
   gap: 8px;
@@ -261,6 +305,23 @@ textarea {
 .toggle-row input {
   width: 16px;
   height: 16px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+.toggle-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.toggle-copy strong {
+  font-weight: 600;
+}
+
+.toggle-copy span {
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.45;
 }
 
 .search-box input {
@@ -284,6 +345,69 @@ textarea {
 .capture-form {
   display: grid;
   gap: 12px;
+}
+
+.settings-block {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.settings-block-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.settings-block-head .eyebrow {
+  margin-bottom: 4px;
+}
+
+.settings-inline {
+  display: flex;
+  gap: 10px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.settings-inline__input {
+  flex: 1 1 280px;
+}
+
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 9px 12px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text);
+  box-shadow: none;
+}
+
+.tool-chip:hover {
+  border-color: rgba(31, 111, 93, 0.28);
+  transform: translateY(-1px);
+}
+
+.tool-chip--active {
+  border-color: rgba(31, 111, 93, 0.35);
+  background: rgba(31, 111, 93, 0.12);
+}
+
+.tool-chip--active:hover {
+  background: rgba(31, 111, 93, 0.16);
 }
 
 .home-grid {
@@ -326,6 +450,22 @@ textarea {
   justify-content: space-between;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.settings-actions {
+  justify-content: flex-start;
+}
+
+.settings-actions .ghost,
+.settings-block-head .ghost {
+  border: 1px solid var(--panel-border);
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--text);
+}
+
+.settings-actions .ghost:hover,
+.settings-block-head .ghost:hover {
+  background: rgba(255, 255, 255, 0.82);
 }
 
 .chip-row {
@@ -432,6 +572,10 @@ textarea {
   background: rgba(255, 255, 255, 0.44);
 }
 
+.empty-state.compact {
+  padding: 12px 14px;
+}
+
 @media (max-width: 1180px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -460,6 +604,25 @@ textarea {
   .grid-2,
   .meta-grid {
     grid-template-columns: 1fr;
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-card--wide {
+    grid-column: auto;
+  }
+
+  .settings-head,
+  .settings-block-head,
+  .settings-inline {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .settings-head-meta {
+    justify-content: flex-start;
   }
 
   .topbar {

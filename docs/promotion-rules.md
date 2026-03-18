@@ -10,6 +10,7 @@ Define a strict pipeline from activity → suggested → review queue decision �
 | Human             | Any node               | canonical             | No              | Immediate |
 | Agent append      | activity               | activity              | No              | Log only |
 | Agent summary     | ≤300 tokens and log-like | activity            | No              | Default case |
+| Agent work update | implementation summary or completed task note | activity | No | Preferred default for finished work |
 | Agent note        | >300 tokens and not marked durable | appended active node | No | Low-risk append-only default |
 | Agent summary     | >300 tokens and reusable | suggested note      | Yes             | Must review |
 | Agent decision    | decision node          | suggested             | Yes (always)    | Never auto-promote |
@@ -21,6 +22,7 @@ Define a strict pipeline from activity → suggested → review queue decision �
 
 ## Core principles
 - Decision nodes require human approval only  
+- Finished-work summaries should usually be stored as activities, not durable notes  
 - Low-risk agent-authored notes should default to active `appended` nodes, not review  
 - Any agent output >300 tokens that contains reusable durable knowledge must become a suggested note, never raw activity body  
 - `reviewed` is a governance event captured by the review queue, not a separate node enum or canonicality value  

@@ -51,11 +51,42 @@ const navigation: { id: NavView; label: string; hint: string }[] = [
   { id: 'settings', label: 'Settings', hint: 'workspace' },
 ];
 
+const TRUSTED_SOURCE_PRESETS = [
+  'codex',
+  'claude-code',
+  'gemini-cli',
+  'openclaw',
+] as const;
+
+const DEFAULT_REVIEW_SETTINGS: ReviewSettings = {
+  autoApproveLowRisk: true,
+  trustedSourceToolNames: [],
+};
+
 function badgeTone(status: string) {
   if (status === 'active' || status === 'approved') return 'tone-good';
   if (status === 'review' || status === 'pending') return 'tone-warn';
   if (status === 'draft' || status === 'suggested') return 'tone-info';
   return 'tone-muted';
+}
+
+function normalizeToolName(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function parseToolNames(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\n,]/)
+        .map(normalizeToolName)
+        .filter(Boolean),
+    ),
+  );
+}
+
+function mergeToolNames(current: string[], additions: string[]) {
+  return Array.from(new Set([...current.map(normalizeToolName), ...additions.map(normalizeToolName)].filter(Boolean)));
 }
 
 function formatTime(iso: string) {
@@ -112,30 +143,34 @@ export default function App() {
   const [workspaceNameInput, setWorkspaceNameInput] = useState('');
   const [workspaceActionError, setWorkspaceActionError] = useState<string | null>(null);
   const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false);
-  const [reviewSettings, setReviewSettings] = useState<ReviewSettings>({
-    autoApproveLowRisk: true,
-    trustedSourceToolNames: [],
-  });
-  const [trustedToolNamesInput, setTrustedToolNamesInput] = useState('');
+  const [savedReviewSettings, setSavedReviewSettings] = useState<ReviewSettings>(DEFAULT_REVIEW_SETTINGS);
+  const [reviewSettings, setReviewSettings] = useState<ReviewSettings>(DEFAULT_REVIEW_SETTINGS);
+  const [trustedToolNameDraft, setTrustedToolNameDraft] = useState('');
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isSettingsDirty, setIsSettingsDirty] = useState(false);
 
-  async function refreshWorkspaceState() {
+  async function refreshWorkspaceState(options?: { syncReviewSettings?: boolean }) {
     const [workspaceResult, snapshotResult, catalog, nextReviewSettings] = await Promise.all([
       getWorkspace(),
       getSnapshot(),
       getWorkspaceCatalog(),
       getReviewSettings(),
     ]);
+    const shouldSyncReviewSettings = options?.syncReviewSettings ?? !isSettingsDirty;
     setWorkspace(workspaceResult);
     setSnapshot(snapshotResult);
     setWorkspaceCatalog(catalog.items);
     setWorkspaceRootInput(catalog.current.rootPath);
-    if (!isSettingsDirty) {
-      setReviewSettings(nextReviewSettings);
-      setTrustedToolNamesInput(nextReviewSettings.trustedSourceToolNames.join(', '));
+    if (shouldSyncReviewSettings) {
+      const normalizedNextReviewSettings = {
+        autoApproveLowRisk: nextReviewSettings.autoApproveLowRisk,
+        trustedSourceToolNames: mergeToolNames([], nextReviewSettings.trustedSourceToolNames),
+      };
+      setSavedReviewSettings(normalizedNextReviewSettings);
+      setReviewSettings(normalizedNextReviewSettings);
+      setTrustedToolNameDraft('');
     }
     setSelectedReviewId((current) => current ?? snapshotResult.reviewQueue[0]?.id ?? null);
     setLoadError(null);
@@ -452,27 +487,26 @@ export default function App() {
     }
   }
 
-  async function handleSaveReviewSettings(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleSaveReviewSettings() {
     setIsSavingSettings(true);
     setSettingsError(null);
     setSettingsNotice(null);
 
-    const trustedSourceToolNames = trustedToolNamesInput
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean);
-
     try {
       const saved = await updateReviewSettings({
         autoApproveLowRisk: reviewSettings.autoApproveLowRisk,
-        trustedSourceToolNames,
+        trustedSourceToolNames: mergeToolNames([], reviewSettings.trustedSourceToolNames),
       });
-      setReviewSettings(saved);
-      setTrustedToolNamesInput(saved.trustedSourceToolNames.join(', '));
+      const normalizedSaved = {
+        autoApproveLowRisk: saved.autoApproveLowRisk,
+        trustedSourceToolNames: mergeToolNames([], saved.trustedSourceToolNames),
+      };
+      setSavedReviewSettings(normalizedSaved);
+      setReviewSettings(normalizedSaved);
+      setTrustedToolNameDraft('');
       setIsSettingsDirty(false);
       setSettingsNotice('Review settings saved.');
-      await refreshWorkspaceState();
+      await refreshWorkspaceState({ syncReviewSettings: true });
     } catch (error) {
       if (isAuthError(error)) {
         clearRendererToken();
@@ -484,6 +518,54 @@ export default function App() {
     } finally {
       setIsSavingSettings(false);
     }
+  }
+
+  function updateReviewSettingsDraft(next: ReviewSettings) {
+    setReviewSettings(next);
+    setIsSettingsDirty(true);
+    setSettingsNotice(null);
+  }
+
+  function toggleTrustedSourceToolName(toolName: string) {
+    const normalized = normalizeToolName(toolName);
+    setReviewSettings((current) => ({
+      ...current,
+      trustedSourceToolNames: current.trustedSourceToolNames.includes(normalized)
+        ? current.trustedSourceToolNames.filter((item) => item !== normalized)
+        : [...current.trustedSourceToolNames, normalized],
+    }));
+    setIsSettingsDirty(true);
+    setSettingsNotice(null);
+  }
+
+  function addTrustedToolNamesFromDraft() {
+    const additions = parseToolNames(trustedToolNameDraft);
+    if (!additions.length) {
+      return;
+    }
+
+    setReviewSettings((current) => ({
+      ...current,
+      trustedSourceToolNames: mergeToolNames(current.trustedSourceToolNames, additions),
+    }));
+    setIsSettingsDirty(true);
+    setSettingsNotice(null);
+    setTrustedToolNameDraft('');
+  }
+
+  function discardReviewSettings() {
+    setReviewSettings(savedReviewSettings);
+    setTrustedToolNameDraft('');
+    setIsSettingsDirty(false);
+    setSettingsError(null);
+    setSettingsNotice('Changes discarded.');
+  }
+
+  function resetReviewSettings() {
+    setReviewSettings(DEFAULT_REVIEW_SETTINGS);
+    setIsSettingsDirty(true);
+    setSettingsNotice(null);
+    setTrustedToolNameDraft('');
   }
 
   function selectView(next: NavView) {
@@ -669,118 +751,230 @@ export default function App() {
     if (view === 'settings') {
       return (
         <Section title="Settings" subtitle="Workspace identity and local integration boundaries.">
-          <div className="grid-2">
-            <div>
-              <span className="eyebrow">Workspace</span>
-              <p>{workspaceName}</p>
-            </div>
-            <div>
-              <span className="eyebrow">Root</span>
-              <p>{workspace?.rootPath}</p>
-            </div>
-            <div>
-              <span className="eyebrow">Schema version</span>
-              <p>{workspace?.schemaVersion}</p>
-            </div>
-            <div>
-              <span className="eyebrow">API bind</span>
-              <p>{workspace?.apiBind}</p>
-            </div>
-          </div>
-          <form className="capture-form" onSubmit={(event) => void handleCreateWorkspace(event)}>
-            <label className="search-box">
-              <span>Workspace root</span>
-              <input
-                value={workspaceRootInput}
-                onChange={(event) => setWorkspaceRootInput(event.target.value)}
-                placeholder="/Users/name/Documents/MyMemforge"
-              />
-            </label>
-            <label className="search-box">
-              <span>Workspace name</span>
-              <input
-                value={workspaceNameInput}
-                onChange={(event) => setWorkspaceNameInput(event.target.value)}
-                placeholder="Optional display name for new workspace"
-              />
-            </label>
-            {workspaceActionError ? <div className="empty-state">{workspaceActionError}</div> : null}
-            <div className="action-row">
-              <button type="submit" disabled={isSwitchingWorkspace}>
-                {isSwitchingWorkspace ? 'Switching...' : 'Create and switch'}
-              </button>
-              <button
-                type="button"
-                className="ghost"
-                disabled={isSwitchingWorkspace}
-                onClick={() => void handleOpenWorkspace(workspaceRootInput)}
-              >
-                Open existing
-              </button>
-            </div>
-          </form>
-          <form className="capture-form" onSubmit={(event) => void handleSaveReviewSettings(event)}>
-            <label className="search-box">
-              <span>Review policy</span>
+          <div className="settings-grid">
+            <section className="settings-card">
+              <div className="settings-head">
+                <div>
+                  <span className="eyebrow">Workspace</span>
+                  <h3>Current workspace</h3>
+                  <p className="settings-copy">Switch or create a workspace without leaving settings.</p>
+                </div>
+                <span className={`pill ${workspace?.authMode === 'bearer' ? 'tone-warn' : 'tone-good'}`}>
+                  {workspace?.authMode === 'bearer' ? 'Bearer auth' : 'Local access'}
+                </span>
+              </div>
+              <div className="meta-grid">
+                <div>
+                  <span className="eyebrow">Workspace</span>
+                  <p>{workspaceName}</p>
+                </div>
+                <div>
+                  <span className="eyebrow">Root</span>
+                  <p>{workspace?.rootPath}</p>
+                </div>
+                <div>
+                  <span className="eyebrow">Schema version</span>
+                  <p>{workspace?.schemaVersion}</p>
+                </div>
+                <div>
+                  <span className="eyebrow">API bind</span>
+                  <p>{workspace?.apiBind}</p>
+                </div>
+              </div>
+              <form className="capture-form" onSubmit={(event) => void handleCreateWorkspace(event)}>
+                <label className="search-box">
+                  <span>Workspace root</span>
+                  <input
+                    value={workspaceRootInput}
+                    onChange={(event) => setWorkspaceRootInput(event.target.value)}
+                    placeholder="/Users/name/Documents/MyMemforge"
+                  />
+                </label>
+                <label className="search-box">
+                  <span>Workspace name</span>
+                  <input
+                    value={workspaceNameInput}
+                    onChange={(event) => setWorkspaceNameInput(event.target.value)}
+                    placeholder="Optional display name for new workspace"
+                  />
+                </label>
+                {workspaceActionError ? <div className="empty-state">{workspaceActionError}</div> : null}
+                <div className="action-row">
+                  <button type="submit" disabled={isSwitchingWorkspace}>
+                    {isSwitchingWorkspace ? 'Switching...' : 'Create and switch'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={isSwitchingWorkspace}
+                    onClick={() => void handleOpenWorkspace(workspaceRootInput)}
+                  >
+                    Open existing
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <section className="settings-card">
+              <div className="settings-head">
+                <div>
+                  <span className="eyebrow">Review policy</span>
+                  <h3>Trusted sources and low-risk writes</h3>
+                  <p className="settings-copy">Keep review for decisions and high-impact content. Trusted tools bypass review for non-decision nodes and default relations to active.</p>
+                </div>
+                <div className="settings-head-meta">
+                  <span className={`pill ${reviewSettings.autoApproveLowRisk ? 'tone-good' : 'tone-muted'}`}>
+                    {reviewSettings.autoApproveLowRisk ? 'Low-risk auto-approve on' : 'Low-risk auto-approve off'}
+                  </span>
+                  <span className="pill tone-info">{reviewSettings.trustedSourceToolNames.length} trusted tool{reviewSettings.trustedSourceToolNames.length === 1 ? '' : 's'}</span>
+                </div>
+              </div>
+
               <div className="toggle-row">
                 <input
+                  id="auto-approve-low-risk"
                   type="checkbox"
                   checked={reviewSettings.autoApproveLowRisk}
                   onChange={(event) => {
-                    setReviewSettings((current) => ({
-                      ...current,
+                    updateReviewSettingsDraft({
+                      ...reviewSettings,
                       autoApproveLowRisk: event.target.checked,
-                    }));
-                    setIsSettingsDirty(true);
-                    setSettingsNotice(null);
+                    });
                   }}
                 />
-                <span>Auto-approve low-risk agent notes</span>
+                <label htmlFor="auto-approve-low-risk" className="toggle-copy">
+                  <strong>Auto-approve low-risk agent notes</strong>
+                  <span>Useful for short append-only notes and routine agent output.</span>
+                </label>
               </div>
-            </label>
-            <label className="search-box">
-              <span>Trusted source tool names</span>
-              <input
-                value={trustedToolNamesInput}
-                onChange={(event) => {
-                  setTrustedToolNamesInput(event.target.value);
-                  setIsSettingsDirty(true);
-                  setSettingsNotice(null);
-                }}
-                placeholder="codex, claude-code"
-              />
-            </label>
-            <div className="empty-state">
-              Trusted tools can bypass review for non-decision nodes and default relations to active.
-            </div>
-            {settingsError ? <div className="empty-state">{settingsError}</div> : null}
-            {settingsNotice ? <div className="empty-state">{settingsNotice}</div> : null}
-            <div className="action-row">
-              <button type="submit" disabled={isSavingSettings}>
-                {isSavingSettings ? 'Saving...' : 'Save review settings'}
-              </button>
-            </div>
-          </form>
-          <div className="stack">
-            <span className="eyebrow">Recent workspaces</span>
-            {workspaceCatalog.map((item) => (
-              <button
-                key={item.rootPath}
-                type="button"
-                className="result-card"
-                disabled={isSwitchingWorkspace || item.isCurrent}
-                onClick={() => {
-                  setWorkspaceRootInput(item.rootPath);
-                  void handleOpenWorkspace(item.rootPath);
-                }}
-              >
-                <div className="result-card__top">
-                  <strong>{item.name}</strong>
-                  <span className={`pill ${item.isCurrent ? 'tone-good' : 'tone-muted'}`}>{item.isCurrent ? 'current' : 'available'}</span>
+
+              <div className="settings-block">
+                <div className="settings-block-head">
+                  <div>
+                    <span className="eyebrow">Trusted source tools</span>
+                    <p className="settings-copy">These `toolName` values bypass review for non-decision nodes and relations.</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      setReviewSettings((current) => ({
+                        ...current,
+                        trustedSourceToolNames: [],
+                      }));
+                      setIsSettingsDirty(true);
+                      setSettingsNotice(null);
+                    }}
+                  >
+                    Clear all
+                  </button>
                 </div>
-                <p>{item.rootPath}</p>
-              </button>
-            ))}
+
+                <div className="chip-row">
+                  {reviewSettings.trustedSourceToolNames.length ? (
+                    reviewSettings.trustedSourceToolNames.map((toolName) => (
+                      <button
+                        key={toolName}
+                        type="button"
+                        className="tool-chip tool-chip--active"
+                        onClick={() => toggleTrustedSourceToolName(toolName)}
+                        title="Remove trusted tool"
+                      >
+                        <span>{toolName}</span>
+                        <span aria-hidden="true">×</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="empty-state compact">No trusted tools yet. Add one below or use a preset.</div>
+                  )}
+                </div>
+
+                <div className="settings-inline">
+                  <label className="search-box settings-inline__input">
+                    <span>Add trusted tool</span>
+                    <input
+                      value={trustedToolNameDraft}
+                      onChange={(event) => {
+                        setTrustedToolNameDraft(event.target.value);
+                        setSettingsNotice(null);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          addTrustedToolNamesFromDraft();
+                        }
+                      }}
+                      placeholder="codex, claude-code"
+                    />
+                  </label>
+                  <button type="button" onClick={addTrustedToolNamesFromDraft}>
+                    Add
+                  </button>
+                </div>
+
+                <div className="preset-row">
+                  {TRUSTED_SOURCE_PRESETS.map((toolName) => {
+                    const active = reviewSettings.trustedSourceToolNames.includes(toolName);
+                    return (
+                      <button
+                        key={toolName}
+                        type="button"
+                        className={`tool-chip ${active ? 'tool-chip--active' : ''}`}
+                        onClick={() => toggleTrustedSourceToolName(toolName)}
+                        aria-pressed={active}
+                      >
+                        {toolName}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {settingsError ? <div className="empty-state">{settingsError}</div> : null}
+              {settingsNotice ? <div className="empty-state">{settingsNotice}</div> : null}
+
+              <div className="action-row settings-actions">
+                <button type="button" onClick={() => void handleSaveReviewSettings()} disabled={isSavingSettings || !isSettingsDirty}>
+                  {isSavingSettings ? 'Saving...' : 'Save changes'}
+                </button>
+                <button type="button" className="ghost" onClick={discardReviewSettings} disabled={isSavingSettings || !isSettingsDirty}>
+                  Discard
+                </button>
+                <button type="button" className="ghost" onClick={resetReviewSettings} disabled={isSavingSettings}>
+                  Reset defaults
+                </button>
+              </div>
+            </section>
+
+            <section className="settings-card settings-card--wide">
+              <div className="settings-head">
+                <div>
+                  <span className="eyebrow">Recent workspaces</span>
+                  <h3>Previously opened roots</h3>
+                  <p className="settings-copy">Jump back to a workspace with one click.</p>
+                </div>
+              </div>
+              <div className="stack">
+                {workspaceCatalog.map((item) => (
+                  <button
+                    key={item.rootPath}
+                    type="button"
+                    className="result-card"
+                    disabled={isSwitchingWorkspace || item.isCurrent}
+                    onClick={() => {
+                      setWorkspaceRootInput(item.rootPath);
+                      void handleOpenWorkspace(item.rootPath);
+                    }}
+                  >
+                    <div className="result-card__top">
+                      <strong>{item.name}</strong>
+                      <span className={`pill ${item.isCurrent ? 'tone-good' : 'tone-muted'}`}>{item.isCurrent ? 'current' : 'available'}</span>
+                    </div>
+                    <p>{item.rootPath}</p>
+                  </button>
+                ))}
+              </div>
+            </section>
           </div>
         </Section>
       );
