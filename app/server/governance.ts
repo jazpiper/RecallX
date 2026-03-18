@@ -68,6 +68,15 @@ export function resolveNodeGovernance(input: CreateNodeInput, policy: Governance
   const trustedAgentSource =
     input.source.actorType === "agent" ? isTrustedAgentSource(input.source.toolName, policy) : false;
 
+  if (input.type === "decision" && trustedAgentSource) {
+    return {
+      canonicality: "appended",
+      status: "active",
+      createReview: false,
+      reason: "Trusted agent-authored decisions land as append-only active content."
+    };
+  }
+
   if (input.type === "decision") {
     return {
       canonicality: "suggested",

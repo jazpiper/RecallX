@@ -701,13 +701,45 @@ May be separate actions or integrated into PATCH depending on implementation.
 
 ---
 
-## 17. Settings endpoints
+## 17. Workspace event stream
 
-## 17.1 Get settings subset
+## 17.1 Subscribe to workspace updates
+### HTTP
+`GET /api/v1/events`
+
+### Behavior
+Provides a Server-Sent Events stream for lightweight workspace update notifications.
+
+- Event name: `workspace.updated`
+- Payload fields:
+  - `type`
+  - `reason`
+  - `entityType`
+  - `entityId`
+  - `workspaceRoot`
+  - `at`
+- Intended use:
+  - keep `Recent` and similar live surfaces responsive without background polling
+  - react to writes such as node creation, activity append, review action, settings changes, or workspace switching
+- Auth:
+  - bearer mode accepts the normal `Authorization: Bearer ...` header
+  - browser `EventSource` clients may also pass `?token=...`
+
+### Example event
+```text
+event: workspace.updated
+data: {"type":"workspace.updated","reason":"activity.appended","entityType":"activity","entityId":"act_123","workspaceRoot":"/Users/name/Documents/Memforge","at":"2026-03-18T07:20:00.000Z"}
+```
+
+---
+
+## 18. Settings endpoints
+
+## 18.1 Get settings subset
 ### HTTP
 `GET /api/v1/settings?keys=workspace.name,search.semantic.enabled`
 
-## 17.2 Update settings subset
+## 18.2 Update settings subset
 ### HTTP
 `PATCH /api/v1/settings`
 
@@ -717,15 +749,15 @@ Avoid giant replace-whole-config behavior.
 
 Useful review-related settings:
 - `review.autoApproveLowRisk`: boolean toggle for letting low-risk agent-authored nodes bypass review
-- `review.trustedSourceToolNames`: array of trusted agent `toolName` values that may bypass review for non-decision nodes and default relations to `active`
+- `review.trustedSourceToolNames`: array of trusted agent `toolName` values that may bypass review for agent-authored notes, decisions, and default relations to `active`
 
 ---
 
-## 18. CLI contract
+## 19. CLI contract
 
 The CLI should be a thin ergonomic layer over the API.
 
-## 18.1 Core commands
+## 19.1 Core commands
 - `pnw health`
 - `pnw search <query>`
 - `pnw get <node-id>`
@@ -739,7 +771,7 @@ The CLI should be a thin ergonomic layer over the API.
 - `pnw review approve <id>`
 - `pnw review reject <id>`
 
-## 18.2 CLI examples
+## 19.2 CLI examples
 ### Search
 ```bash
 pnw search "agent memory" --type project --limit 5

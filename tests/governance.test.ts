@@ -38,6 +38,30 @@ describe("resolveNodeGovernance", () => {
     expect(decision.createReview).toBe(true);
   });
 
+  it("lets trusted agent decisions bypass review", () => {
+    const decision = resolveNodeGovernance(
+      {
+        type: "decision",
+        title: "Use SQLite",
+        body: "Adopt SQLite as the canonical store.",
+        tags: [],
+        source: {
+          actorType: "agent",
+          actorLabel: "Codex",
+          toolName: "codex"
+        },
+        metadata: {}
+      },
+      resolveGovernancePolicy({
+        "review.trustedSourceToolNames": ["codex"]
+      })
+    );
+
+    expect(decision.canonicality).toBe("appended");
+    expect(decision.status).toBe("active");
+    expect(decision.createReview).toBe(false);
+  });
+
   it("lets low-risk agent notes land as appended active nodes", () => {
     const decision = resolveNodeGovernance({
       type: "note",

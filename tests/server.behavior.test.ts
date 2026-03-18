@@ -361,6 +361,100 @@ describe("workspace switching", () => {
   });
 });
 
+describe("workspace event stream", () => {
+  it("emits async workspace updates when recent content changes", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const repository = workspaceSessionManager.getCurrent().repository;
+      const node = repository.createNode({
+        type: "note",
+        title: "Async recent node",
+        body: "Target node for activity events",
+        tags: [],
+        source: {
+          actorType: "human",
+          actorLabel: "juhwan",
+          toolName: "memforge-test",
+        },
+        metadata: {},
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active",
+      });
+
+      const streamResponse = await fetch(`${baseUrl}/events`);
+      expect(streamResponse.status).toBe(200);
+      expect(streamResponse.headers.get("content-type")).toContain("text/event-stream");
+      expect(streamResponse.body).toBeTruthy();
+
+      const reader = streamResponse.body!.getReader();
+      const decoder = new TextDecoder();
+      const waitForWorkspaceUpdate = async () => {
+        let buffer = "";
+        const timeoutMs = 3000;
+        while (true) {
+          const chunk = await Promise.race([
+            reader.read(),
+            new Promise<never>((_resolve, reject) =>
+              setTimeout(() => reject(new Error("Timed out waiting for workspace event.")), timeoutMs)
+            ),
+          ]);
+          if (chunk.done) {
+            throw new Error(`Event stream closed before update arrived. Buffer: ${buffer}`);
+          }
+          buffer += decoder.decode(chunk.value, { stream: true });
+          if (buffer.includes("event: workspace.updated") && buffer.includes('"reason":"activity.appended"')) {
+            return buffer;
+          }
+        }
+      };
+
+      const pendingEvent = waitForWorkspaceUpdate();
+
+      const activityResponse = await fetch(`${baseUrl}/activities`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          targetNodeId: node.id,
+          activityType: "agent_run_summary",
+          body: "Recent view should update from the event stream.",
+          source: {
+            actorType: "agent",
+            actorLabel: "Codex",
+            toolName: "codex",
+          },
+          metadata: {},
+        }),
+      });
+
+      expect(activityResponse.status).toBe(201);
+
+      const eventBuffer = await pendingEvent;
+      expect(eventBuffer).toContain("event: workspace.updated");
+      expect(eventBuffer).toContain('"entityType":"activity"');
+      expect(eventBuffer).toContain('"reason":"activity.appended"');
+
+      await reader.cancel();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+});
+
 describe("node governance behavior", () => {
   it("stores low-risk agent notes as active appended nodes without review items", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
@@ -530,6 +624,62 @@ describe("node governance behavior", () => {
       expect(relationResponse.status).toBe(201);
       expect(relationPayload.data.relation.status).toBe("active");
       expect(relationPayload.data.reviewItem).toBeNull();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("lets trusted source tool names bypass review for decisions", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      await fetch(`${baseUrl}/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          values: {
+            "review.trustedSourceToolNames": ["codex"]
+          }
+        }),
+      });
+
+      const response = await fetch(`${baseUrl}/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "decision",
+          title: "Use event stream for recent refresh",
+          body: "Trusted source decisions should bypass review under the workspace trusted-source policy.",
+          source: {
+            actorType: "agent",
+            actorLabel: "Codex",
+            toolName: "codex",
+          },
+          tags: [],
+          metadata: {},
+        }),
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(201);
+      expect(payload.data.node.canonicality).toBe("appended");
+      expect(payload.data.node.status).toBe("active");
+      expect(payload.data.reviewItem).toBeNull();
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

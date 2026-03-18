@@ -43,6 +43,15 @@ export interface WorkspaceCatalog {
   items: WorkspaceCatalogItem[];
 }
 
+export interface WorkspaceEvent {
+  type: 'workspace.updated';
+  reason: string;
+  entityType?: 'node' | 'relation' | 'activity' | 'artifact' | 'review' | 'workspace' | 'integration' | 'settings';
+  entityId?: string;
+  workspaceRoot: string;
+  at: string;
+}
+
 const DEFAULT_REVIEW_SETTINGS: ReviewSettings = {
   autoApproveLowRisk: true,
   trustedSourceToolNames: [],
@@ -216,6 +225,15 @@ export function clearRendererToken() {
 
 export function isAuthError(error: unknown): boolean {
   return error instanceof ApiRequestError && error.status === 401;
+}
+
+function buildEventStreamUrl() {
+  const token = getRendererToken();
+  const url = new URL(`${API_BASE}/events`, window.location.origin);
+  if (token) {
+    url.searchParams.set('token', token);
+  }
+  return url.toString();
 }
 
 function fallbackSnapshot(): WorkspaceSeed {
@@ -497,6 +515,34 @@ export async function rejectReview(id: string): Promise<void> {
     method: 'POST',
     body: JSON.stringify({ source: DEFAULT_SOURCE }),
   });
+}
+
+export function subscribeWorkspaceEvents(handlers: {
+  onWorkspaceUpdate?: (event: WorkspaceEvent) => void;
+  onError?: () => void;
+}): () => void {
+  if (typeof window === 'undefined' || typeof window.EventSource === 'undefined') {
+    return () => {};
+  }
+
+  const stream = new window.EventSource(buildEventStreamUrl());
+  const handleWorkspaceUpdate = (event: MessageEvent<string>) => {
+    try {
+      handlers.onWorkspaceUpdate?.(JSON.parse(event.data) as WorkspaceEvent);
+    } catch {
+      // Ignore malformed events and keep the stream open.
+    }
+  };
+
+  stream.addEventListener('workspace.updated', handleWorkspaceUpdate as EventListener);
+  stream.onerror = () => {
+    handlers.onError?.();
+  };
+
+  return () => {
+    stream.removeEventListener('workspace.updated', handleWorkspaceUpdate as EventListener);
+    stream.close();
+  };
 }
 
 export async function getRelations(): Promise<Relation[]> {

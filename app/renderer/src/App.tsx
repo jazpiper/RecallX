@@ -21,6 +21,7 @@ import {
   rejectReview,
   saveRendererToken,
   searchNodes,
+  subscribeWorkspaceEvents,
   updateReviewSettings,
 } from './lib/mockApi';
 import type {
@@ -227,33 +228,65 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (isLoading || authRequired) {
+    if (isLoading || authRequired || view !== 'recent') {
       return;
     }
 
-    function refreshIfVisible() {
-      if (document.hidden) {
+    let cancelled = false;
+    let refreshInFlight = false;
+    let refreshQueued = false;
+
+    async function refreshRecentView() {
+      if (cancelled || document.hidden) {
         return;
       }
-      void refreshWorkspaceState();
+
+      if (refreshInFlight) {
+        refreshQueued = true;
+        return;
+      }
+
+      refreshInFlight = true;
+
+      try {
+        await refreshWorkspaceState();
+        setLoadError(null);
+      } catch (error) {
+        if (!cancelled) {
+          handleRequestFailure(error, 'Failed to refresh recent activity.');
+        }
+      } finally {
+        refreshInFlight = false;
+        if (refreshQueued && !cancelled) {
+          refreshQueued = false;
+          void refreshRecentView();
+        }
+      }
     }
 
     function handleVisibilityChange() {
       if (!document.hidden) {
-        refreshIfVisible();
+        void refreshRecentView();
       }
     }
 
-    const intervalId = window.setInterval(refreshIfVisible, 5000);
-    window.addEventListener('focus', refreshIfVisible);
+    const unsubscribe = subscribeWorkspaceEvents({
+      onWorkspaceUpdate: () => {
+        void refreshRecentView();
+      },
+    });
+
+    void refreshRecentView();
+    window.addEventListener('focus', handleVisibilityChange);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      window.clearInterval(intervalId);
-      window.removeEventListener('focus', refreshIfVisible);
+      cancelled = true;
+      unsubscribe();
+      window.removeEventListener('focus', handleVisibilityChange);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [authRequired, isLoading]);
+  }, [authRequired, isLoading, view]);
 
   const nodeMap = useMemo(() => {
     const map = new Map<string, Node>();
@@ -820,7 +853,7 @@ export default function App() {
                 <div>
                   <span className="eyebrow">Review policy</span>
                   <h3>Trusted sources and low-risk writes</h3>
-                  <p className="settings-copy">Keep review for decisions and high-impact content. Trusted tools bypass review for non-decision nodes and default relations to active.</p>
+                  <p className="settings-copy">Keep review for high-impact content by default. Trusted tools can bypass review for notes, decisions, and default relations.</p>
                 </div>
                 <div className="settings-head-meta">
                   <span className={`pill ${reviewSettings.autoApproveLowRisk ? 'tone-good' : 'tone-muted'}`}>
@@ -852,7 +885,7 @@ export default function App() {
                 <div className="settings-block-head">
                   <div>
                     <span className="eyebrow">Trusted source tools</span>
-                    <p className="settings-copy">These `toolName` values bypass review for non-decision nodes and relations.</p>
+                    <p className="settings-copy">These `toolName` values bypass review for notes, decisions, and default relations.</p>
                   </div>
                   <button
                     type="button"

@@ -425,12 +425,15 @@ This is likely one of the most common workflows.
 ## 8.3 Agent write review flow
 ### Flow
 1. tool writes an append or suggestion
-2. item appears in review queue if high-impact
+2. item appears in review queue if high-impact or not covered by trusted-source policy
 3. user previews source and content
 4. user approves / edits / dismisses
 
 ### UX goal
 Keep this flow fast enough that users will actually do it.
+
+### Policy note
+Trusted source tools may auto-land low-risk notes, relations, and decisions without opening review queue work.
 
 ---
 

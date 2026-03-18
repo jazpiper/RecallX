@@ -247,6 +247,28 @@ export function createMemforgeApp(params: {
   const currentRepository = () => currentSession().repository;
   const currentWorkspaceInfo = () => currentSession().workspaceInfo;
   const currentWorkspaceRoot = () => currentSession().workspaceRoot;
+  const eventSubscribers = new Set<Response>();
+
+  function broadcastWorkspaceEvent(event: {
+    reason: string;
+    entityType?: "node" | "relation" | "activity" | "artifact" | "review" | "workspace" | "integration" | "settings";
+    entityId?: string;
+  }) {
+    const payload = {
+      type: "workspace.updated",
+      workspaceRoot: currentWorkspaceRoot(),
+      at: new Date().toISOString(),
+      ...event
+    };
+    for (const subscriber of eventSubscribers) {
+      try {
+        subscriber.write(`event: workspace.updated\n`);
+        subscriber.write(`data: ${JSON.stringify(payload)}\n\n`);
+      } catch {
+        eventSubscribers.delete(subscriber);
+      }
+    }
+  }
 
   app.use((request, response, next) => {
     const requestId = createId("req");
@@ -266,7 +288,9 @@ export function createMemforgeApp(params: {
     }
 
     const header = request.header("authorization");
-    if (!header || header !== `Bearer ${params.apiToken}`) {
+    const tokenFromQuery = typeof request.query.token === "string" ? request.query.token : null;
+    const providedToken = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : tokenFromQuery;
+    if (providedToken !== params.apiToken) {
       next(new AppError(401, "UNAUTHORIZED", "Missing or invalid bearer token."));
       return;
     }
@@ -304,6 +328,27 @@ export function createMemforgeApp(params: {
     );
   });
 
+  app.get("/api/v1/events", (request, response) => {
+    response.setHeader("Content-Type", "text/event-stream");
+    response.setHeader("Cache-Control", "no-cache, no-transform");
+    response.setHeader("Connection", "keep-alive");
+    response.setHeader("X-Accel-Buffering", "no");
+    response.flushHeaders?.();
+    response.write("retry: 3000\n");
+    response.write(": connected\n\n");
+
+    const heartbeatId = setInterval(() => {
+      response.write(": keep-alive\n\n");
+    }, 25000);
+
+    eventSubscribers.add(response);
+
+    request.on("close", () => {
+      clearInterval(heartbeatId);
+      eventSubscribers.delete(response);
+    });
+  });
+
   app.get("/api/v1/workspaces", (_request, response) => {
     response.json(
       envelope(response.locals.requestId, {
@@ -316,6 +361,10 @@ export function createMemforgeApp(params: {
   app.post("/api/v1/workspaces", (request, response) => {
     const input = createWorkspaceSchema.parse(request.body ?? {});
     const workspace = params.workspaceSessionManager.createWorkspace(input.rootPath, input.workspaceName);
+    broadcastWorkspaceEvent({
+      reason: "workspace.created",
+      entityType: "workspace"
+    });
     response.status(201).json(
       envelope(response.locals.requestId, {
         workspace,
@@ -328,6 +377,10 @@ export function createMemforgeApp(params: {
   app.post("/api/v1/workspaces/open", (request, response) => {
     const input = openWorkspaceSchema.parse(request.body ?? {});
     const workspace = params.workspaceSessionManager.openWorkspace(input.rootPath);
+    broadcastWorkspaceEvent({
+      reason: "workspace.opened",
+      entityType: "workspace"
+    });
     response.json(
       envelope(response.locals.requestId, {
         workspace,
@@ -390,12 +443,22 @@ export function createMemforgeApp(params: {
         }
       });
     }
+    broadcastWorkspaceEvent({
+      reason: "node.created",
+      entityType: "node",
+      entityId: node.id
+    });
     response.status(201).json(envelope(response.locals.requestId, { node, reviewItem }));
   });
 
   app.patch("/api/v1/nodes/:id", (request, response) => {
     const input = updateNodeSchema.parse(request.body ?? {});
     const node = currentRepository().updateNode(request.params.id, input);
+    broadcastWorkspaceEvent({
+      reason: "node.updated",
+      entityType: "node",
+      entityId: node.id
+    });
     response.json(envelope(response.locals.requestId, { node }));
   });
 
@@ -408,6 +471,11 @@ export function createMemforgeApp(params: {
       entityId: node.id,
       operationType: "archive",
       source: body.source
+    });
+    broadcastWorkspaceEvent({
+      reason: "node.archived",
+      entityType: "node",
+      entityId: node.id
     });
     response.json(envelope(response.locals.requestId, { node }));
   });
@@ -446,6 +514,11 @@ export function createMemforgeApp(params: {
         notes: "Agent-created relations stay suggested until approved."
       });
     }
+    broadcastWorkspaceEvent({
+      reason: "relation.created",
+      entityType: "relation",
+      entityId: relation.id
+    });
     response.status(201).json(envelope(response.locals.requestId, { relation, reviewItem }));
   });
 
@@ -459,6 +532,11 @@ export function createMemforgeApp(params: {
       operationType: input.status === "active" ? "approve" : input.status,
       source: input.source,
       metadata: input.metadata
+    });
+    broadcastWorkspaceEvent({
+      reason: "relation.updated",
+      entityType: "relation",
+      entityId: relation.id
     });
     response.json(envelope(response.locals.requestId, { relation }));
   });
@@ -499,6 +577,11 @@ export function createMemforgeApp(params: {
         promotedToSuggested: Boolean(promotion.suggestedNodeId)
       }
     });
+    broadcastWorkspaceEvent({
+      reason: "activity.appended",
+      entityType: "activity",
+      entityId: activity.id
+    });
     response.status(201).json(
       envelope(response.locals.requestId, {
         activity,
@@ -519,6 +602,11 @@ export function createMemforgeApp(params: {
       entityId: artifact.id,
       operationType: "attach",
       source: input.source
+    });
+    broadcastWorkspaceEvent({
+      reason: "artifact.attached",
+      entityType: "artifact",
+      entityId: artifact.id
     });
     response.status(201).json(envelope(response.locals.requestId, { artifact }));
   });
@@ -659,19 +747,35 @@ export function createMemforgeApp(params: {
 
   app.post("/api/v1/review-queue/:id/approve", (request, response) => {
     const input = reviewActionSchema.parse(request.body ?? {});
-    response.json(envelope(response.locals.requestId, applyReviewDecision(currentRepository(), request.params.id, "approve", input)));
+    const result = applyReviewDecision(currentRepository(), request.params.id, "approve", input);
+    broadcastWorkspaceEvent({
+      reason: "review.approved",
+      entityType: "review",
+      entityId: request.params.id
+    });
+    response.json(envelope(response.locals.requestId, result));
   });
 
   app.post("/api/v1/review-queue/:id/reject", (request, response) => {
     const input = reviewActionSchema.parse(request.body ?? {});
-    response.json(envelope(response.locals.requestId, applyReviewDecision(currentRepository(), request.params.id, "reject", input)));
+    const result = applyReviewDecision(currentRepository(), request.params.id, "reject", input);
+    broadcastWorkspaceEvent({
+      reason: "review.rejected",
+      entityType: "review",
+      entityId: request.params.id
+    });
+    response.json(envelope(response.locals.requestId, result));
   });
 
   app.post("/api/v1/review-queue/:id/edit-and-approve", (request, response) => {
     const input = reviewActionSchema.parse(request.body ?? {});
-    response.json(
-      envelope(response.locals.requestId, applyReviewDecision(currentRepository(), request.params.id, "edit-and-approve", input))
-    );
+    const result = applyReviewDecision(currentRepository(), request.params.id, "edit-and-approve", input);
+    broadcastWorkspaceEvent({
+      reason: "review.edit_and_approved",
+      entityType: "review",
+      entityId: request.params.id
+    });
+    response.json(envelope(response.locals.requestId, result));
   });
 
   app.get("/api/v1/integrations", (_request, response) => {
@@ -681,12 +785,22 @@ export function createMemforgeApp(params: {
   app.post("/api/v1/integrations", (request, response) => {
     const input = registerIntegrationSchema.parse(request.body ?? {});
     const integration = currentRepository().registerIntegration(input);
+    broadcastWorkspaceEvent({
+      reason: "integration.registered",
+      entityType: "integration",
+      entityId: integration.id
+    });
     response.status(201).json(envelope(response.locals.requestId, { integration }));
   });
 
   app.patch("/api/v1/integrations/:id", (request, response) => {
     const input = updateIntegrationSchema.parse(request.body ?? {});
     const integration = currentRepository().updateIntegration(request.params.id, input);
+    broadcastWorkspaceEvent({
+      reason: "integration.updated",
+      entityType: "integration",
+      entityId: integration.id
+    });
     response.json(envelope(response.locals.requestId, { integration }));
   });
 
@@ -707,6 +821,10 @@ export function createMemforgeApp(params: {
     for (const [key, value] of Object.entries(input.values)) {
       repository.setSetting(key, value);
     }
+    broadcastWorkspaceEvent({
+      reason: "settings.updated",
+      entityType: "settings"
+    });
     response.json(envelope(response.locals.requestId, { values: repository.getSettings(Object.keys(input.values)) }));
   });
 
