@@ -7,9 +7,11 @@ import {
   appendActivitySchema,
   attachArtifactSchema,
   buildContextBundleSchema,
+  createWorkspaceSchema,
   createNodeSchema,
   createRelationSchema,
   nodeSearchSchema,
+  openWorkspaceSchema,
   registerIntegrationSchema,
   reviewActionSchema,
   updateIntegrationSchema,
@@ -26,9 +28,9 @@ import {
   resolveRelationStatus,
   shouldPromoteActivitySummary
 } from "./governance.js";
-import type { MemforgeRepository } from "./repositories.js";
 import { buildContextBundle, bundleAsMarkdown } from "./retrieval.js";
 import { createId } from "./utils.js";
+import type { WorkspaceSessionManager } from "./workspace-session.js";
 
 function envelope<T>(requestId: string, data: T): ApiEnvelope<T> {
   return {
@@ -57,21 +59,17 @@ function errorEnvelope(requestId: string, error: AppError): ApiErrorEnvelope {
 }
 
 export function createMemforgeApp(params: {
-  repository: MemforgeRepository;
-  workspaceInfo: {
-    rootPath: string;
-    workspaceName: string;
-    schemaVersion: number;
-    bindAddress: string;
-    enabledIntegrationModes: string[];
-    authMode: string;
-  };
+  workspaceSessionManager: WorkspaceSessionManager;
   apiToken: string | null;
-  workspaceRoot: string;
 }) {
   const app = express();
   app.use(cors());
   app.use(express.json({ limit: "2mb" }));
+
+  const currentSession = () => params.workspaceSessionManager.getCurrent();
+  const currentRepository = () => currentSession().repository;
+  const currentWorkspaceInfo = () => currentSession().workspaceInfo;
+  const currentWorkspaceRoot = () => currentSession().workspaceRoot;
 
   app.use((request, response, next) => {
     const requestId = createId("req");
@@ -100,56 +98,93 @@ export function createMemforgeApp(params: {
   });
 
   app.get("/api/v1/health", (_request, response) => {
+    const workspaceInfo = currentWorkspaceInfo();
     response.json(
       envelope(response.locals.requestId, {
         status: "ok",
         workspaceLoaded: true,
-        workspaceRoot: params.workspaceRoot,
-        schemaVersion: params.workspaceInfo.schemaVersion
+        workspaceRoot: workspaceInfo.rootPath,
+        schemaVersion: workspaceInfo.schemaVersion
       })
     );
   });
 
   app.get("/api/v1/workspace", (_request, response) => {
-    response.json(envelope(response.locals.requestId, params.workspaceInfo));
+    response.json(envelope(response.locals.requestId, currentWorkspaceInfo()));
   });
 
   app.get("/api/v1/bootstrap", (_request, response) => {
+    const workspaceInfo = currentWorkspaceInfo();
     response.json(
       envelope(response.locals.requestId, {
-        workspace: params.workspaceInfo,
-        authMode: params.workspaceInfo.authMode
+        workspace: workspaceInfo,
+        authMode: workspaceInfo.authMode
+      })
+    );
+  });
+
+  app.get("/api/v1/workspaces", (_request, response) => {
+    response.json(
+      envelope(response.locals.requestId, {
+        current: currentWorkspaceInfo(),
+        items: params.workspaceSessionManager.listWorkspaces()
+      })
+    );
+  });
+
+  app.post("/api/v1/workspaces", (request, response) => {
+    const input = createWorkspaceSchema.parse(request.body ?? {});
+    const workspace = params.workspaceSessionManager.createWorkspace(input.rootPath, input.workspaceName);
+    response.status(201).json(
+      envelope(response.locals.requestId, {
+        workspace,
+        current: currentWorkspaceInfo(),
+        items: params.workspaceSessionManager.listWorkspaces()
+      })
+    );
+  });
+
+  app.post("/api/v1/workspaces/open", (request, response) => {
+    const input = openWorkspaceSchema.parse(request.body ?? {});
+    const workspace = params.workspaceSessionManager.openWorkspace(input.rootPath);
+    response.json(
+      envelope(response.locals.requestId, {
+        workspace,
+        current: currentWorkspaceInfo(),
+        items: params.workspaceSessionManager.listWorkspaces()
       })
     );
   });
 
   app.post("/api/v1/nodes/search", (request, response) => {
     const input = nodeSearchSchema.parse(request.body ?? {});
-    response.json(envelope(response.locals.requestId, params.repository.searchNodes(input)));
+    response.json(envelope(response.locals.requestId, currentRepository().searchNodes(input)));
   });
 
   app.get("/api/v1/nodes/:id", (request, response) => {
-    const node = params.repository.getNode(request.params.id);
+    const repository = currentRepository();
+    const node = repository.getNode(request.params.id);
     response.json(
       envelope(response.locals.requestId, {
         node,
-        related: params.repository.listRelatedNodes(node.id),
-        activities: params.repository.listNodeActivities(node.id, 10),
-        artifacts: params.repository.listArtifacts(node.id),
-        provenance: params.repository.listProvenance("node", node.id)
+        related: repository.listRelatedNodes(node.id),
+        activities: repository.listNodeActivities(node.id, 10),
+        artifacts: repository.listArtifacts(node.id),
+        provenance: repository.listProvenance("node", node.id)
       })
     );
   });
 
   app.post("/api/v1/nodes", (request, response) => {
+    const repository = currentRepository();
     const input = createNodeSchema.parse(request.body ?? {});
     const governance = resolveNodeGovernance(input);
-    const node = params.repository.createNode({
+    const node = repository.createNode({
       ...input,
       resolvedCanonicality: governance.canonicality,
       resolvedStatus: governance.status
     });
-    params.repository.recordProvenance({
+    repository.recordProvenance({
       entityType: "node",
       entityId: node.id,
       operationType: "create",
@@ -160,7 +195,7 @@ export function createMemforgeApp(params: {
     });
     let reviewItem = null;
     if (governance.createReview) {
-      reviewItem = params.repository.createReviewItem({
+      reviewItem = repository.createReviewItem({
         entityType: "node",
         entityId: node.id,
         reviewType: governance.reviewType ?? "node_promotion",
@@ -176,14 +211,15 @@ export function createMemforgeApp(params: {
 
   app.patch("/api/v1/nodes/:id", (request, response) => {
     const input = updateNodeSchema.parse(request.body ?? {});
-    const node = params.repository.updateNode(request.params.id, input);
+    const node = currentRepository().updateNode(request.params.id, input);
     response.json(envelope(response.locals.requestId, { node }));
   });
 
   app.post("/api/v1/nodes/:id/archive", (request, response) => {
+    const repository = currentRepository();
     const body = reviewActionSchema.pick({ source: true }).parse(request.body ?? {});
-    const node = params.repository.archiveNode(request.params.id);
-    params.repository.recordProvenance({
+    const node = repository.archiveNode(request.params.id);
+    repository.recordProvenance({
       entityType: "node",
       entityId: node.id,
       operationType: "archive",
@@ -195,18 +231,19 @@ export function createMemforgeApp(params: {
   app.get("/api/v1/nodes/:id/related", (request, response) => {
     const depth = Number(request.query.depth ?? 1);
     const types = typeof request.query.types === "string" ? request.query.types.split(",") : undefined;
-    const items = params.repository.listRelatedNodes(request.params.id, depth, types);
+    const items = currentRepository().listRelatedNodes(request.params.id, depth, types);
     response.json(envelope(response.locals.requestId, { items }));
   });
 
   app.post("/api/v1/relations", (request, response) => {
+    const repository = currentRepository();
     const input = createRelationSchema.parse(request.body ?? {});
     const governance = resolveRelationStatus(input);
-    const relation = params.repository.createRelation({
+    const relation = repository.createRelation({
       ...input,
       resolvedStatus: governance.status
     });
-    params.repository.recordProvenance({
+    repository.recordProvenance({
       entityType: "relation",
       entityId: relation.id,
       operationType: "create",
@@ -214,7 +251,7 @@ export function createMemforgeApp(params: {
     });
     let reviewItem = null;
     if (governance.createReview) {
-      reviewItem = params.repository.createReviewItem({
+      reviewItem = repository.createReviewItem({
         entityType: "relation",
         entityId: relation.id,
         reviewType: "relation_suggestion",
@@ -226,9 +263,10 @@ export function createMemforgeApp(params: {
   });
 
   app.patch("/api/v1/relations/:id", (request, response) => {
+    const repository = currentRepository();
     const input = updateRelationSchema.parse(request.body ?? {});
-    const relation = params.repository.updateRelationStatus(request.params.id, input.status);
-    params.repository.recordProvenance({
+    const relation = repository.updateRelationStatus(request.params.id, input.status);
+    repository.recordProvenance({
       entityType: "relation",
       entityId: relation.id,
       operationType: input.status === "active" ? "approve" : input.status,
@@ -242,15 +280,16 @@ export function createMemforgeApp(params: {
     const limit = Number(request.query.limit ?? 20);
     response.json(
       envelope(response.locals.requestId, {
-        items: params.repository.listNodeActivities(request.params.id, limit)
+        items: currentRepository().listNodeActivities(request.params.id, limit)
       })
     );
   });
 
   app.post("/api/v1/activities", (request, response) => {
+    const repository = currentRepository();
     const input = appendActivitySchema.parse(request.body ?? {});
-    const promotion = shouldPromoteActivitySummary(input) ? maybeCreatePromotionCandidate(params.repository, input) : {};
-    const activity = params.repository.appendActivity(
+    const promotion = shouldPromoteActivitySummary(input) ? maybeCreatePromotionCandidate(repository, input) : {};
+    const activity = repository.appendActivity(
       promotion.suggestedNodeId
         ? {
             ...input,
@@ -264,7 +303,7 @@ export function createMemforgeApp(params: {
           }
         : input
     );
-    params.repository.recordProvenance({
+    repository.recordProvenance({
       entityType: "activity",
       entityId: activity.id,
       operationType: "append",
@@ -282,12 +321,13 @@ export function createMemforgeApp(params: {
   });
 
   app.post("/api/v1/artifacts", (request, response) => {
+    const repository = currentRepository();
     const input = attachArtifactSchema.parse(request.body ?? {});
-    const artifact = params.repository.attachArtifact({
+    const artifact = repository.attachArtifact({
       ...input,
       metadata: input.metadata
     });
-    params.repository.recordProvenance({
+    repository.recordProvenance({
       entityType: "artifact",
       entityId: artifact.id,
       operationType: "attach",
@@ -299,14 +339,15 @@ export function createMemforgeApp(params: {
   app.get("/api/v1/nodes/:id/artifacts", (request, response) => {
     response.json(
       envelope(response.locals.requestId, {
-        items: params.repository.listArtifacts(request.params.id)
+        items: currentRepository().listArtifacts(request.params.id)
       })
     );
   });
 
   app.post("/api/v1/retrieval/node-summaries", (request, response) => {
     const nodeIds = Array.isArray(request.body?.nodeIds) ? request.body.nodeIds : [];
-    const nodes: NodeRecord[] = nodeIds.map((nodeId: string) => params.repository.getNode(nodeId));
+    const repository = currentRepository();
+    const nodes: NodeRecord[] = nodeIds.map((nodeId: string) => repository.getNode(nodeId));
     const items = nodes.map((node) => ({
       id: node.id,
       title: node.title,
@@ -318,16 +359,17 @@ export function createMemforgeApp(params: {
   });
 
   app.get("/api/v1/retrieval/activity-digest/:targetId", (request, response) => {
-    const items = params.repository
+    const items = currentRepository()
       .listNodeActivities(request.params.targetId, 5)
       .map((activity) => `${activity.activityType}: ${activity.body ?? "No details"}`);
     response.json(envelope(response.locals.requestId, { items }));
   });
 
   app.get("/api/v1/retrieval/decisions/:targetId", (request, response) => {
-    const target = params.repository.getNode(request.params.targetId);
-    const related = params.repository.listRelatedNodes(target.id).map((item) => item.node.id);
-    const items = params.repository
+    const repository = currentRepository();
+    const target = repository.getNode(request.params.targetId);
+    const related = repository.listRelatedNodes(target.id).map((item) => item.node.id);
+    const items = repository
       .searchNodes({
         query: "",
         filters: { types: ["decision"], status: ["active", "review"] },
@@ -340,9 +382,10 @@ export function createMemforgeApp(params: {
   });
 
   app.get("/api/v1/retrieval/open-questions/:targetId", (request, response) => {
-    const target = params.repository.getNode(request.params.targetId);
-    const related = params.repository.listRelatedNodes(target.id).map((item) => item.node.id);
-    const items = params.repository
+    const repository = currentRepository();
+    const target = repository.getNode(request.params.targetId);
+    const related = repository.listRelatedNodes(target.id).map((item) => item.node.id);
+    const items = repository
       .searchNodes({
         query: "",
         filters: { types: ["question"], status: ["active", "draft", "review"] },
@@ -355,11 +398,12 @@ export function createMemforgeApp(params: {
   });
 
   app.post("/api/v1/retrieval/rank-candidates", (request, response) => {
+    const repository = currentRepository();
     const query = typeof request.body?.query === "string" ? request.body.query : "";
     const candidateNodeIds: string[] = Array.isArray(request.body?.candidateNodeIds) ? request.body.candidateNodeIds : [];
     const preset = typeof request.body?.preset === "string" ? request.body.preset : "for-assistant";
     const ranked = candidateNodeIds
-      .map((id: string) => params.repository.getNode(id))
+      .map((id: string) => repository.getNode(id))
       .map((node) => ({
         nodeId: node.id,
         score:
@@ -375,13 +419,13 @@ export function createMemforgeApp(params: {
 
   app.post("/api/v1/context/bundles", (request, response) => {
     const input = buildContextBundleSchema.parse(request.body ?? {});
-    const bundle = buildContextBundle(params.repository, input);
+    const bundle = buildContextBundle(currentRepository(), input);
     response.json(envelope(response.locals.requestId, { bundle }));
   });
 
   app.post("/api/v1/context/bundles/preview", (request, response) => {
     const input = buildContextBundleSchema.parse(request.body ?? {});
-    const bundle = buildContextBundle(params.repository, input);
+    const bundle = buildContextBundle(currentRepository(), input);
     response.json(
       envelope(response.locals.requestId, {
         bundle,
@@ -393,7 +437,7 @@ export function createMemforgeApp(params: {
   app.post("/api/v1/context/bundles/export", (request, response) => {
     const input = buildContextBundleSchema.parse(request.body ?? {});
     const format = request.body?.format === "json" ? "json" : request.body?.format === "text" ? "text" : "markdown";
-    const bundle = buildContextBundle(params.repository, input);
+    const bundle = buildContextBundle(currentRepository(), input);
     const output =
       format === "json"
         ? JSON.stringify(bundle, null, 2)
@@ -409,52 +453,53 @@ export function createMemforgeApp(params: {
     const reviewType = typeof request.query.review_type === "string" ? request.query.review_type : undefined;
     response.json(
       envelope(response.locals.requestId, {
-        items: params.repository.listReviewItems(status, limit, reviewType)
+        items: currentRepository().listReviewItems(status, limit, reviewType)
       })
     );
   });
 
   app.get("/api/v1/review-queue/:id", (request, response) => {
-    const review = params.repository.getReviewItem(request.params.id);
+    const repository = currentRepository();
+    const review = repository.getReviewItem(request.params.id);
     let entity: unknown = null;
     if (review.entityType === "node") {
-      entity = params.repository.getNode(review.entityId);
+      entity = repository.getNode(review.entityId);
     } else if (review.entityType === "relation") {
-      entity = params.repository.getRelation(review.entityId);
+      entity = repository.getRelation(review.entityId);
     }
     response.json(envelope(response.locals.requestId, { review, entity }));
   });
 
   app.post("/api/v1/review-queue/:id/approve", (request, response) => {
     const input = reviewActionSchema.parse(request.body ?? {});
-    response.json(envelope(response.locals.requestId, applyReviewDecision(params.repository, request.params.id, "approve", input)));
+    response.json(envelope(response.locals.requestId, applyReviewDecision(currentRepository(), request.params.id, "approve", input)));
   });
 
   app.post("/api/v1/review-queue/:id/reject", (request, response) => {
     const input = reviewActionSchema.parse(request.body ?? {});
-    response.json(envelope(response.locals.requestId, applyReviewDecision(params.repository, request.params.id, "reject", input)));
+    response.json(envelope(response.locals.requestId, applyReviewDecision(currentRepository(), request.params.id, "reject", input)));
   });
 
   app.post("/api/v1/review-queue/:id/edit-and-approve", (request, response) => {
     const input = reviewActionSchema.parse(request.body ?? {});
     response.json(
-      envelope(response.locals.requestId, applyReviewDecision(params.repository, request.params.id, "edit-and-approve", input))
+      envelope(response.locals.requestId, applyReviewDecision(currentRepository(), request.params.id, "edit-and-approve", input))
     );
   });
 
   app.get("/api/v1/integrations", (_request, response) => {
-    response.json(envelope(response.locals.requestId, { items: params.repository.listIntegrations() }));
+    response.json(envelope(response.locals.requestId, { items: currentRepository().listIntegrations() }));
   });
 
   app.post("/api/v1/integrations", (request, response) => {
     const input = registerIntegrationSchema.parse(request.body ?? {});
-    const integration = params.repository.registerIntegration(input);
+    const integration = currentRepository().registerIntegration(input);
     response.status(201).json(envelope(response.locals.requestId, { integration }));
   });
 
   app.patch("/api/v1/integrations/:id", (request, response) => {
     const input = updateIntegrationSchema.parse(request.body ?? {});
-    const integration = params.repository.updateIntegration(request.params.id, input);
+    const integration = currentRepository().updateIntegration(request.params.id, input);
     response.json(envelope(response.locals.requestId, { integration }));
   });
 
@@ -466,20 +511,22 @@ export function createMemforgeApp(params: {
             .map((key) => key.trim())
             .filter(Boolean)
         : undefined;
-    response.json(envelope(response.locals.requestId, { values: params.repository.getSettings(keys) }));
+    response.json(envelope(response.locals.requestId, { values: currentRepository().getSettings(keys) }));
   });
 
   app.patch("/api/v1/settings", (request, response) => {
+    const repository = currentRepository();
     const input = updateSettingsSchema.parse(request.body ?? {});
     for (const [key, value] of Object.entries(input.values)) {
-      params.repository.setSetting(key, value);
+      repository.setSetting(key, value);
     }
-    response.json(envelope(response.locals.requestId, { values: params.repository.getSettings(Object.keys(input.values)) }));
+    response.json(envelope(response.locals.requestId, { values: repository.getSettings(Object.keys(input.values)) }));
   });
 
   app.use("/artifacts", (request, response, next) => {
-    const artifactPath = path.resolve(params.workspaceRoot, request.path.replace(/^\//, ""));
-    if (!artifactPath.startsWith(path.resolve(params.workspaceRoot))) {
+    const workspaceRoot = currentWorkspaceRoot();
+    const artifactPath = path.resolve(workspaceRoot, request.path.replace(/^\//, ""));
+    if (!artifactPath.startsWith(path.resolve(workspaceRoot))) {
       next(new AppError(403, "FORBIDDEN", "Artifact path escapes workspace root."));
       return;
     }

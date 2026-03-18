@@ -17,6 +17,10 @@ pnw attach --node node_project_1 --path artifacts/report.md
 pnw review list --status pending
 pnw review approve review_123
 pnw review reject review_123
+pnw workspace current
+pnw workspace list
+pnw workspace create --root /Users/name/Documents/Memforge-Test --name "Test Workspace"
+pnw workspace open --root /Users/name/Documents/Memforge-Test
 ```
 
 ## Environment
@@ -29,3 +33,4 @@ pnw review reject review_123
 - Default API base: `http://127.0.0.1:8787/api/v1`
 - The CLI is intentionally thin and defers behavior to the HTTP API contract
 - `--format json` is useful when scripting, while `--format markdown` is best for `context`
+- `workspace open` switches the active workspace in the running local Memforge service without restarting the server

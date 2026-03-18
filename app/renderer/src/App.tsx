@@ -2,6 +2,7 @@ import { useDeferredValue, useEffect, useMemo, useState, startTransition } from 
 import {
   approveReview,
   clearRendererToken,
+  createWorkspace as createWorkspaceSession,
   createNode,
   getBootstrap,
   getActivities,
@@ -13,7 +14,9 @@ import {
   getReviewQueue,
   getSnapshot,
   getWorkspace,
+  getWorkspaceCatalog,
   isAuthError,
+  openWorkspace as openWorkspaceSession,
   rejectReview,
   saveRendererToken,
   searchNodes,
@@ -24,6 +27,7 @@ import type {
   NavView,
   Node,
   ReviewQueueItem,
+  WorkspaceCatalogItem,
   WorkspaceSeed,
 } from './lib/types';
 
@@ -84,6 +88,7 @@ function Section({
 
 export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceSeed['workspace'] | null>(null);
+  const [workspaceCatalog, setWorkspaceCatalog] = useState<WorkspaceCatalogItem[]>([]);
   const [snapshot, setSnapshot] = useState<WorkspaceSeed | null>(null);
   const [view, setView] = useState<NavView>('home');
   const [selectedNodeId, setSelectedNodeId] = useState<string>('node_memforge');
@@ -100,11 +105,17 @@ export default function App() {
   const [captureBody, setCaptureBody] = useState('');
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [isSavingCapture, setIsSavingCapture] = useState(false);
+  const [workspaceRootInput, setWorkspaceRootInput] = useState('');
+  const [workspaceNameInput, setWorkspaceNameInput] = useState('');
+  const [workspaceActionError, setWorkspaceActionError] = useState<string | null>(null);
+  const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false);
 
   async function refreshWorkspaceState() {
-    const [workspaceResult, snapshotResult] = await Promise.all([getWorkspace(), getSnapshot()]);
+    const [workspaceResult, snapshotResult, catalog] = await Promise.all([getWorkspace(), getSnapshot(), getWorkspaceCatalog()]);
     setWorkspace(workspaceResult);
     setSnapshot(snapshotResult);
+    setWorkspaceCatalog(catalog.items);
+    setWorkspaceRootInput(catalog.current.rootPath);
     setSelectedReviewId((current) => current ?? snapshotResult.reviewQueue[0]?.id ?? null);
     setLoadError(null);
     return snapshotResult;
@@ -348,6 +359,49 @@ export default function App() {
     }
   }
 
+  async function handleCreateWorkspace(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const rootPath = workspaceRootInput.trim();
+    if (!rootPath) {
+      setWorkspaceActionError('Workspace root is required.');
+      return;
+    }
+
+    setWorkspaceActionError(null);
+    setIsSwitchingWorkspace(true);
+    try {
+      await createWorkspaceSession({
+        rootPath,
+        workspaceName: workspaceNameInput.trim() || undefined,
+      });
+      const nextSnapshot = await refreshWorkspaceState();
+      setSelectedNodeId(nextSnapshot.nodes[0]?.id ?? '');
+      setDetail({ node: null, related: [], activities: [], artifacts: [] });
+      setWorkspaceNameInput('');
+    } catch (error) {
+      handleRequestFailure(error, 'Failed to create workspace.');
+      setWorkspaceActionError(error instanceof Error ? error.message : 'Failed to create workspace.');
+    } finally {
+      setIsSwitchingWorkspace(false);
+    }
+  }
+
+  async function handleOpenWorkspace(rootPath: string) {
+    setWorkspaceActionError(null);
+    setIsSwitchingWorkspace(true);
+    try {
+      await openWorkspaceSession(rootPath);
+      const nextSnapshot = await refreshWorkspaceState();
+      setSelectedNodeId(nextSnapshot.nodes[0]?.id ?? '');
+      setDetail({ node: null, related: [], activities: [], artifacts: [] });
+    } catch (error) {
+      handleRequestFailure(error, 'Failed to switch workspace.');
+      setWorkspaceActionError(error instanceof Error ? error.message : 'Failed to switch workspace.');
+    } finally {
+      setIsSwitchingWorkspace(false);
+    }
+  }
+
   function selectView(next: NavView) {
     startTransition(() => {
       setView(next);
@@ -548,6 +602,59 @@ export default function App() {
               <span className="eyebrow">API bind</span>
               <p>{workspace?.apiBind}</p>
             </div>
+          </div>
+          <form className="capture-form" onSubmit={(event) => void handleCreateWorkspace(event)}>
+            <label className="search-box">
+              <span>Workspace root</span>
+              <input
+                value={workspaceRootInput}
+                onChange={(event) => setWorkspaceRootInput(event.target.value)}
+                placeholder="/Users/name/Documents/MyMemforge"
+              />
+            </label>
+            <label className="search-box">
+              <span>Workspace name</span>
+              <input
+                value={workspaceNameInput}
+                onChange={(event) => setWorkspaceNameInput(event.target.value)}
+                placeholder="Optional display name for new workspace"
+              />
+            </label>
+            {workspaceActionError ? <div className="empty-state">{workspaceActionError}</div> : null}
+            <div className="action-row">
+              <button type="submit" disabled={isSwitchingWorkspace}>
+                {isSwitchingWorkspace ? 'Switching...' : 'Create and switch'}
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                disabled={isSwitchingWorkspace}
+                onClick={() => void handleOpenWorkspace(workspaceRootInput)}
+              >
+                Open existing
+              </button>
+            </div>
+          </form>
+          <div className="stack">
+            <span className="eyebrow">Recent workspaces</span>
+            {workspaceCatalog.map((item) => (
+              <button
+                key={item.rootPath}
+                type="button"
+                className="result-card"
+                disabled={isSwitchingWorkspace || item.isCurrent}
+                onClick={() => {
+                  setWorkspaceRootInput(item.rootPath);
+                  void handleOpenWorkspace(item.rootPath);
+                }}
+              >
+                <div className="result-card__top">
+                  <strong>{item.name}</strong>
+                  <span className={`pill ${item.isCurrent ? 'tone-good' : 'tone-muted'}`}>{item.isCurrent ? 'current' : 'available'}</span>
+                </div>
+                <p>{item.rootPath}</p>
+              </button>
+            ))}
           </div>
         </Section>
       );

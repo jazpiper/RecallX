@@ -7,6 +7,7 @@ import type {
   Relation,
   ReviewQueueItem,
   Workspace,
+  WorkspaceCatalogItem,
   WorkspaceSeed,
 } from './types';
 
@@ -36,6 +37,11 @@ export interface BootstrapInfo {
   hasToken: boolean;
 }
 
+export interface WorkspaceCatalog {
+  current: Workspace;
+  items: WorkspaceCatalogItem[];
+}
+
 function cloneWorkspace(seed: WorkspaceSeed) {
   return structuredClone(seed);
 }
@@ -51,6 +57,15 @@ function mapWorkspace(payload: any): Workspace {
     apiBind: data.bindAddress ?? data.apiBind ?? '127.0.0.1:8787',
     integrationModes: data.enabledIntegrationModes ?? data.integrationModes ?? ['read-only', 'append-only'],
     authMode: data.authMode === 'bearer' ? 'bearer' : 'optional',
+  };
+}
+
+function mapWorkspaceCatalogItem(raw: any): WorkspaceCatalogItem {
+  const workspace = mapWorkspace(raw);
+  return {
+    ...workspace,
+    isCurrent: Boolean(raw?.isCurrent),
+    lastOpenedAt: raw?.lastOpenedAt ?? new Date().toISOString(),
   };
 }
 
@@ -211,6 +226,28 @@ export async function getWorkspace(): Promise<Workspace> {
   );
 }
 
+export async function getWorkspaceCatalog(): Promise<WorkspaceCatalog> {
+  return withFallback(
+    async () => {
+      const payload = await requestJson('/workspaces');
+      return {
+        current: mapWorkspace(payload?.data?.current),
+        items: ((payload?.data?.items ?? []) as any[]).map(mapWorkspaceCatalogItem),
+      };
+    },
+    async () => ({
+      current: fallbackState.workspace,
+      items: [
+        {
+          ...fallbackState.workspace,
+          isCurrent: true,
+          lastOpenedAt: new Date().toISOString(),
+        },
+      ],
+    }),
+  );
+}
+
 export async function getBootstrap(): Promise<BootstrapInfo> {
   return withFallback(
     async () => {
@@ -229,6 +266,28 @@ export async function getBootstrap(): Promise<BootstrapInfo> {
       hasToken: false,
     }),
   );
+}
+
+export async function createWorkspace(input: { rootPath: string; workspaceName?: string }): Promise<WorkspaceCatalog> {
+  const payload = await requestJson('/workspaces', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  return {
+    current: mapWorkspace(payload?.data?.current),
+    items: ((payload?.data?.items ?? []) as any[]).map(mapWorkspaceCatalogItem),
+  };
+}
+
+export async function openWorkspace(rootPath: string): Promise<WorkspaceCatalog> {
+  const payload = await requestJson('/workspaces/open', {
+    method: 'POST',
+    body: JSON.stringify({ rootPath }),
+  });
+  return {
+    current: mapWorkspace(payload?.data?.current),
+    items: ((payload?.data?.items ?? []) as any[]).map(mapWorkspaceCatalogItem),
+  };
 }
 
 export async function getSnapshot(): Promise<WorkspaceSeed> {

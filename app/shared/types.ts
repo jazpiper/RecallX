@@ -44,6 +44,11 @@ export interface WorkspaceInfo {
   authMode: string;
 }
 
+export interface WorkspaceCatalogItem extends WorkspaceInfo {
+  isCurrent: boolean;
+  lastOpenedAt: string;
+}
+
 export interface NodeRecord {
   id: string;
   type: NodeType;
@@ -175,4 +180,3 @@ export interface ContextBundle {
     sourceLabel: string | null;
   }>;
 }
-

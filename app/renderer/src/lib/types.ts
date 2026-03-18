@@ -48,6 +48,11 @@ export interface Workspace {
   authMode: 'optional' | 'bearer';
 }
 
+export interface WorkspaceCatalogItem extends Workspace {
+  isCurrent: boolean;
+  lastOpenedAt: string;
+}
+
 export interface Node {
   id: string;
   type: NodeType;

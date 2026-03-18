@@ -55,6 +55,7 @@ First implementation scaffold is now in place:
 - loopback HTTP API under `/api/v1`
 - thin `pnw` / `memforge` CLI wrapper
 - React renderer with 3-pane layout and live API-first data access
+- runtime workspace create/open switching without restarting the local service
 
 ## Quick start
 

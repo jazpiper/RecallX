@@ -182,6 +182,15 @@ export const updateSettingsSchema = z.object({
   values: z.record(z.any())
 });
 
+export const createWorkspaceSchema = z.object({
+  rootPath: z.string().min(1),
+  workspaceName: z.string().min(1).optional()
+});
+
+export const openWorkspaceSchema = z.object({
+  rootPath: z.string().min(1)
+});
+
 export type NodeType = (typeof nodeTypes)[number];
 export type NodeStatus = (typeof nodeStatuses)[number];
 export type Canonicality = (typeof canonicalities)[number];
@@ -204,4 +213,5 @@ export type BuildContextBundleInput = z.infer<typeof buildContextBundleSchema>;
 export type ReviewActionInput = z.infer<typeof reviewActionSchema>;
 export type RegisterIntegrationInput = z.infer<typeof registerIntegrationSchema>;
 export type UpdateIntegrationInput = z.infer<typeof updateIntegrationSchema>;
-
+export type CreateWorkspaceInput = z.infer<typeof createWorkspaceSchema>;
+export type OpenWorkspaceInput = z.infer<typeof openWorkspaceSchema>;

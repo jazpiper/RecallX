@@ -105,6 +105,20 @@ export function renderReviewItems(data) {
     .join("\n\n")}\n`;
 }
 
+export function renderWorkspaces(data) {
+  const items = data?.items || [];
+  if (!items.length) {
+    return "No workspaces.\n";
+  }
+
+  return `${items
+    .map((item, index) => {
+      const marker = item.isCurrent ? "*" : " ";
+      return `${index + 1}. ${marker} ${item.workspaceName}\n  root: ${item.rootPath}\n  auth: ${item.authMode || ""}`;
+    })
+    .join("\n\n")}\n`;
+}
+
 export function renderBundleMarkdown(bundle) {
   const lines = [];
   lines.push(`# ${bundle.target?.title || bundle.target?.id || "Context bundle"}`);

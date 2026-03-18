@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createMemforgeApp } from "../app/server/app.js";
+import { createServerConfig } from "../app/server/config.js";
 import { openDatabase } from "../app/server/db.js";
 import { applyReviewDecision } from "../app/server/governance.js";
 import { MemforgeRepository } from "../app/server/repositories.js";
 import { ensureWorkspace } from "../app/server/workspace.js";
+import { WorkspaceSessionManager } from "../app/server/workspace-session.js";
 
 const tempRoots: string[] = [];
 
@@ -21,6 +23,20 @@ function createRepository() {
     "workspace.name": "Memforge Test"
   });
   return repository;
+}
+
+function createWorkspaceSessionManager(root: string, authMode: "optional" | "bearer" = "optional") {
+  return new WorkspaceSessionManager(
+    {
+      ...createServerConfig(root),
+      port: 8787,
+      bindAddress: "127.0.0.1",
+      apiToken: authMode === "bearer" ? "secret-token" : null,
+      workspaceName: "Memforge Test",
+    },
+    root,
+    authMode,
+  );
 }
 
 afterEach(() => {
@@ -143,25 +159,10 @@ describe("bootstrap auth metadata", () => {
   it("keeps bootstrap public without leaking the bearer token", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
     tempRoots.push(root);
-    const workspace = ensureWorkspace(root);
-    const db = openDatabase(workspace);
-    const repository = new MemforgeRepository(db, root);
-    repository.upsertBaseSettings({
-      "workspace.name": "Memforge Test"
-    });
-
+    const workspaceSessionManager = createWorkspaceSessionManager(root, "bearer");
     const app = createMemforgeApp({
-      repository,
-      workspaceInfo: {
-        rootPath: root,
-        workspaceName: "Memforge Test",
-        schemaVersion: 1,
-        bindAddress: "127.0.0.1:0",
-        enabledIntegrationModes: ["read-only", "append-only"],
-        authMode: "bearer"
-      },
-      apiToken: "secret-token",
-      workspaceRoot: root
+      workspaceSessionManager,
+      apiToken: "secret-token"
     });
 
     const server = createServer(app);
@@ -193,6 +194,118 @@ describe("bootstrap auth metadata", () => {
       expect(bootstrapBody.data.authMode).toBe("bearer");
       expect(bootstrapBody.data.apiToken).toBeUndefined();
       expect(searchResponse.status).toBe(401);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+});
+
+describe("workspace switching", () => {
+  it("switches workspaces without restarting the server", async () => {
+    const rootA = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    const rootB = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(rootA, rootB);
+
+    const workspaceSessionManager = createWorkspaceSessionManager(rootA);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const source = {
+        actorType: "human",
+        actorLabel: "juhwan",
+        toolName: "memforge-test",
+      };
+
+      await fetch(`${baseUrl}/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "note",
+          title: "Workspace Alpha",
+          body: "Stored in the first workspace",
+          source,
+          tags: [],
+          metadata: {},
+        }),
+      });
+
+      const createWorkspaceResponse = await fetch(`${baseUrl}/workspaces`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          rootPath: rootB,
+          workspaceName: "Workspace Beta",
+        }),
+      });
+      const createWorkspaceBody = await createWorkspaceResponse.json();
+
+      const afterCreateSearchResponse = await fetch(`${baseUrl}/nodes/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "Workspace Alpha",
+          filters: {},
+          limit: 10,
+          offset: 0,
+          sort: "relevance",
+        }),
+      });
+      const afterCreateSearchBody = await afterCreateSearchResponse.json();
+
+      await fetch(`${baseUrl}/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "project",
+          title: "Workspace Beta Project",
+          body: "Stored in the second workspace",
+          source,
+          tags: [],
+          metadata: {},
+        }),
+      });
+
+      const reopenResponse = await fetch(`${baseUrl}/workspaces/open`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          rootPath: rootA,
+        }),
+      });
+      const reopenBody = await reopenResponse.json();
+
+      const finalSearchResponse = await fetch(`${baseUrl}/nodes/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "",
+          filters: {},
+          limit: 10,
+          offset: 0,
+          sort: "updated_at",
+        }),
+      });
+      const finalSearchBody = await finalSearchResponse.json();
+
+      expect(createWorkspaceResponse.status).toBe(201);
+      expect(createWorkspaceBody.data.current.rootPath).toBe(rootB);
+      expect(createWorkspaceBody.data.current.workspaceName).toBe("Workspace Beta");
+      expect(afterCreateSearchBody.data.items).toHaveLength(0);
+      expect(reopenResponse.status).toBe(200);
+      expect(reopenBody.data.current.rootPath).toBe(rootA);
+      expect(finalSearchBody.data.items.map((item: { title: string }) => item.title)).toContain("Workspace Alpha");
+      expect(finalSearchBody.data.items.map((item: { title: string }) => item.title)).not.toContain("Workspace Beta Project");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

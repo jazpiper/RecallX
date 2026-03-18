@@ -9,6 +9,7 @@ import {
   renderReviewItems,
   renderSearchResults,
   renderText,
+  renderWorkspaces,
 } from "./format.js";
 
 const DEFAULT_SOURCE = {
@@ -50,6 +51,8 @@ export async function runCli(argv) {
       return runAttach(apiBase, token, format, args, positionals);
     case "review":
       return runReview(apiBase, token, format, args, positionals);
+    case "workspace":
+      return runWorkspace(apiBase, token, format, args, positionals);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -314,6 +317,53 @@ async function runReview(apiBase, token, format, args, positionals) {
   throw new Error(`Unknown review action: ${action}`);
 }
 
+async function runWorkspace(apiBase, token, format, args, positionals) {
+  const action = positionals[0] || args.action || "current";
+
+  if (action === "current") {
+    const data = await requestJson(apiBase, "/workspace", { token });
+    outputData(data, format, "workspace-current");
+    return;
+  }
+
+  if (action === "list") {
+    const data = await requestJson(apiBase, "/workspaces", { token });
+    outputData(data, format, "workspace-list");
+    return;
+  }
+
+  if (action === "create") {
+    const rootPath = args.root || args.path || positionals[1];
+    validateRequired(rootPath, "workspace create requires --root");
+    const data = await requestJson(apiBase, "/workspaces", {
+      method: "POST",
+      token,
+      body: compactObject({
+        rootPath,
+        workspaceName: args.name || args.title,
+      }),
+    });
+    outputData(data, format, "workspace-create");
+    return;
+  }
+
+  if (action === "open" || action === "switch") {
+    const rootPath = args.root || args.path || positionals[1];
+    validateRequired(rootPath, `workspace ${action} requires --root`);
+    const data = await requestJson(apiBase, "/workspaces/open", {
+      method: "POST",
+      token,
+      body: {
+        rootPath,
+      },
+    });
+    outputData(data, format, "workspace-open");
+    return;
+  }
+
+  throw new Error(`Unknown workspace action: ${action}`);
+}
+
 function buildSource(args) {
   return {
     actorType: args["actor-type"] || args.actorType || DEFAULT_SOURCE.actorType,
@@ -349,6 +399,9 @@ function outputData(data, format, command) {
     case "review-list":
       writeStdout(renderReviewItems(payload));
       return;
+    case "workspace-list":
+      writeStdout(renderWorkspaces(payload));
+      return;
     case "append":
     case "create":
     case "link":
@@ -356,6 +409,9 @@ function outputData(data, format, command) {
     case "review-approve":
     case "review-reject":
     case "review-show":
+    case "workspace-current":
+    case "workspace-create":
+    case "workspace-open":
       writeStdout(renderText(payload));
       return;
     case "context":
@@ -463,6 +519,10 @@ Usage:
   pnw review approve <id>
   pnw review reject <id>
   pnw review edit-and-approve <id> [--title "…"] [--body "…"]
+  pnw workspace current
+  pnw workspace list
+  pnw workspace create --root /path/to/workspace [--name "Personal"]
+  pnw workspace open --root /path/to/workspace
 
 Global flags:
   --api <url>        Override API base URL

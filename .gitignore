@@ -3,6 +3,7 @@ dist
 .vite
 .memforge-workspace
 .memforge-smoke
+.memforge-test-workspace
 *.log
 .DS_Store
 *.tsbuildinfo
