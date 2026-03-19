@@ -2,6 +2,7 @@ import { mockWorkspace } from './mockWorkspace';
 import type {
   Activity,
   Artifact,
+  GraphConnection,
   Integration,
   Node,
   Relation,
@@ -12,14 +13,15 @@ import type {
   WorkspaceSeed,
 } from './types';
 
-const API_BASE = '/api/v1';
-const TOKEN_STORAGE_KEY = 'memforge.apiToken';
+const API_BASE =
+  (window as Window & { __MEMFORGE_API_BASE__?: string }).__MEMFORGE_API_BASE__ ?? '/api/v1';
 const DEFAULT_SOURCE = {
   actorType: 'human',
   actorLabel: 'memforge-renderer',
   toolName: 'memforge-renderer',
   toolVersion: '0.1.0',
 } as const;
+let rendererToken: string | null = null;
 
 class ApiRequestError extends Error {
   kind: 'http' | 'network';
@@ -118,6 +120,21 @@ function mapActivity(raw: any): Activity {
   };
 }
 
+function mapRelation(raw: any): Relation {
+  return {
+    id: raw.id,
+    fromNodeId: raw.fromNodeId ?? raw.from_node_id,
+    toNodeId: raw.toNodeId ?? raw.to_node_id,
+    relationType: raw.relationType ?? raw.relation_type,
+    status: raw.status,
+    createdBy: raw.createdBy ?? raw.created_by ?? raw.sourceLabel ?? 'unknown',
+    sourceType: raw.sourceType ?? raw.source_type ?? 'system',
+    sourceLabel: raw.sourceLabel ?? raw.source_label ?? 'system',
+    createdAt: raw.createdAt ?? raw.created_at ?? new Date().toISOString(),
+    metadata: raw.metadata ?? {},
+  };
+}
+
 function mapArtifact(raw: any): Artifact {
   return {
     id: raw.id,
@@ -200,27 +217,15 @@ function getRendererToken(): string | null {
     return globalToken;
   }
 
-  try {
-    return window.localStorage.getItem(TOKEN_STORAGE_KEY);
-  } catch {
-    return null;
-  }
+  return rendererToken;
 }
 
 export function saveRendererToken(token: string) {
-  try {
-    window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
-  } catch {
-    // Ignore storage failures and let the next API call surface the problem.
-  }
+  rendererToken = token;
 }
 
 export function clearRendererToken() {
-  try {
-    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
-  } catch {
-    // Ignore storage failures and let the next API call surface the problem.
-  }
+  rendererToken = null;
 }
 
 export function isAuthError(error: unknown): boolean {
@@ -228,12 +233,7 @@ export function isAuthError(error: unknown): boolean {
 }
 
 function buildEventStreamUrl() {
-  const token = getRendererToken();
-  const url = new URL(`${API_BASE}/events`, window.location.origin);
-  if (token) {
-    url.searchParams.set('token', token);
-  }
-  return url.toString();
+  return `${API_BASE}/events`;
 }
 
 function fallbackSnapshot(): WorkspaceSeed {
@@ -452,6 +452,93 @@ export async function getRelatedNodes(id: string): Promise<Node[]> {
   );
 }
 
+export async function getRelatedConnections(id: string): Promise<GraphConnection[]> {
+  return withFallback(
+    async () => {
+      const payload = await requestJson(`/nodes/${encodeURIComponent(id)}/neighborhood?include_inferred=1&max_inferred=4`);
+      return ((payload?.data?.items ?? []) as any[]).map((item) => {
+        const node = mapNode(item.node);
+        const edge = item.edge ?? {};
+        const relation: Relation = {
+          id: edge.relationId ?? edge.relation_id ?? `edge:${id}:${node.id}:${edge.relationType ?? edge.relation_type ?? 'related_to'}`,
+          fromNodeId: edge.direction === 'incoming' ? node.id : id,
+          toNodeId: edge.direction === 'incoming' ? id : node.id,
+          relationType: edge.relationType ?? edge.relation_type ?? 'related_to',
+          status: edge.relationStatus ?? edge.relation_status ?? 'active',
+          createdBy: edge.generator ?? edge.relationSource ?? 'memforge',
+          sourceType: edge.relationSource === 'inferred' ? 'system' : 'human',
+          sourceLabel:
+            edge.relationSource === 'inferred'
+              ? `inferred:${edge.generator ?? 'derived'}`
+              : 'canonical',
+          createdAt: new Date().toISOString(),
+          metadata: {},
+        };
+        return {
+          node,
+          relation,
+          direction: edge.direction === 'incoming' ? 'incoming' : 'outgoing',
+          hop: 1 as const,
+        };
+      });
+    },
+    async () => {
+      const items = fallbackState.relations
+        .filter((relation) => (relation.fromNodeId === id || relation.toNodeId === id) && relation.status !== 'archived')
+        .map((relation) => {
+          const relatedId = relation.fromNodeId === id ? relation.toNodeId : relation.fromNodeId;
+          const node = fallbackState.nodes.find((item) => item.id === relatedId);
+          if (!node || node.status === 'archived') {
+            return null;
+          }
+          return {
+            node,
+            relation,
+            direction: relation.fromNodeId === id ? ('outgoing' as const) : ('incoming' as const),
+            hop: 1 as const,
+          };
+        });
+
+      return items.filter((item): item is NonNullable<(typeof items)[number]> => item !== null);
+    },
+  );
+}
+
+export async function getGraphNeighborhood(id: string, hops: 1 | 2): Promise<GraphConnection[]> {
+  const firstHop = await getRelatedConnections(id);
+  if (hops === 1) {
+    return firstHop;
+  }
+
+  const secondHopGroups = await Promise.all(
+    firstHop.map(async (connection) => {
+      const nested = await getRelatedConnections(connection.node.id);
+      return nested
+        .filter((item) => item.node.id !== id)
+        .map((item) => ({
+          ...item,
+          hop: 2 as const,
+          viaNodeId: connection.node.id,
+          viaNodeTitle: connection.node.title,
+        }));
+    }),
+  );
+
+  const merged = [...firstHop];
+  const seen = new Set(firstHop.map((item) => `${item.relation.id}:${item.node.id}:1`));
+
+  secondHopGroups.flat().forEach((item) => {
+    const key = `${item.relation.id}:${item.node.id}:${item.viaNodeId ?? 'direct'}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    merged.push(item);
+  });
+
+  return merged;
+}
+
 export async function getRecentNodes(): Promise<Node[]> {
   const snapshot = await getSnapshot();
   return snapshot.recentNodeIds
@@ -568,6 +655,14 @@ export async function createNode(input: {
         createdFrom: 'renderer-quick-capture',
       },
     }),
+  });
+  return mapNode(payload?.data?.node);
+}
+
+export async function refreshNodeSummary(id: string): Promise<Node> {
+  const payload = await requestJson(`/nodes/${encodeURIComponent(id)}/refresh-summary`, {
+    method: 'POST',
+    body: JSON.stringify({ source: DEFAULT_SOURCE }),
   });
   return mapNode(payload?.data?.node);
 }

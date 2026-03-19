@@ -75,7 +75,10 @@ Rules:
 | `memforge_workspace_open` | Switch to existing workspace | `POST /workspaces/open` |
 | `memforge_search_nodes` | Search nodes with filters | `POST /nodes/search` |
 | `memforge_get_node` | Read node detail bundle | `GET /nodes/:id` |
-| `memforge_get_related` | Read related nodes | `GET /nodes/:id/related` |
+| `memforge_get_related` | Read canonical plus inferred neighborhood items | `GET /nodes/:id/neighborhood` |
+| `memforge_upsert_inferred_relation` | Upsert inferred relation | `POST /inferred-relations` |
+| `memforge_append_relation_usage_event` | Append relation usage signal | `POST /relation-usage-events` |
+| `memforge_recompute_inferred_relations` | Recompute inferred relation scores | `POST /inferred-relations/recompute` |
 | `memforge_append_activity` | Append node activity | `POST /activities` |
 | `memforge_create_node` | Create durable node | `POST /nodes` |
 | `memforge_create_relation` | Create relation | `POST /relations` |
@@ -90,6 +93,9 @@ Rules:
 - Durable write tools accept an optional `source` object.
 - If `source` is omitted, the MCP bridge fills in its own default agent provenance.
 - We do not expose low-level retrieval fragments or settings mutation in the first pass.
+- `memforge_get_related` defaults to including inferred relations because that is the most useful shape for downstream LLMs; agents can disable inferred items when they specifically need only canonical links.
+- Usage feedback is intentionally a separate write. Do not append a relation usage event for every read; reserve it for cases where a canonical or inferred relation actually helped retrieval or final output.
+- Score recomputation is also explicit. Use `memforge_recompute_inferred_relations` in maintenance flows or automations, not in the latency-sensitive request path.
 
 ---
 
@@ -172,3 +178,22 @@ Operational expectation:
 - reuse the existing running Memforge service
 - do not start a second API instance unless the configured one is unavailable
 - prefer `memforge_workspace_current` and `memforge_search_nodes` before creating new data
+- pass `MEMFORGE_API_TOKEN` directly to the MCP process when bearer auth is enabled; do not rely on renderer/browser token storage
+
+JetBrains AI Assistant / IntelliJ MCP JSON example:
+
+```json
+{
+  "mcpServers": {
+    "memforge": {
+      "command": "/Users/yourname/.memforge/bin/memforge-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+Notes:
+- JetBrains expects the top-level `mcpServers` wrapper.
+- Prefer the stable launcher path over a bare `Memforge` command because GUI apps do not always inherit your shell `PATH`.
+- If the launcher script points at a packaged `Memforge.app`, open the app at least once first so the launcher is created.

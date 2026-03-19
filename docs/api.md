@@ -81,13 +81,32 @@ This keeps future changes safer once multiple integrations exist.
 - never expose on LAN/public interfaces by default
 
 ## 5.2 Auth model
-### Recommended baseline
-Bearer token or session token generated per workspace/app session.
+### Current implementation
+The local service currently supports two modes:
+- no token (`optional`)
+- bearer token (`bearer`)
 
 ### HTTP example
 ```http
 Authorization: Bearer <local-token>
 ```
+
+### Public endpoints in bearer mode
+The current scaffold keeps these endpoints public even when bearer auth is enabled:
+- `GET /api/v1/health`
+- `GET /api/v1/workspace`
+- `GET /api/v1/bootstrap`
+- `GET /api/v1/events` for browser clients on loopback origins only
+
+The machine-readable service index at `GET /api/v1` is still protected in bearer mode.
+
+### Browser origin policy
+The local API only accepts browser requests from loopback HTTP origins such as `http://127.0.0.1:*` and `http://localhost:*`.
+Requests with non-loopback `Origin` headers are rejected before route handling.
+
+### Renderer token handling
+The current renderer keeps bearer tokens in memory only.
+That reduces exposure through persistent browser storage, but it also means the token is not retained across page refreshes or renderer restarts.
 
 ## 5.3 Access levels
 Recommended integration capability levels:
@@ -162,8 +181,11 @@ Recommended error envelope:
 
 The API centers around these resource groups:
 
+- workspace
 - nodes
 - relations
+- inferred relations
+- relation usage events
 - activities
 - artifacts
 - review queue
@@ -225,6 +247,36 @@ Return a discoverable machine-friendly service index for external coding agents 
 
 ### Why
 This allows another agent to receive one base URL and self-discover how to use Memforge without needing a separate MCP bridge or a human-written prompt for every endpoint.
+
+### Auth note
+When bearer auth is enabled, callers should bootstrap from `GET /api/v1/bootstrap` first and then call `GET /api/v1` with the bearer token.
+
+## 8.4 Get bootstrap metadata
+### HTTP
+`GET /api/v1/bootstrap`
+
+### Purpose
+Return safe startup metadata for renderer and local tools.
+
+### Response fields
+- workspace info
+- auth mode
+- auto recompute status for inferred-relation maintenance
+
+## 8.5 List known workspaces
+### HTTP
+`GET /api/v1/workspaces`
+
+### Purpose
+Return the current workspace plus the locally known workspace catalog.
+
+## 8.6 Create and switch workspace
+### HTTP
+`POST /api/v1/workspaces`
+
+## 8.7 Open existing workspace
+### HTTP
+`POST /api/v1/workspaces/open`
 
 ---
 
@@ -341,6 +393,9 @@ Restrict in v1 to:
 ### Important note
 High-trust or governed-write only for canonical changes.
 
+### Request note
+The current implementation expects a `source` object on this durable write so the update is attributable in provenance.
+
 ## 9.5 Archive node
 ### HTTP
 `POST /api/v1/nodes/:id/archive`
@@ -404,6 +459,25 @@ For external tools, default relation status to `suggested` unless explicitly tru
 - approve suggested relation
 - reject suggested relation
 - archive stale relation
+
+## 10.4 Upsert inferred relation
+### HTTP
+`POST /api/v1/inferred-relations`
+
+### Purpose
+Store or refresh a rebuildable weighted relation outside the canonical review path.
+
+## 10.5 Append relation usage event
+### HTTP
+`POST /api/v1/relation-usage-events`
+
+### Purpose
+Append a lightweight signal that a canonical or inferred relation actually helped retrieval or final output.
+
+### Notes
+- this is append-only
+- usage events may trigger debounced auto-recompute of inferred relation scores
+- this endpoint is for meaningful feedback, not every read
 
 ---
 
@@ -470,7 +544,8 @@ Register a local file as an artifact attached to a node.
 ```
 
 ### Notes
-- API may optionally validate path existence
+- artifact paths must resolve inside the active workspace root
+- API validates path existence before registration
 - file contents remain in filesystem, not in DB blob form by default
 
 ## 12.2 List artifacts for node
@@ -559,9 +634,11 @@ Context bundles are a core primitive.
   "preset": "for-coding",
   "options": {
     "includeRelated": true,
+    "includeInferred": true,
     "includeRecentActivities": true,
     "includeDecisions": true,
     "includeOpenQuestions": true,
+    "maxInferred": 4,
     "maxItems": 12
   }
 }
@@ -599,7 +676,13 @@ Context bundles are a core primitive.
           "nodeId": "node_decision_1",
           "type": "decision",
           "title": "Use SQLite as canonical store",
-          "summary": "Chosen for portability and local-first durability."
+          "summary": "Chosen for portability and local-first durability.",
+          "reason": "Inferred via supports (score 0.82)",
+          "relationType": "supports",
+          "relationSource": "inferred",
+          "relationStatus": "active",
+          "relationScore": 0.82,
+          "generator": "deterministic-linker"
         }
       ],
       "sources": [
@@ -628,6 +711,45 @@ Useful for UI before export/handoff.
 - json
 - markdown
 - text
+
+## 14.4 Recompute inferred relation scores
+### HTTP
+`POST /api/v1/inferred-relations/recompute`
+
+### Purpose
+Run an explicit maintenance pass that aggregates `relation_usage_events` back into `inferred_relations.usage_score` and `final_score`.
+
+### Request
+```json
+{
+  "generator": "deterministic-linker",
+  "limit": 100
+}
+```
+
+### Notes
+- this endpoint is maintenance-oriented, not part of the hot path
+- it should be called on demand, from automations, or from explicit rebuild flows
+- read-time retrieval may still apply lightweight usage-aware ranking before this maintenance pass runs
+
+## 14.5 Reindex deterministic inferred relations
+### HTTP
+`POST /api/v1/inferred-relations/reindex`
+
+### Purpose
+Backfill or refresh automatically generated inferred relations across the active workspace.
+
+### Request
+```json
+{
+  "limit": 250
+}
+```
+
+### Notes
+- this runs the cheap deterministic generator across existing active/review nodes
+- the current generator uses tag overlap, explicit body/title references, and activity-body references
+- this is the endpoint to run when older workspace content should appear in graph/retrieval without waiting for fresh writes
 
 ---
 
@@ -722,8 +844,9 @@ Provides a Server-Sent Events stream for lightweight workspace update notificati
   - keep `Recent` and similar live surfaces responsive without background polling
   - react to writes such as node creation, activity append, review action, settings changes, or workspace switching
 - Auth:
-  - bearer mode accepts the normal `Authorization: Bearer ...` header
-  - browser `EventSource` clients may also pass `?token=...`
+  - non-browser clients in bearer mode should still send the normal `Authorization: Bearer ...` header
+  - browser `EventSource` clients connect without query-string tokens and are accepted only from loopback origins
+  - renderer/browser reconnects may require re-entering the bearer token after a refresh because the renderer does not persist it
 
 ### Example event
 ```text
@@ -768,8 +891,14 @@ The CLI should be a thin ergonomic layer over the API.
 - `pnw link`
 - `pnw attach`
 - `pnw review list`
+- `pnw review show <id>`
 - `pnw review approve <id>`
 - `pnw review reject <id>`
+- `pnw review edit-and-approve <id>`
+- `pnw workspace current`
+- `pnw workspace list`
+- `pnw workspace create`
+- `pnw workspace open`
 
 ## 19.2 CLI examples
 ### Search
@@ -820,9 +949,8 @@ pnw link node_a node_b supports --source claude-code --status suggested
 
 ## 20. Provenance requirements
 
-These operations must create provenance events:
+These operations currently create provenance events:
 - create node
-- update node
 - archive node
 - create relation
 - update relation status

@@ -416,6 +416,13 @@ textarea {
   gap: 12px;
 }
 
+.integration-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
 .hero-card,
 .mini-card,
 .activity-card,
@@ -476,6 +483,33 @@ textarea {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.path-list {
+  display: grid;
+  gap: 10px;
+}
+
+.path-list strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.path-list code,
+.code-block {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-radius: 14px;
+  border: 1px solid rgba(54, 78, 72, 0.14);
+  background: rgba(255, 255, 255, 0.72);
+  padding: 10px 12px;
+  color: var(--text);
+  font-family: 'SFMono-Regular', 'Menlo', monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .grid-2 {
@@ -539,12 +573,102 @@ textarea {
 .graph-shell {
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 .graph-focus {
   border: 1px solid rgba(31, 111, 93, 0.25);
   background: linear-gradient(180deg, rgba(31, 111, 93, 0.12), rgba(255, 255, 255, 0.72));
+}
+
+.graph-toolbar {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.graph-summary-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.graph-focus-card {
+  display: grid;
+  gap: 10px;
+}
+
+.graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.graph-node {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.graph-node:hover {
+  border-color: rgba(31, 111, 93, 0.3);
+  transform: translateY(-1px);
+}
+
+.graph-node--hop-2 {
+  background: rgba(248, 250, 247, 0.9);
+}
+
+.relation-chip {
+  border: 1px solid transparent;
+}
+
+.relation-chip--supports {
+  background: rgba(31, 111, 93, 0.14);
+  border-color: rgba(31, 111, 93, 0.26);
+}
+
+.relation-chip--depends {
+  background: rgba(176, 100, 35, 0.14);
+  border-color: rgba(176, 100, 35, 0.26);
+}
+
+.relation-chip--contradicts {
+  background: rgba(181, 48, 66, 0.14);
+  border-color: rgba(181, 48, 66, 0.26);
+}
+
+.relation-chip--elaborates {
+  background: rgba(42, 95, 164, 0.14);
+  border-color: rgba(42, 95, 164, 0.26);
+}
+
+.relation-chip--derived {
+  background: rgba(87, 73, 154, 0.14);
+  border-color: rgba(87, 73, 154, 0.26);
+}
+
+.relation-chip--produced {
+  background: rgba(116, 86, 33, 0.14);
+  border-color: rgba(116, 86, 33, 0.26);
+}
+
+.relation-chip--relevant {
+  background: rgba(61, 113, 128, 0.14);
+  border-color: rgba(61, 113, 128, 0.26);
+}
+
+.relation-chip--related {
+  background: rgba(82, 97, 118, 0.12);
+  border-color: rgba(82, 97, 118, 0.22);
+}
+
+@media (max-width: 960px) {
+  .graph-summary-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .action-row button {
@@ -601,6 +725,7 @@ textarea {
   }
 
   .home-grid,
+  .integration-grid,
   .grid-2,
   .meta-grid {
     grid-template-columns: 1fr;

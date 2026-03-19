@@ -7,5 +7,5 @@
     "rootDir": ".",
     "types": ["node"]
   },
-  "include": ["app/shared/**/*.ts", "app/server/**/*.ts", "app/mcp/**/*.ts", "app/cli/**/*.ts", "tests/**/*.ts"]
+  "include": ["app/shared/**/*.ts", "app/server/**/*.ts", "app/mcp/**/*.ts", "app/cli/**/*.ts", "app/desktop/**/*.ts", "app/desktop/**/*.cts", "tests/**/*.ts"]
 }

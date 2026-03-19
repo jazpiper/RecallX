@@ -70,6 +70,7 @@ Meaning:
 - app manages the local database and files
 - app also starts or embeds a loopback-only local API/service
 - external tools connect to that local service
+- the embedded service may run light maintenance timers for rebuildable indexes such as inferred-relation score refresh
 
 ### Why this shape fits the product
 - preserves local-first ownership
@@ -791,6 +792,8 @@ If the system is a memory layer, users must trust they can preserve and move it.
 - scout-optimized retrieval primitives
 - summary-first context handoff
 
+For a scaled relation direction beyond v1 review-driven links, see `docs/relation-layer-v2.md`.
+
 ---
 
 ## 20. Key architectural decisions to keep
@@ -816,6 +819,7 @@ These do not need to block the first build, but they will matter soon:
 - should tags be first-class entities later?
 - when should full revision history be added?
 - when should quantitative relation scoring be introduced, if ever?
+  Current design direction: keep canonical relations minimal and move scoring into a separate inferred relation layer. See `docs/relation-layer-v2.md`.
 - how should duplicate detection work?
 - should some node classes be immutable records, e.g. decisions?
 - how should per-tool permissions be configured in UI?

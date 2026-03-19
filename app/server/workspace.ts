@@ -1,4 +1,5 @@
-import { mkdirSync, existsSync } from "node:fs";
+import { cpSync, mkdirSync, existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export interface WorkspacePaths {
@@ -15,13 +16,53 @@ export interface WorkspacePaths {
   searchCacheDir: string;
 }
 
-export function resolveWorkspaceRoot(): string {
+type ResolveWorkspaceRootOptions = {
+  allowLegacyProjectRoot?: boolean;
+  legacyProjectRoot?: string;
+};
+
+export function memforgeHomeDir(): string {
+  return path.join(os.homedir(), ".memforge");
+}
+
+function sanitizeWorkspaceName(value: string): string {
+  return value.replace(/[<>:"/\\|?*\x00-\x1f]+/g, "-").replace(/\s+/g, " ").trim() || "Memforge";
+}
+
+function preferredWorkspaceName(): string {
+  const configured = process.env.MEMFORGE_WORKSPACE_NAME;
+  if (typeof configured === "string" && configured.trim()) {
+    return sanitizeWorkspaceName(configured);
+  }
+
+  return sanitizeWorkspaceName(path.basename(process.cwd()) || "Memforge");
+}
+
+export function resolveWorkspaceRoot(options?: ResolveWorkspaceRootOptions): string {
   const configured = process.env.MEMFORGE_WORKSPACE_ROOT;
   if (configured) {
     return path.resolve(configured);
   }
 
-  return path.resolve(process.cwd(), ".memforge-workspace");
+  const preferredRoot = path.join(memforgeHomeDir(), preferredWorkspaceName());
+  const allowLegacyProjectRoot = options?.allowLegacyProjectRoot ?? true;
+  const legacyRoot = path.resolve(options?.legacyProjectRoot ?? process.cwd(), ".memforge-workspace");
+
+  if (existsSync(preferredRoot)) {
+    return preferredRoot;
+  }
+
+  if (allowLegacyProjectRoot && existsSync(legacyRoot)) {
+    try {
+      mkdirSync(path.dirname(preferredRoot), { recursive: true });
+      cpSync(legacyRoot, preferredRoot, { recursive: true, errorOnExist: false, force: false });
+      return preferredRoot;
+    } catch {
+      return legacyRoot;
+    }
+  }
+
+  return preferredRoot;
 }
 
 export function ensureWorkspace(root: string): WorkspacePaths {

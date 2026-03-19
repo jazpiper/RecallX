@@ -79,49 +79,32 @@ Is the balance right between safety and usefulness for integrated tools?
 ### 5) 3-pane restrained desktop UI
 Does the proposed UI shape correctly support search, inspection, and review without drifting into dashboard sprawl?
 
+The current implementation now has the core graph focus and provenance review surfaces in place, so the remaining question is mostly polish rather than shape.
+
 ---
 
 ## 6. Important open questions
 
 These are the most important unresolved issues across the current docs.
 
-### A. Summary ownership
-Who is responsible for maintaining summary fields and digests?
-- human edits?
-- deterministic derivation?
-- optional model-generated summaries?
-- background regeneration?
+The core promotion pipeline is now captured in `docs/promotion-rules.md`, so this brief only keeps the residual questions that still matter for daily use.
 
-This is important because retrieval relies heavily on summaries.
+### A. Summary ownership and staleness cues
+The current code now has a cheap deterministic summary fallback, a manual refresh path, and a stale-summary cue on the node detail surface.
+The remaining question is whether that baseline is enough, or whether Memforge eventually needs:
+- stale-summary cues in more places
+- richer digest materialization
+- a background refresh policy
 
-### B. Canonical promotion rules
-Exactly when should:
-- activity
-- suggested note
-- review queue decision
-- canonical node
-
-transition from one state to another?
-
-The current docs describe the philosophy, but the exact promotion workflow may need more operational detail.
-
-### C. Node-vs-activity boundary
-In practice, what types of write-back become:
-- a node
-- an activity
-- just an artifact?
-
-This boundary will heavily affect data quality and retrieval quality.
-
-### D. Tags and metadata strategy
+### B. Tags and metadata strategy
 The schema intentionally keeps tags simple early.
 A reviewer may want to challenge whether this is enough or whether project membership and certain metadata should become first-class sooner.
 
-### E. Relation quality
+### C. Relation quality
 How strict should relation creation be in v1?
 There is a tension between useful connectivity and graph noise.
 
-### F. Search explainability
+### D. Search explainability
 The docs prefer deterministic retrieval first, which is good.
 But the product may benefit from a more explicit explanation strategy for “why this result/bundle was returned.”
 
@@ -196,14 +179,18 @@ What is now real:
 - local Node/TypeScript service with SQLite-backed workspaces
 - loopback HTTP API and thin `pnw` CLI
 - runtime workspace create/open switching without restarting the service
+- workspace update events over SSE
 - append-first governance and review queue behavior
+- provenance-aware renderer detail flows and explicit graph focus UX
+- inferred-relation storage plus usage-feedback-driven score maintenance
 - React renderer with live API-first loading and first-pass review/search/settings flows
 - stdio MCP bridge for coding-agent tool calls over the existing local API
+- workspace switching and inspection from terminal-native tooling through the `pnw` wrapper
 
 What is still early:
-- renderer polish and end-to-end UX refinement
-- broader real-world multi-tool workflows
-- packaging/distribution beyond the local development scaffold
+- distribution polish on top of the first packaged desktop shell
+- inferred-relation threshold tuning and explainability as stronger signals see real usage
+- richer digest materialization if the current summary lifecycle proves insufficient
 
 The biggest remaining risk is not lack of ideas.
 It is preserving discipline so the product stays fast, compact, and useful.

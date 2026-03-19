@@ -109,6 +109,12 @@ export class WorkspaceSessionManager {
       "search.semantic.enabled": false,
       "review.autoApproveLowRisk": true,
       "review.trustedSourceToolNames": [],
+      "relations.autoRecompute.enabled": true,
+      "relations.autoRecompute.eventThreshold": 12,
+      "relations.autoRecompute.debounceMs": 30_000,
+      "relations.autoRecompute.maxStalenessMs": 300_000,
+      "relations.autoRecompute.batchLimit": 100,
+      "relations.autoRecompute.lastRunAt": null,
       "export.defaultFormat": "markdown",
     });
 

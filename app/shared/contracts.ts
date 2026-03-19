@@ -30,6 +30,17 @@ export const relationTypes = [
   "produced_by"
 ] as const;
 export const relationStatuses = ["active", "suggested", "rejected", "archived"] as const;
+export const inferredRelationStatuses = ["active", "muted", "hidden", "expired"] as const;
+export const relationSources = ["canonical", "inferred"] as const;
+export const relationUsageEventTypes = [
+  "bundle_included",
+  "bundle_clicked",
+  "bundle_used_in_output",
+  "bundle_skipped",
+  "retrieval_confirmed",
+  "retrieval_muted",
+  "manual_hide"
+] as const;
 export const activityTypes = [
   "note_appended",
   "agent_run_summary",
@@ -124,6 +135,41 @@ export const appendActivitySchema = z.object({
   metadata: z.record(z.any()).default({})
 });
 
+export const upsertInferredRelationSchema = z.object({
+  fromNodeId: z.string().min(1),
+  toNodeId: z.string().min(1),
+  relationType: z.enum(relationTypes),
+  baseScore: z.number(),
+  usageScore: z.number().default(0),
+  finalScore: z.number(),
+  status: z.enum(inferredRelationStatuses).default("active"),
+  generator: z.string().min(1),
+  evidence: z.record(z.any()).default({}),
+  expiresAt: z.string().optional(),
+  metadata: z.record(z.any()).default({})
+});
+
+export const appendRelationUsageEventSchema = z.object({
+  relationId: z.string().min(1),
+  relationSource: z.enum(relationSources),
+  eventType: z.enum(relationUsageEventTypes),
+  sessionId: z.string().optional(),
+  runId: z.string().optional(),
+  source: sourceSchema.optional(),
+  delta: z.number(),
+  metadata: z.record(z.any()).default({})
+});
+
+export const recomputeInferredRelationsSchema = z.object({
+  relationIds: z.array(z.string().min(1)).max(200).optional(),
+  generator: z.string().min(1).optional(),
+  limit: z.number().int().min(1).max(500).default(100)
+});
+
+export const reindexInferredRelationsSchema = z.object({
+  limit: z.number().int().min(1).max(1000).default(250)
+});
+
 export const attachArtifactSchema = z.object({
   nodeId: z.string().min(1),
   path: z.string().min(1),
@@ -142,9 +188,11 @@ export const buildContextBundleSchema = z.object({
   options: z
     .object({
       includeRelated: z.boolean().default(true),
+      includeInferred: z.boolean().default(true),
       includeRecentActivities: z.boolean().default(true),
       includeDecisions: z.boolean().default(true),
       includeOpenQuestions: z.boolean().default(true),
+      maxInferred: z.number().int().min(0).max(10).default(4),
       maxItems: z.number().int().min(1).max(30).default(10)
     })
     .default({})
@@ -196,6 +244,9 @@ export type NodeStatus = (typeof nodeStatuses)[number];
 export type Canonicality = (typeof canonicalities)[number];
 export type RelationType = (typeof relationTypes)[number];
 export type RelationStatus = (typeof relationStatuses)[number];
+export type InferredRelationStatus = (typeof inferredRelationStatuses)[number];
+export type RelationSource = (typeof relationSources)[number];
+export type RelationUsageEventType = (typeof relationUsageEventTypes)[number];
 export type ActivityType = (typeof activityTypes)[number];
 export type ReviewType = (typeof reviewTypes)[number];
 export type ReviewStatus = (typeof reviewStatuses)[number];
@@ -208,6 +259,10 @@ export type UpdateNodeInput = z.infer<typeof updateNodeSchema>;
 export type CreateRelationInput = z.infer<typeof createRelationSchema>;
 export type UpdateRelationInput = z.infer<typeof updateRelationSchema>;
 export type AppendActivityInput = z.infer<typeof appendActivitySchema>;
+export type UpsertInferredRelationInput = z.infer<typeof upsertInferredRelationSchema>;
+export type AppendRelationUsageEventInput = z.infer<typeof appendRelationUsageEventSchema>;
+export type RecomputeInferredRelationsInput = z.infer<typeof recomputeInferredRelationsSchema>;
+export type ReindexInferredRelationsInput = z.infer<typeof reindexInferredRelationsSchema>;
 export type AttachArtifactInput = z.infer<typeof attachArtifactSchema>;
 export type BuildContextBundleInput = z.infer<typeof buildContextBundleSchema>;
 export type ReviewActionInput = z.infer<typeof reviewActionSchema>;

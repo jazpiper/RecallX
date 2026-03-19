@@ -365,6 +365,16 @@ Default graph to:
 
 Keep it readable.
 
+### Interaction rule
+The graph should not depend on an implicit background selection that the user cannot see or change.
+
+Minimum v1 behavior:
+- show the current focus node explicitly
+- let the user change the focus node directly from the Graph page
+- provide an `Inspect in Graph` style action from search/detail/recent entry points
+
+That keeps Graph in an inspection role while still making the inspection target user-controlled.
+
 ---
 
 ## 7.7 Settings

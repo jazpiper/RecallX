@@ -368,18 +368,20 @@ Ranking should stay simple and layered.
 Recommended early signals:
 - exact keyword match score
 - title hit boost
+- summary hit boost
 - node type relevance
 - relation distance from target node/project
-- recency of activity
 - canonicality weight
-- pinned status or manually marked importance
+- relation type specificity
+- relation usage feedback
 
 ## 10.2 Secondary ranking signals
 Optional later signals:
 - semantic similarity
 - task-preset weighting
 - integration-specific preferences
-- relation type specificity
+- recency of activity
+- pinned status or manually marked importance
 - previous user approvals or promotions
 
 ## 10.3 Rule of thumb
@@ -430,32 +432,21 @@ Start with simple summaries and improve only where they create clear speed wins.
 
 ## 11.5 Summary ownership and lifecycle
 
-Summaries are the foundation of fast retrieval, but maintenance must never slow down the hot path.  
-Therefore v1 enforces a **low-cost, clearly owned** model.
+Summaries are the foundation of fast retrieval, but maintenance must never slow down the hot path.
 
-### Ownership rules (v1 default)
-- **Primary owner**: deterministic derivation from node body  
-- **Final responsibility**: human (manual override allowed)  
-- **Auto-generation**: runs immediately on node create/update (cheap rule-based)  
-- **LLM usage**: strictly forbidden in hot path and scout stage
+### Current implementation snapshot (2026-03-18)
+- if a node is created or updated without an explicit `summary`, the server fills one using a cheap deterministic `stableSummary(title, body)` helper
+- callers can still override the summary explicitly on create/update when they have a better durable summary
+- retrieval consumes the stored summary first and does not trigger background model work in the request path
+- bundle assembly falls back to simple placeholders such as `No summary yet.` when a richer digest does not exist
 
-### Refresh triggers (only these three are allowed)
-1. Node body or title changes → immediate regeneration (synchronous, cheap)  
-2. Explicit user/CLI call (`pnw refresh-summaries <node-id>`)  
-3. Nightly background job (default off; cheap-model scout only)
+### What is not implemented yet
+- no dedicated `refresh summaries` CLI/API command
+- no stale-summary age tracking or UI warning yet
+- no nightly regeneration job
+- no richer `key_points` / `decision_digest` materialization beyond the current lightweight activity and node-summary helpers
 
-### Staleness policy
-- If summary is older than 30 days or missing, scout automatically falls back to:  
-  first 300 characters of body + title  
-- In UI, show gentle warning: “Summary is stale — regenerate?”
-
-### Maintenance cost ranking
-- `short_summary` → cheapest (always kept fresh)  
-- `working_summary` → medium  
-- `decision_digest` / `recent_activity_digest` → auto-generated from activities (cheapest)
-
-**Rule**: “Summary maintenance must never make the system feel slow.”  
-In v1, summaries never depend on LLM calls.
+**Rule**: summary maintenance must stay cheap, synchronous, and local unless real usage proves a heavier pipeline is necessary.
 
 ---
 
@@ -644,6 +635,93 @@ Basic workflows must not break if no model is available.
 
 ### 6) Giant graph-first behavior
 If every request turns into broad graph crawling, the workspace will feel heavy.
+
+---
+
+## Appendix A — Inferred relation ranking (v2 direction)
+
+This appendix describes how retrieval can use a high-volume inferred relation layer without treating those links as canonical truth.
+
+### A.1 Retrieval should combine two relation layers
+
+When expanding node neighborhoods or ranking bundle candidates:
+
+1. canonical relations should be included first
+2. inferred relations should be included second
+3. inferred relations should be filtered by threshold and top-k rules
+4. final ranking should explain whether a result came from canonical or inferred structure
+
+### A.2 Suggested ranking signals
+
+Canonical-first signals:
+- direct canonical relation
+- canonical relation type specificity
+- relation distance from target project/node
+
+Inferred-layer signals:
+- inferred `final_score`
+- evidence quality
+- recent usage bonus
+- decay penalty for stale weak links
+
+Usage-derived signals:
+- relation included in bundle
+- relation clicked or inspected in graph
+- relation-linked node used in final output
+- repeated rejection or mute behavior
+
+### A.3 Example ranking formula
+
+```text
+relation_rank_score =
+  canonical_bonus +
+  inferred_final_score +
+  relation_type_specificity_bonus +
+  recent_usage_bonus -
+  age_decay -
+  noise_penalty
+```
+
+Rule:
+- weak inferred links must never outrank strong canonical links by default
+
+### A.4 Usage event write points
+
+The following actions are good candidates for `relation_usage_events`:
+- context bundle assembly includes an inferred link
+- graph UI node card is opened from an inferred link
+- agent run uses a linked node in final output or work product
+- a tool explicitly hides or mutes an inferred link
+
+These writes should stay cheap and append-only.
+
+### A.5 Hot-path rule
+
+Retrieval should **not** call an LLM just to update relation weights.
+
+The safe model is:
+- append cheap usage events during the hot path
+- aggregate those events later in a background or maintenance pass
+- refresh inferred `final_score` asynchronously
+
+This preserves the existing retrieval goal:
+- deterministic first
+- explainable first
+- fast first
+
+### A.6 Recommended desktop maintenance defaults
+
+For an installable local app, inferred-score maintenance should feel automatic without behaving like a per-event synchronous write cascade.
+
+Recommended defaults:
+- keep usage-event writes append-only
+- when pending events reach `12`, arm a short debounce timer
+- recompute after `30s` of quiet since the latest event
+- force a catch-up recompute once pending work is `5m` old
+- cap a single maintenance batch at `100` relation ids
+- persist `lastRunAt` so the next app launch can catch up after downtime
+
+This is effectively near-real-time for the user while still protecting SQLite write contention and keeping ranking behavior easier to reason about.
 
 ---
 

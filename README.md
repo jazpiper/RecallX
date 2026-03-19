@@ -45,6 +45,7 @@ It is a **shared memory substrate** for:
 - `docs/ux.md` — human-facing desktop UX
 - `docs/api.md` — local HTTP + CLI contract
 - `docs/mcp.md` — stdio MCP bridge design and tool mapping
+- `docs/workflows.md` — validated external-tool workflows
 - `docs/review-brief.md` — concise reviewer guide and open questions
 
 ## Current stage
@@ -55,39 +56,53 @@ First implementation scaffold is now in place:
 - append-first governance rules and review queue behavior
 - loopback HTTP API under `/api/v1`
 - thin `pnw` / `memforge` CLI wrapper
-- React renderer with 3-pane layout and live API-first data access
+- React renderer with 3-pane layout, provenance-aware review/detail flows, and user-driven graph focus
 - runtime workspace create/open switching without restarting the local service
 
 ## Latest update
 
-On 2026-03-18, Memforge gained two new agent-facing entry points on top of the existing local API and CLI:
+On 2026-03-19, Memforge gained two new agent-facing entry points on top of the existing local API and CLI:
 
 - a machine-discoverable service index at `GET /api/v1`
 - a first-pass stdio MCP bridge under `app/mcp`
 
-The same update also tightened repository guidance so coding agents treat Memforge as the primary durable memory system for this workspace.
+The same round of work also tightened local security defaults, expanded deterministic retrieval signals, and made the current UI and packaging story feel more native:
+
+- browser requests are accepted only from loopback origins such as `127.0.0.1` and `localhost`
+- renderer bearer tokens are kept in memory instead of persistent browser storage
+- browser SSE subscriptions no longer put bearer tokens on the event-stream URL
+- artifact paths must stay inside the active workspace root
+- graph inspection now uses an explicit focus node and `Inspect in Graph` entry points instead of an implicit background selection
+- summary refresh is now a first-class action on the node detail surface, with stale-summary cues when curated summaries drift behind body edits
+- inferred relations now expand beyond tag/body/activity signals into project-membership and shared-artifact signals
+- an Electron desktop shell can now boot the local API, expose stdio MCP through `--mcp-stdio`, and package the built app through `npm run desktop` and `npm run package:desktop`
+- the packaged desktop shell can now stay resident in the background, expose a macOS menu bar item, and keep the local API alive after the main window is closed
+- default workspace roots now live under `~/.memforge/{workspaceName}`, with legacy repo-local `.memforge-workspace` copied forward when needed
+
+Repository guidance was also tightened so coding agents treat Memforge as the primary durable memory system for this workspace.
 
 ## Progress snapshot
 
 - Phase 0 foundation is scaffolded locally with workspace boot, SQLite schema, migrations, and runtime workspace switching.
-- Phase 1 UI is in first-pass shape with home, search, review, and settings flows backed by the live local API when available.
+- Phase 1 UI is in first-pass shape with home, search, review, and settings flows backed by the live local API when available, plus provenance-aware detail views and an explicit graph focus picker.
 - Phase 2 retrieval is wired through local search, related-node lookup, decisions/open questions helpers, and compact context bundles.
 - Phase 3 external access is live through the loopback HTTP API, the thin `pnw` CLI, and the new service index for self-discovery.
 - Phase 4 append-first write-back is live through durable node creation, relation creation, activities, artifacts, provenance, and review-aware governance.
-- Phase 5 curation is partially implemented through review queue endpoints and renderer review actions, but the review UX is still early.
-- Phase 6 real cross-tool adoption is now beginning through the first-pass MCP adapter and local coding-agent workflows.
+- Phase 5 curation is in place through review queue endpoints, renderer review actions, provenance-friendly detail flows, and summary refresh/staleness visibility.
+- Phase 6 real cross-tool adoption now includes documented terminal-native `pnw`, raw HTTP bootstrap, and stdio MCP workflows in addition to the local coding-agent path.
+- Phase 7 selective retrieval enhancement now includes deterministic inferred-relation generation from tag/body/activity, project-membership, and shared-artifact signals, plus inferred-relation storage, usage feedback events, explicit/automatic score recompute, and relation-aware ranking; semantic retrieval is still deferred.
 
 ## Current status
 
 Memforge has moved past the docs-only stage into a usable implementation scaffold: one local workspace can now be opened by the renderer, served over the loopback API, queried from the CLI, and reached through an MCP bridge without adding a second storage layer.
 
-The project is still pre-packaging and pre-polish. The main work now is tightening live renderer flows, validating real multi-tool usage, and keeping governance and retrieval behavior sharp as integration surface grows.
+The project is now beyond the purely local scaffold stage: the desktop shell can boot the local service, the renderer can expose summary staleness and refresh, and the external-tool workflows are documented against the current implementation. The main work now is product polish: distribution hardening, inferred-link tuning, and deciding how much richer digest materialization is actually worth.
 
 ## Next focus
 
-- tighten the renderer so live workspace flows feel fully native instead of scaffold-like
-- validate the MCP bridge and service index against real Claude Code / Codex style workflows
-- keep the project hub docs and implementation progress aligned as the integration layer expands
+- dogfood the packaged desktop shell and add distribution polish such as app icons, signing, and notarization when needed
+- tune inferred-relation thresholds, evidence display, and explainability based on real workspace usage
+- decide whether richer digest materialization is worth adding beyond the current deterministic summary + stale-cue baseline
 
 ## Quick start
 
@@ -115,7 +130,10 @@ npm run build
 
 - The backend uses Node's built-in `node:sqlite` module, so Node 25+ is currently the easiest path.
 - The renderer prefers the local API and falls back to mock data if the API is unavailable.
-- The project is still an implementation-first scaffold, not yet a packaged desktop app.
+- In bearer mode, the renderer token is session-only today, so a page refresh or restart may require entering it again.
+- The repo now includes an Electron desktop shell. Use `npm run desktop` for a local packaged-shell run or `npm run package:desktop` to produce a distributable build under `release/`.
+- In packaged mode, closing the main window now hides Memforge to the background instead of quitting immediately. Use the menu bar item to reopen the app, copy API/MCP info, or restart the local service, and use `Quit Memforge` to fully stop the desktop shell.
+- The default workspace root is `~/.memforge/{workspaceName}`. Existing repo-local `.memforge-workspace` data is copied into the new home-directory root the first time the new default is used.
 
 ## Using Memforge From Other Coding Agents
 
@@ -158,6 +176,38 @@ Or point it at a specific local API:
 node dist/server/app/mcp/index.js --api http://127.0.0.1:8787/api/v1
 ```
 
+Packaged desktop builds also support stdio MCP directly:
+
+```bash
+Memforge --mcp-stdio
+```
+
+If you want to bypass the PATH shim, the packaged binary also works directly:
+
+```bash
+./Memforge.app/Contents/MacOS/Memforge --mcp-stdio
+```
+
+When the packaged app is launched once, it also writes:
+
+- a PATH-friendly desktop shim at `~/.local/bin/Memforge`
+- a reusable MCP launcher script at `~/.memforge/bin/memforge-mcp`
+
+For JetBrains AI Assistant / IntelliJ MCP settings, prefer the launcher path and wrap it under `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "memforge": {
+      "command": "/Users/yourname/.memforge/bin/memforge-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+Using `Memforge --mcp-stdio` directly can fail in GUI apps when `~/.local/bin` is not present in the inherited `PATH`.
+
 Important environment variables:
 
 - `MEMFORGE_API_URL` — local Memforge API base URL
@@ -166,3 +216,4 @@ Important environment variables:
 - `MEMFORGE_MCP_TOOL_NAME` — default provenance tool name
 
 See `docs/mcp.md` for the first-pass tool list and HTTP-to-MCP mapping.
+See `docs/workflows.md` for the non-agent workflows that are already validated in the current implementation.

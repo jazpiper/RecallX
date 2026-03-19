@@ -1,5 +1,7 @@
 node_modules
 dist
+build
+release
 .vite
 .memforge-workspace
 .memforge-smoke
@@ -7,3 +9,4 @@ dist
 *.log
 .DS_Store
 *.tsbuildinfo
+index-*.js

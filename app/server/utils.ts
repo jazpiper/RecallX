@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 import { ulid } from "ulid";
 
 export function createId(prefix: string): string {
@@ -45,3 +46,7 @@ export function checksumText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
+  const relative = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}

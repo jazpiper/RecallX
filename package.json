@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "dist/server/app/desktop/main.js",
   "bin": {
     "memforge": "./app/cli/bin/pnw.js",
     "pnw": "./app/cli/bin/pnw.js"
@@ -16,10 +17,37 @@
     "build": "npm run build:server && npm run build:renderer",
     "build:server": "tsc -p tsconfig.server.json",
     "build:renderer": "vite build",
+    "desktop": "npm run build && electron .",
     "mcp": "node dist/server/app/mcp/index.js",
+    "package:desktop": "npm run build && electron-builder",
     "start": "node dist/server/app/server/index.js",
     "test": "vitest run",
     "check": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
+  },
+  "build": {
+    "appId": "com.jhworks.memforge",
+    "productName": "Memforge",
+    "icon": "app/desktop/assets/memforge.icns",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "app/desktop/assets/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "dist/server/**/*"
+    ],
+    "mac": {
+      "icon": "app/desktop/assets/memforge.icns",
+      "category": "public.app-category.productivity",
+      "target": [
+        "zip",
+        "dmg"
+      ],
+      "identity": null
+    }
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
@@ -40,6 +68,8 @@
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
+    "electron": "^36.9.5",
+    "electron-builder": "^25.1.8",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vite": "^6.2.2",

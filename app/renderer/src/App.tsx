@@ -8,6 +8,7 @@ import {
   getActivities,
   getArtifacts,
   getNode,
+  getGraphNeighborhood,
   getPinnedNodes,
   getRecentNodes,
   getReviewSettings,
@@ -19,6 +20,7 @@ import {
   isAuthError,
   openWorkspace as openWorkspaceSession,
   rejectReview,
+  refreshNodeSummary as refreshNodeSummaryRequest,
   saveRendererToken,
   searchNodes,
   subscribeWorkspaceEvents,
@@ -27,6 +29,7 @@ import {
 import type {
   Activity,
   Artifact,
+  GraphConnection,
   NavView,
   Node,
   ReviewSettings,
@@ -71,6 +74,31 @@ function badgeTone(status: string) {
   return 'tone-muted';
 }
 
+function relationToneClass(relationType: GraphConnection['relation']['relationType']) {
+  switch (relationType) {
+    case 'supports':
+      return 'relation-chip--supports';
+    case 'depends_on':
+      return 'relation-chip--depends';
+    case 'contradicts':
+      return 'relation-chip--contradicts';
+    case 'elaborates':
+      return 'relation-chip--elaborates';
+    case 'derived_from':
+      return 'relation-chip--derived';
+    case 'produced_by':
+      return 'relation-chip--produced';
+    case 'relevant_to':
+      return 'relation-chip--relevant';
+    default:
+      return 'relation-chip--related';
+  }
+}
+
+function relationLabel(value: string) {
+  return value.replaceAll('_', ' ');
+}
+
 function normalizeToolName(value: string) {
   return value.trim().toLowerCase();
 }
@@ -97,6 +125,68 @@ function formatTime(iso: string) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(iso));
+}
+
+function getSummaryLifecycle(node: Node | null) {
+  if (!node) {
+    return {
+      summaryUpdatedAt: null as string | null,
+      summarySource: null as string | null,
+      isStale: false,
+    };
+  }
+
+  const summaryUpdatedAt =
+    typeof node.metadata.summaryUpdatedAt === 'string' ? node.metadata.summaryUpdatedAt : null;
+  const summarySource = typeof node.metadata.summarySource === 'string' ? node.metadata.summarySource : null;
+  const isStale = summaryUpdatedAt
+    ? new Date(node.updatedAt).getTime() - new Date(summaryUpdatedAt).getTime() > 1000
+    : false;
+
+  return {
+    summaryUpdatedAt,
+    summarySource,
+    isStale,
+  };
+}
+
+type DesktopIntegrationInfo = {
+  apiBase: string;
+  healthUrl: string;
+  workspaceUrl: string;
+  workspaceHome: string | null;
+  commandShimPath: string | null;
+  executablePath: string;
+  mcpLauncherPath: string | null;
+  mcpCommand: string | null;
+  workspaceRoot: string | null;
+  workspaceDbPath: string | null;
+  artifactsPath: string | null;
+  isPackaged: boolean;
+};
+
+type DesktopActionPayload = {
+  type: 'quick-capture' | 'open-search';
+};
+
+function getDesktopIntegrationInfo(): DesktopIntegrationInfo | null {
+  const globalInfo = (
+    window as Window & {
+      __MEMFORGE_DESKTOP_INFO__?: DesktopIntegrationInfo;
+    }
+  ).__MEMFORGE_DESKTOP_INFO__;
+
+  return globalInfo ?? null;
+}
+
+function getDesktopActionBridge() {
+  return (
+    window as Window & {
+      __MEMFORGE_DESKTOP_ACTIONS__?: {
+        onAction: (callback: (payload: DesktopActionPayload) => void) => (() => void) | void;
+      };
+    }
+  ).__MEMFORGE_DESKTOP_ACTIONS__ ?? null;
 }
 
 function Section({
@@ -228,6 +318,42 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const bridge = getDesktopActionBridge();
+    if (!bridge) {
+      return;
+    }
+
+    const focusAfterPaint = (selector: string) => {
+      window.setTimeout(() => {
+        const target = document.querySelector<HTMLElement>(selector);
+        target?.focus();
+      }, 60);
+    };
+
+    const unsubscribe =
+      bridge.onAction((payload) => {
+        if (payload.type === 'open-search') {
+          setView('search');
+          focusAfterPaint('#search-input');
+          return;
+        }
+
+        if (payload.type === 'quick-capture') {
+          setView('home');
+          setCaptureType('note');
+          setCaptureTitle('');
+          setCaptureBody('');
+          setCaptureError(null);
+          focusAfterPaint('#capture-title-input');
+        }
+      }) ?? undefined;
+
+    return () => {
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
     if (isLoading || authRequired || view !== 'recent') {
       return;
     }
@@ -294,6 +420,14 @@ export default function App() {
     return map;
   }, [snapshot]);
 
+  const graphFocusableNodes = useMemo(
+    () =>
+      (snapshot?.nodes ?? [])
+        .slice()
+        .sort((left, right) => (left.title || '').localeCompare(right.title || '') || left.updatedAt.localeCompare(right.updatedAt)),
+    [snapshot],
+  );
+
   const selectedNode = nodeMap.get(selectedNodeId) ?? snapshot?.nodes[0] ?? null;
 
   const [detail, setDetail] = useState<DetailPanel>({
@@ -302,6 +436,11 @@ export default function App() {
     activities: [],
     artifacts: [],
   });
+  const [graphRadius, setGraphRadius] = useState<1 | 2>(1);
+  const [graphConnections, setGraphConnections] = useState<GraphConnection[]>([]);
+  const [graphError, setGraphError] = useState<string | null>(null);
+  const [isGraphLoading, setIsGraphLoading] = useState(false);
+  const [isRefreshingSummary, setIsRefreshingSummary] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -339,10 +478,42 @@ export default function App() {
     };
   }, [selectedNode]);
 
+  useEffect(() => {
+    let mounted = true;
+    const currentNode = selectedNode;
+    if (!currentNode) return undefined;
+    const nodeId = currentNode.id;
+
+    async function loadGraph() {
+      setIsGraphLoading(true);
+      try {
+        const connections = await getGraphNeighborhood(nodeId, graphRadius);
+        if (!mounted) return;
+        setGraphConnections(connections);
+        setGraphError(null);
+      } catch (error) {
+        if (!mounted) return;
+        setGraphConnections([]);
+        setGraphError(error instanceof Error ? error.message : 'Failed to load graph neighborhood.');
+      } finally {
+        if (mounted) {
+          setIsGraphLoading(false);
+        }
+      }
+    }
+
+    void loadGraph();
+
+    return () => {
+      mounted = false;
+    };
+  }, [graphRadius, selectedNode]);
+
   const [searchResults, setSearchResults] = useState<Node[]>([]);
   const [recentNodes, setRecentNodes] = useState<Node[]>([]);
   const [pinnedNodes, setPinnedNodes] = useState<Node[]>([]);
   const [reviewQueue, setReviewQueue] = useState<ReviewQueueItem[]>([]);
+  const summaryLifecycle = useMemo(() => getSummaryLifecycle(detail.node), [detail.node]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -384,6 +555,54 @@ export default function App() {
 
   const homeActivities = detail.activities.slice(0, 3);
   const workspaceName = workspace?.name ?? 'Memforge';
+  const desktopInfo = useMemo(() => getDesktopIntegrationInfo(), []);
+  const apiBase = desktopInfo?.apiBase ?? `http://${workspace?.apiBind ?? '127.0.0.1:8787'}/api/v1`;
+  const workspaceHome = desktopInfo?.workspaceHome ?? '';
+  const workspaceRoot = workspace?.rootPath ?? desktopInfo?.workspaceRoot ?? '';
+  const workspaceDbPath = desktopInfo?.workspaceDbPath ?? (workspaceRoot ? `${workspaceRoot}/workspace.db` : '');
+  const artifactsPath = desktopInfo?.artifactsPath ?? (workspaceRoot ? `${workspaceRoot}/artifacts` : '');
+  const commandShimPath = desktopInfo?.commandShimPath ?? '';
+  const mcpLauncherPath = desktopInfo?.mcpLauncherPath ?? '';
+  const defaultMcpCommand = `node dist/server/app/mcp/index.js --api ${apiBase}`;
+  const mcpCommand = desktopInfo?.mcpCommand ?? defaultMcpCommand;
+  const executablePath = desktopInfo?.executablePath ?? '';
+  const executableLabel = desktopInfo?.isPackaged ? 'App bundle' : 'Executable';
+  const executableDisplay = desktopInfo?.isPackaged
+    ? 'Current Memforge.app installation'
+    : executablePath || 'Unavailable';
+  const genericMcpConfig = mcpLauncherPath
+    ? `{
+  "mcpServers": {
+    "memforge": {
+      "command": "${mcpLauncherPath}",
+      "args": []
+    }
+  }
+}`
+    : `{
+  "mcpServers": {
+    "memforge": {
+      "command": "node",
+      "args": ["dist/server/app/mcp/index.js", "--api", "${apiBase}"]
+    }
+  }
+}`;
+  const apiAuthHeader = workspace?.authMode === 'bearer' ? ' -H "Authorization: Bearer $MEMFORGE_API_TOKEN"' : '';
+  const apiExample = `curl${apiAuthHeader} ${apiBase}
+curl${apiAuthHeader} ${desktopInfo?.healthUrl ?? `${apiBase}/health`}
+curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
+  const graphDistinctNodes = useMemo(
+    () => Array.from(new Map(graphConnections.map((item) => [item.node.id, item.node])).values()),
+    [graphConnections],
+  );
+  const graphRelationCounts = useMemo(
+    () =>
+      graphConnections.reduce<Record<string, number>>((acc, item) => {
+        acc[item.relation.relationType] = (acc[item.relation.relationType] ?? 0) + 1;
+        return acc;
+      }, {}),
+    [graphConnections],
+  );
 
   async function refreshReviewQueue() {
     try {
@@ -448,6 +667,27 @@ export default function App() {
       await refreshReviewQueue();
     } catch (error) {
       handleRequestFailure(error, 'Failed to reject review item.');
+    }
+  }
+
+  async function handleRefreshSummary() {
+    if (!detail.node) {
+      return;
+    }
+
+    setIsRefreshingSummary(true);
+    try {
+      const refreshedNode = await refreshNodeSummaryRequest(detail.node.id);
+      setDetail((current) => ({
+        ...current,
+        node: refreshedNode,
+      }));
+      await refreshWorkspaceState();
+      setLoadError(null);
+    } catch (error) {
+      handleRequestFailure(error, 'Failed to refresh summary.');
+    } finally {
+      setIsRefreshingSummary(false);
     }
   }
 
@@ -607,6 +847,11 @@ export default function App() {
     });
   }
 
+  function openNodeInGraph(nodeId: string) {
+    setSelectedNodeId(nodeId);
+    selectView('graph');
+  }
+
   const centerContent = (() => {
     if (isLoading) {
       return (
@@ -764,18 +1009,121 @@ export default function App() {
 
     if (view === 'graph') {
       return (
-        <Section title="Graph" subtitle="Secondary view, centered on the selected node.">
-          <div className="graph-shell">
-            {detail.related.map((node) => (
-              <div key={node.id} className="graph-node">
-                <strong>{node.title}</strong>
-                <span>{node.type}</span>
-              </div>
-            ))}
-            <div className="graph-focus">
-              <strong>{selectedNode?.title}</strong>
-              <span>focus</span>
+        <Section title="Graph" subtitle="Secondary inspection surface for a user-chosen focus node neighborhood.">
+          <div className="graph-toolbar">
+            <label className="search-box">
+              <span>Focus node</span>
+              <select
+                value={selectedNode?.id ?? ''}
+                onChange={(event) => {
+                  if (event.target.value) {
+                    setSelectedNodeId(event.target.value);
+                  }
+                }}
+              >
+                {graphFocusableNodes.map((node) => (
+                  <option key={node.id} value={node.id}>
+                    {node.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="chip-row">
+              <button
+                type="button"
+                className={`tool-chip ${graphRadius === 1 ? 'tool-chip--active' : ''}`}
+                onClick={() => setGraphRadius(1)}
+              >
+                1 hop
+              </button>
+              <button
+                type="button"
+                className={`tool-chip ${graphRadius === 2 ? 'tool-chip--active' : ''}`}
+                onClick={() => setGraphRadius(2)}
+              >
+                2 hops
+              </button>
             </div>
+            <p className="settings-copy">Pick a focus node, then inspect local density and relation quality without turning this into the main workflow.</p>
+          </div>
+
+          <div className="graph-summary-grid">
+            <article className="graph-focus graph-focus-card">
+              <span className="eyebrow">Focus node</span>
+              <strong>{selectedNode?.title}</strong>
+              <p>{selectedNode?.summary}</p>
+              <div className="chip-row">
+                <span className={`pill ${badgeTone(selectedNode?.status ?? 'active')}`}>{selectedNode?.status ?? 'active'}</span>
+                <span className="pill tone-muted">{selectedNode?.type ?? 'node'}</span>
+                <span className="pill tone-muted">{graphRadius}-hop radius</span>
+              </div>
+              <div className="meta-row">
+                <span>{selectedNode?.sourceLabel ?? 'unknown source'}</span>
+                <span>{selectedNode ? `updated ${formatTime(selectedNode.updatedAt)}` : 'no focus node'}</span>
+              </div>
+            </article>
+
+            <article className="mini-card">
+              <span className="eyebrow">Neighborhood</span>
+              <strong>{graphDistinctNodes.length} nodes</strong>
+              <p>{graphConnections.length} visible relation path{graphConnections.length === 1 ? '' : 's'} around the current focus.</p>
+            </article>
+
+            <article className="mini-card">
+              <span className="eyebrow">Relation density</span>
+              <strong>{Object.keys(graphRelationCounts).length} relation types</strong>
+              <p>{graphConnections.filter((item) => item.relation.status === 'suggested').length} suggested links need extra scrutiny.</p>
+            </article>
+          </div>
+
+          {Object.keys(graphRelationCounts).length ? (
+            <div className="graph-legend">
+              {Object.entries(graphRelationCounts)
+                .sort((a, b) => b[1] - a[1])
+                .map(([relationType, count]) => (
+                  <span key={relationType} className={`chip relation-chip ${relationToneClass(relationType as GraphConnection['relation']['relationType'])}`}>
+                    {relationLabel(relationType)} · {count}
+                  </span>
+                ))}
+            </div>
+          ) : null}
+
+          {graphError ? <div className="empty-state">{graphError}</div> : null}
+
+          <div className="graph-shell">
+            {isGraphLoading ? <div className="empty-state">Loading graph neighborhood...</div> : null}
+            {!isGraphLoading && !graphConnections.length ? (
+              <div className="empty-state">No related nodes in this neighborhood yet.</div>
+            ) : null}
+            {graphConnections.map((item) => (
+              <button
+                key={`${item.relation.id}:${item.node.id}:${item.viaNodeId ?? 'focus'}`}
+                type="button"
+                className={`graph-node graph-node--hop-${item.hop}`}
+                onClick={() => {
+                  setSelectedNodeId(item.node.id);
+                  selectView('graph');
+                }}
+              >
+                <div className="result-card__top">
+                  <strong>{item.node.title}</strong>
+                  <span className={`pill ${badgeTone(item.node.status)}`}>{item.node.type}</span>
+                </div>
+                <p>{item.node.summary}</p>
+                <div className="chip-row">
+                  <span className={`chip relation-chip ${relationToneClass(item.relation.relationType)}`}>
+                    {relationLabel(item.relation.relationType)}
+                  </span>
+                  <span className="chip">{item.direction}</span>
+                  <span className="chip">{item.hop}-hop</span>
+                  <span className={`pill ${badgeTone(item.relation.status)}`}>{item.relation.status}</span>
+                </div>
+                <div className="meta-row">
+                  <span>{item.viaNodeTitle ? `via ${item.viaNodeTitle}` : 'direct link'}</span>
+                  <span>{item.relation.sourceLabel}</span>
+                </div>
+              </button>
+            ))}
           </div>
         </Section>
       );
@@ -1068,6 +1416,78 @@ export default function App() {
             </div>
           </div>
         </Section>
+        <Section title="API & MCP" subtitle="Connection examples and local file locations for the current app session.">
+          <div className="integration-grid">
+            <article className="mini-card">
+              <span className="eyebrow">HTTP API</span>
+              <strong>{apiBase}</strong>
+              <p>
+                Use the loopback API for bootstrap, health checks, and direct local integration.
+                {workspace?.authMode === 'bearer' ? ' Bearer mode is active, so include the Authorization header.' : ''}
+              </p>
+              <pre className="code-block">{apiExample}</pre>
+            </article>
+            <article className="mini-card">
+              <span className="eyebrow">Stdio MCP</span>
+              <strong>{mcpLauncherPath || 'node dist/server/app/mcp/index.js --api …'}</strong>
+              <p>
+                JetBrains AI Assistant and similar GUI MCP clients should use the JSON block below
+                with the stable launcher path. The direct command underneath is better suited to
+                shell-based clients.
+              </p>
+              <pre className="code-block">{genericMcpConfig}</pre>
+              <pre className="code-block">{mcpCommand}</pre>
+            </article>
+          </div>
+          <div className="integration-grid">
+            <article className="mini-card">
+              <span className="eyebrow">File locations</span>
+              <div className="path-list">
+                <div>
+                  <strong>Memforge home</strong>
+                  <code>{workspaceHome || 'Unavailable'}</code>
+                </div>
+                <div>
+                  <strong>Workspace root</strong>
+                  <code>{workspaceRoot || 'Unavailable'}</code>
+                </div>
+                <div>
+                  <strong>Database</strong>
+                  <code>{workspaceDbPath || 'Unavailable'}</code>
+                </div>
+                <div>
+                  <strong>Artifacts</strong>
+                  <code>{artifactsPath || 'Unavailable'}</code>
+                </div>
+              </div>
+            </article>
+            <article className="mini-card">
+              <span className="eyebrow">App paths</span>
+              <div className="path-list">
+                <div>
+                  <strong>CLI shim</strong>
+                  <code>{commandShimPath || 'Unavailable'}</code>
+                </div>
+                <div>
+                  <strong>MCP launcher</strong>
+                  <code>{mcpLauncherPath || 'Unavailable'}</code>
+                </div>
+                <div>
+                  <strong>Direct MCP command</strong>
+                  <code>{mcpCommand || defaultMcpCommand}</code>
+                </div>
+                <div>
+                  <strong>{executableLabel}</strong>
+                  <code>{executableDisplay}</code>
+                </div>
+                <div>
+                  <strong>Mode</strong>
+                  <code>{desktopInfo?.isPackaged ? 'packaged desktop shell' : 'development shell'}</code>
+                </div>
+              </div>
+            </article>
+          </div>
+        </Section>
         <Section title="Quick capture" subtitle="Write a durable node into the local workspace.">
           <form className="capture-form" onSubmit={(event) => void handleCreateNode(event)}>
             <label className="search-box">
@@ -1083,7 +1503,12 @@ export default function App() {
             </label>
             <label className="search-box">
               <span>Title</span>
-              <input value={captureTitle} onChange={(event) => setCaptureTitle(event.target.value)} placeholder="Memforge retrieval rule" />
+              <input
+                id="capture-title-input"
+                value={captureTitle}
+                onChange={(event) => setCaptureTitle(event.target.value)}
+                placeholder="Memforge retrieval rule"
+              />
             </label>
             <label className="search-box">
               <span>Body</span>
@@ -1201,8 +1626,17 @@ export default function App() {
                   <div className="detail-title">
                     <strong>{detail.node.title}</strong>
                     <span className={`pill ${badgeTone(detail.node.status)}`}>{detail.node.type}</span>
+                    {summaryLifecycle.isStale ? <span className="pill tone-warn">summary stale</span> : null}
                   </div>
                   <p>{detail.node.summary}</p>
+                  <div className="action-row">
+                    <button type="button" onClick={() => openNodeInGraph(detail.node!.id)}>
+                      Inspect in Graph
+                    </button>
+                    <button type="button" onClick={() => void handleRefreshSummary()} disabled={isRefreshingSummary}>
+                      {isRefreshingSummary ? 'Refreshing summary...' : 'Refresh summary'}
+                    </button>
+                  </div>
                   <div className="body-copy">{detail.node.body}</div>
                   <div className="chip-row">
                     {detail.node.tags.map((tag) => (
@@ -1219,6 +1653,13 @@ export default function App() {
                     <div>
                       <span className="eyebrow">Canonicality</span>
                       <p>{detail.node.canonicality}</p>
+                    </div>
+                    <div>
+                      <span className="eyebrow">Summary lifecycle</span>
+                      <p>
+                        {summaryLifecycle.summarySource ?? 'unknown'}
+                        {summaryLifecycle.summaryUpdatedAt ? ` · ${formatTime(summaryLifecycle.summaryUpdatedAt)}` : ''}
+                      </p>
                     </div>
                   </div>
                 </div>

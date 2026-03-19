@@ -5,6 +5,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import mime from "mime-types";
 import {
   appendActivitySchema,
+  appendRelationUsageEventSchema,
   attachArtifactSchema,
   buildContextBundleSchema,
   createWorkspaceSchema,
@@ -12,14 +13,19 @@ import {
   createRelationSchema,
   nodeSearchSchema,
   openWorkspaceSchema,
+  reindexInferredRelationsSchema,
+  recomputeInferredRelationsSchema,
+  relationTypes,
   registerIntegrationSchema,
   reviewActionSchema,
+  sourceSchema,
+  upsertInferredRelationSchema,
   updateIntegrationSchema,
   updateNodeSchema,
   updateRelationSchema,
   updateSettingsSchema
 } from "../shared/contracts.js";
-import type { ApiEnvelope, ApiErrorEnvelope, NodeRecord } from "../shared/types.js";
+import type { ApiEnvelope, ApiErrorEnvelope, InferredRelationRecord, NodeRecord } from "../shared/types.js";
 import { AppError } from "./errors.js";
 import {
   applyReviewDecision,
@@ -29,9 +35,118 @@ import {
   resolveRelationStatus,
   shouldPromoteActivitySummary
 } from "./governance.js";
-import { buildContextBundle, bundleAsMarkdown } from "./retrieval.js";
-import { createId } from "./utils.js";
+import { refreshAutomaticInferredRelationsForNode, reindexAutomaticInferredRelations } from "./inferred-relations.js";
+import {
+  buildContextBundle,
+  buildNeighborhoodItems,
+  bundleAsMarkdown
+} from "./retrieval.js";
+import { computeUsageBonus, relationTypeSpecificityBonus } from "./relation-scoring.js";
+import { createId, isPathWithinRoot } from "./utils.js";
 import type { WorkspaceSessionManager } from "./workspace-session.js";
+
+const relationTypeSet = new Set<string>(relationTypes);
+const allowedLoopbackHostnames = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+const updateNodeRequestSchema = updateNodeSchema.extend({
+  source: sourceSchema
+});
+
+function parseRelationTypesQuery(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+
+  const items = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item): item is (typeof relationTypes)[number] => relationTypeSet.has(item));
+
+  return items.length ? items : undefined;
+}
+
+function isAllowedBrowserOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    return (url.protocol === "http:" || url.protocol === "https:") && allowedLoopbackHostnames.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function buildCandidateRelationBonusMap(
+  repository: ReturnType<WorkspaceSessionManager["getCurrent"]>["repository"],
+  targetNodeId: string,
+  candidateNodeIds: string[]
+) {
+  const neighborhood = buildNeighborhoodItems(repository, targetNodeId, {
+    includeInferred: true,
+    maxInferred: Math.max(4, Math.min(candidateNodeIds.length, 10))
+  });
+  const usageSummaries = repository.getRelationUsageSummaries(neighborhood.map((item) => item.edge.relationId));
+
+  return new Map(
+    neighborhood
+      .filter((item) => candidateNodeIds.includes(item.node.id))
+      .map((item) => {
+        const usageBonus = computeUsageBonus(usageSummaries.get(item.edge.relationId));
+        const relationBonus =
+          item.edge.relationSource === "canonical"
+            ? 70 + relationTypeSpecificityBonus(item.edge.relationType) * 100 + usageBonus * 60
+            : ((item.edge.relationScore ?? 0) + relationTypeSpecificityBonus(item.edge.relationType) + usageBonus) * 35;
+        return [
+          item.node.id,
+          {
+            score: relationBonus,
+            relationSource: item.edge.relationSource,
+            relationType: item.edge.relationType,
+            relationScore: item.edge.relationScore,
+            reason: item.edge.reason
+          }
+        ] as const;
+      })
+  );
+}
+
+type AutoRecomputeConfig = {
+  enabled: boolean;
+  eventThreshold: number;
+  debounceMs: number;
+  maxStalenessMs: number;
+  batchLimit: number;
+  lastRunAt: string | null;
+};
+
+type AutoRecomputeState = {
+  workspaceRoot: string | null;
+  pendingRelationIds: Set<string>;
+  pendingEventCount: number;
+  earliestPendingEventAt: string | null;
+  latestPendingEventAt: string | null;
+  timer: ReturnType<typeof setTimeout> | null;
+  running: boolean;
+};
+
+type AutoRecomputeStatus = {
+  enabled: boolean;
+  eventThreshold: number;
+  debounceMs: number;
+  maxStalenessMs: number;
+  batchLimit: number;
+  lastRunAt: string | null;
+  pendingEventCount: number;
+  pendingRelationCount: number;
+  earliestPendingEventAt: string | null;
+  latestPendingEventAt: string | null;
+  running: boolean;
+};
+
+function parseBooleanSetting(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function parseNumberSetting(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
 
 function envelope<T>(requestId: string, data: T): ApiEnvelope<T> {
   return {
@@ -103,6 +218,8 @@ function buildServiceIndex(workspaceInfo: {
       "search nodes by keyword and structured filters",
       "read node detail, related nodes, activities, and artifacts",
       "create nodes, relations, activities, and artifacts with provenance",
+      "upsert inferred relations and append relation usage signals for retrieval feedback",
+      "recompute inferred relation scores in an explicit maintenance pass",
       "list and act on review queue items",
       "build compact context bundles for coding/research/writing",
       "create or open workspaces without restarting the server"
@@ -159,8 +276,13 @@ function buildServiceIndex(workspaceInfo: {
       },
       {
         method: "GET",
-        path: "/api/v1/nodes/:id/related",
-        purpose: "Fetch directly related nodes for a node."
+        path: "/api/v1/nodes/:id/neighborhood",
+        purpose: "Fetch lightweight canonical plus inferred neighborhood items for a node."
+      },
+      {
+        method: "POST",
+        path: "/api/v1/nodes/:id/refresh-summary",
+        purpose: "Refresh a node summary locally using the deterministic stableSummary helper."
       },
       {
         method: "POST",
@@ -178,6 +300,26 @@ function buildServiceIndex(workspaceInfo: {
           },
           metadata: {}
         }
+      },
+      {
+        method: "POST",
+        path: "/api/v1/inferred-relations",
+        purpose: "Upsert a lightweight inferred relation for retrieval and graph expansion."
+      },
+      {
+        method: "POST",
+        path: "/api/v1/relation-usage-events",
+        purpose: "Append a lightweight usage signal for canonical or inferred relations."
+      },
+      {
+        method: "POST",
+        path: "/api/v1/inferred-relations/recompute",
+        purpose: "Run an explicit maintenance pass to refresh inferred relation scores from usage events."
+      },
+      {
+        method: "POST",
+        path: "/api/v1/inferred-relations/reindex",
+        purpose: "Backfill deterministic inferred relations across the active workspace."
       },
       {
         method: "GET",
@@ -240,7 +382,25 @@ export function createMemforgeApp(params: {
   apiToken: string | null;
 }) {
   const app = express();
-  app.use(cors());
+  app.use((request, _response, next) => {
+    const origin = request.header("origin");
+    if (origin && !isAllowedBrowserOrigin(origin)) {
+      next(new AppError(403, "FORBIDDEN", "Browser origin is not allowed."));
+      return;
+    }
+    next();
+  });
+  app.use(
+    cors({
+      origin(origin, callback) {
+        if (!origin) {
+          callback(null, false);
+          return;
+        }
+        callback(null, isAllowedBrowserOrigin(origin) ? origin : false);
+      }
+    })
+  );
   app.use(express.json({ limit: "2mb" }));
 
   const currentSession = () => params.workspaceSessionManager.getCurrent();
@@ -248,6 +408,213 @@ export function createMemforgeApp(params: {
   const currentWorkspaceInfo = () => currentSession().workspaceInfo;
   const currentWorkspaceRoot = () => currentSession().workspaceRoot;
   const eventSubscribers = new Set<Response>();
+  const autoRecomputeState: AutoRecomputeState = {
+    workspaceRoot: null,
+    pendingRelationIds: new Set<string>(),
+    pendingEventCount: 0,
+    earliestPendingEventAt: null,
+    latestPendingEventAt: null,
+    timer: null,
+    running: false
+  };
+
+  function clearAutoRecomputeTimer() {
+    if (autoRecomputeState.timer) {
+      clearTimeout(autoRecomputeState.timer);
+      autoRecomputeState.timer = null;
+    }
+  }
+
+  function resetAutoRecomputeState(workspaceRoot: string) {
+    clearAutoRecomputeTimer();
+    autoRecomputeState.workspaceRoot = workspaceRoot;
+    autoRecomputeState.pendingRelationIds = new Set();
+    autoRecomputeState.pendingEventCount = 0;
+    autoRecomputeState.earliestPendingEventAt = null;
+    autoRecomputeState.latestPendingEventAt = null;
+    autoRecomputeState.running = false;
+  }
+
+  function readAutoRecomputeConfig(): AutoRecomputeConfig {
+    const settings = currentRepository().getSettings([
+      "relations.autoRecompute.enabled",
+      "relations.autoRecompute.eventThreshold",
+      "relations.autoRecompute.debounceMs",
+      "relations.autoRecompute.maxStalenessMs",
+      "relations.autoRecompute.batchLimit",
+      "relations.autoRecompute.lastRunAt"
+    ]);
+    return {
+      enabled: parseBooleanSetting(settings["relations.autoRecompute.enabled"], true),
+      eventThreshold: parseNumberSetting(settings["relations.autoRecompute.eventThreshold"], 12),
+      debounceMs: parseNumberSetting(settings["relations.autoRecompute.debounceMs"], 30_000),
+      maxStalenessMs: parseNumberSetting(settings["relations.autoRecompute.maxStalenessMs"], 300_000),
+      batchLimit: parseNumberSetting(settings["relations.autoRecompute.batchLimit"], 100),
+      lastRunAt: typeof settings["relations.autoRecompute.lastRunAt"] === "string"
+        ? String(settings["relations.autoRecompute.lastRunAt"])
+        : null
+    };
+  }
+
+  function buildAutoRecomputeStatus(): AutoRecomputeStatus {
+    const config = readAutoRecomputeConfig();
+    return {
+      enabled: config.enabled,
+      eventThreshold: config.eventThreshold,
+      debounceMs: config.debounceMs,
+      maxStalenessMs: config.maxStalenessMs,
+      batchLimit: config.batchLimit,
+      lastRunAt: config.lastRunAt,
+      pendingEventCount: autoRecomputeState.pendingEventCount,
+      pendingRelationCount: autoRecomputeState.pendingRelationIds.size,
+      earliestPendingEventAt: autoRecomputeState.earliestPendingEventAt,
+      latestPendingEventAt: autoRecomputeState.latestPendingEventAt,
+      running: autoRecomputeState.running
+    };
+  }
+
+  function markPendingRelationUsage(params: { relationId: string; createdAt: string }) {
+    const workspaceRoot = currentWorkspaceRoot();
+    if (autoRecomputeState.workspaceRoot !== workspaceRoot) {
+      resetAutoRecomputeState(workspaceRoot);
+    }
+    autoRecomputeState.pendingRelationIds.add(params.relationId);
+    autoRecomputeState.pendingEventCount += 1;
+    if (!autoRecomputeState.earliestPendingEventAt || params.createdAt < autoRecomputeState.earliestPendingEventAt) {
+      autoRecomputeState.earliestPendingEventAt = params.createdAt;
+    }
+    if (!autoRecomputeState.latestPendingEventAt || params.createdAt > autoRecomputeState.latestPendingEventAt) {
+      autoRecomputeState.latestPendingEventAt = params.createdAt;
+    }
+  }
+
+  function scheduleAutoRecompute() {
+    const config = readAutoRecomputeConfig();
+    clearAutoRecomputeTimer();
+
+    if (!config.enabled || autoRecomputeState.running || autoRecomputeState.pendingEventCount === 0) {
+      return;
+    }
+
+    const now = Date.now();
+    const latestMs = autoRecomputeState.latestPendingEventAt ? Date.parse(autoRecomputeState.latestPendingEventAt) : null;
+    const earliestMs = autoRecomputeState.earliestPendingEventAt ? Date.parse(autoRecomputeState.earliestPendingEventAt) : null;
+    const thresholdReached = autoRecomputeState.pendingEventCount >= config.eventThreshold;
+    const dueDebounceMs = thresholdReached && latestMs ? Math.max(0, latestMs + config.debounceMs - now) : Number.POSITIVE_INFINITY;
+    const dueStalenessMs = earliestMs ? Math.max(0, earliestMs + config.maxStalenessMs - now) : Number.POSITIVE_INFINITY;
+    const nextDelayMs = Math.min(dueDebounceMs, dueStalenessMs);
+
+    if (!Number.isFinite(nextDelayMs)) {
+      return;
+    }
+
+    autoRecomputeState.timer = setTimeout(() => {
+      void runAutoRecompute("auto");
+    }, nextDelayMs);
+    autoRecomputeState.timer.unref?.();
+  }
+
+  function hydrateAutoRecomputeState() {
+    const workspaceRoot = currentWorkspaceRoot();
+    if (autoRecomputeState.workspaceRoot !== workspaceRoot) {
+      resetAutoRecomputeState(workspaceRoot);
+    }
+
+    const config = readAutoRecomputeConfig();
+    if (!config.enabled) {
+      clearAutoRecomputeTimer();
+      autoRecomputeState.pendingRelationIds.clear();
+      autoRecomputeState.pendingEventCount = 0;
+      autoRecomputeState.earliestPendingEventAt = null;
+      autoRecomputeState.latestPendingEventAt = null;
+      return;
+    }
+
+    const pending = currentRepository().getPendingRelationUsageStats(config.lastRunAt);
+    autoRecomputeState.pendingRelationIds = new Set(pending.relationIds);
+    autoRecomputeState.pendingEventCount = pending.eventCount;
+    autoRecomputeState.earliestPendingEventAt = pending.earliestEventAt;
+    autoRecomputeState.latestPendingEventAt = pending.latestEventAt;
+    scheduleAutoRecompute();
+  }
+
+  async function runAutoRecompute(reason: "auto" | "manual") {
+    if (autoRecomputeState.running) {
+      return;
+    }
+
+    const config = readAutoRecomputeConfig();
+    if (!config.enabled && reason === "auto") {
+      return;
+    }
+
+    clearAutoRecomputeTimer();
+    autoRecomputeState.running = true;
+    const startedAt = new Date().toISOString();
+
+    try {
+      const pending = currentRepository().getPendingRelationUsageStats(config.lastRunAt);
+      const aggregate = {
+        updatedCount: 0,
+        expiredCount: 0,
+        items: [] as InferredRelationRecord[]
+      };
+
+      const appendResult = (result: { updatedCount: number; expiredCount: number; items: typeof aggregate.items }) => {
+        aggregate.updatedCount += result.updatedCount;
+        aggregate.expiredCount += result.expiredCount;
+        aggregate.items.push(...result.items);
+      };
+
+      if (reason === "manual" && pending.relationIds.length === 0) {
+        const totalRelations = currentRepository().countInferredRelations();
+        if (totalRelations === 0) {
+          currentRepository().setSetting("relations.autoRecompute.lastRunAt", startedAt);
+          return aggregate;
+        }
+
+        const totalBatches = Math.ceil(totalRelations / config.batchLimit);
+        for (let batchIndex = 0; batchIndex < totalBatches; batchIndex += 1) {
+          appendResult(
+            currentRepository().recomputeInferredRelationScores({
+              limit: config.batchLimit
+            })
+          );
+        }
+
+        currentRepository().setSetting("relations.autoRecompute.lastRunAt", startedAt);
+        broadcastWorkspaceEvent({
+          reason: "inferred-relation.recomputed",
+          entityType: "relation"
+        });
+        return aggregate;
+      }
+
+      if (pending.relationIds.length === 0) {
+        currentRepository().setSetting("relations.autoRecompute.lastRunAt", startedAt);
+        return aggregate;
+      }
+
+      for (let index = 0; index < pending.relationIds.length; index += config.batchLimit) {
+        appendResult(
+          currentRepository().recomputeInferredRelationScores({
+            relationIds: pending.relationIds.slice(index, index + config.batchLimit),
+            limit: config.batchLimit
+          })
+        );
+      }
+
+      currentRepository().setSetting("relations.autoRecompute.lastRunAt", startedAt);
+      broadcastWorkspaceEvent({
+        reason: reason === "auto" ? "inferred-relation.auto-recomputed" : "inferred-relation.recomputed",
+        entityType: "relation"
+      });
+      return aggregate;
+    } finally {
+      autoRecomputeState.running = false;
+      hydrateAutoRecomputeState();
+    }
+  }
 
   function broadcastWorkspaceEvent(event: {
     reason: string;
@@ -270,6 +637,8 @@ export function createMemforgeApp(params: {
     }
   }
 
+  hydrateAutoRecomputeState();
+
   app.use((request, response, next) => {
     const requestId = createId("req");
     response.locals.requestId = requestId;
@@ -282,7 +651,10 @@ export function createMemforgeApp(params: {
       return;
     }
 
-    if (request.path === "/health" || request.path === "/workspace" || request.path === "/bootstrap") {
+    const origin = request.header("origin");
+    const allowUnauthenticatedEventStream =
+      request.method === "GET" && request.path === "/events" && Boolean(origin && isAllowedBrowserOrigin(origin));
+    if (request.path === "/health" || request.path === "/workspace" || request.path === "/bootstrap" || allowUnauthenticatedEventStream) {
       next();
       return;
     }
@@ -305,7 +677,8 @@ export function createMemforgeApp(params: {
         status: "ok",
         workspaceLoaded: true,
         workspaceRoot: workspaceInfo.rootPath,
-        schemaVersion: workspaceInfo.schemaVersion
+        schemaVersion: workspaceInfo.schemaVersion,
+        autoRecompute: buildAutoRecomputeStatus()
       })
     );
   });
@@ -323,7 +696,8 @@ export function createMemforgeApp(params: {
     response.json(
       envelope(response.locals.requestId, {
         workspace: workspaceInfo,
-        authMode: workspaceInfo.authMode
+        authMode: workspaceInfo.authMode,
+        autoRecompute: buildAutoRecomputeStatus()
       })
     );
   });
@@ -361,6 +735,7 @@ export function createMemforgeApp(params: {
   app.post("/api/v1/workspaces", (request, response) => {
     const input = createWorkspaceSchema.parse(request.body ?? {});
     const workspace = params.workspaceSessionManager.createWorkspace(input.rootPath, input.workspaceName);
+    hydrateAutoRecomputeState();
     broadcastWorkspaceEvent({
       reason: "workspace.created",
       entityType: "workspace"
@@ -377,6 +752,7 @@ export function createMemforgeApp(params: {
   app.post("/api/v1/workspaces/open", (request, response) => {
     const input = openWorkspaceSchema.parse(request.body ?? {});
     const workspace = params.workspaceSessionManager.openWorkspace(input.rootPath);
+    hydrateAutoRecomputeState();
     broadcastWorkspaceEvent({
       reason: "workspace.opened",
       entityType: "workspace"
@@ -443,6 +819,7 @@ export function createMemforgeApp(params: {
         }
       });
     }
+    refreshAutomaticInferredRelationsForNode(repository, node.id, "node-write");
     broadcastWorkspaceEvent({
       reason: "node.created",
       entityType: "node",
@@ -452,10 +829,45 @@ export function createMemforgeApp(params: {
   });
 
   app.patch("/api/v1/nodes/:id", (request, response) => {
-    const input = updateNodeSchema.parse(request.body ?? {});
-    const node = currentRepository().updateNode(request.params.id, input);
+    const repository = currentRepository();
+    const body = updateNodeRequestSchema.parse(request.body ?? {});
+    const { source, ...input } = body;
+    const node = repository.updateNode(request.params.id, input);
+    repository.recordProvenance({
+      entityType: "node",
+      entityId: node.id,
+      operationType: "update",
+      source,
+      metadata: {
+        fields: Object.keys(input).filter((key) => key !== "source")
+      }
+    });
+    refreshAutomaticInferredRelationsForNode(repository, node.id, "node-write");
     broadcastWorkspaceEvent({
       reason: "node.updated",
+      entityType: "node",
+      entityId: node.id
+    });
+    response.json(envelope(response.locals.requestId, { node }));
+  });
+
+  app.post("/api/v1/nodes/:id/refresh-summary", (request, response) => {
+    const repository = currentRepository();
+    const body = reviewActionSchema.pick({ source: true }).parse(request.body ?? {});
+    const node = repository.refreshNodeSummary(request.params.id);
+    repository.recordProvenance({
+      entityType: "node",
+      entityId: node.id,
+      operationType: "update",
+      source: body.source,
+      metadata: {
+        fields: ["summary"],
+        reason: "summary.refreshed"
+      }
+    });
+    refreshAutomaticInferredRelationsForNode(repository, node.id, "node-write");
+    broadcastWorkspaceEvent({
+      reason: "node.summary_refreshed",
       entityType: "node",
       entityId: node.id
     });
@@ -472,6 +884,7 @@ export function createMemforgeApp(params: {
       operationType: "archive",
       source: body.source
     });
+    refreshAutomaticInferredRelationsForNode(repository, node.id, "node-write");
     broadcastWorkspaceEvent({
       reason: "node.archived",
       entityType: "node",
@@ -482,8 +895,28 @@ export function createMemforgeApp(params: {
 
   app.get("/api/v1/nodes/:id/related", (request, response) => {
     const depth = Number(request.query.depth ?? 1);
-    const types = typeof request.query.types === "string" ? request.query.types.split(",") : undefined;
+    const types = parseRelationTypesQuery(request.query.types);
     const items = currentRepository().listRelatedNodes(request.params.id, depth, types);
+    response.json(envelope(response.locals.requestId, { items }));
+  });
+
+  app.get("/api/v1/nodes/:id/neighborhood", (request, response) => {
+    const depth = Number(request.query.depth ?? 1);
+    if (depth !== 1) {
+      throw new AppError(400, "INVALID_INPUT", "Only depth=1 is supported in the hot path.");
+    }
+    const types = parseRelationTypesQuery(request.query.types);
+    const includeInferred =
+      request.query.include_inferred === "1" ||
+      request.query.include_inferred === "true" ||
+      request.query.include_inferred === undefined;
+    const requestedMaxInferred = Number(request.query.max_inferred ?? 4);
+    const maxInferred = Number.isFinite(requestedMaxInferred) ? Math.max(0, Math.min(requestedMaxInferred, 10)) : 4;
+    const items = buildNeighborhoodItems(currentRepository(), request.params.id, {
+      relationTypes: types,
+      includeInferred,
+      maxInferred
+    });
     response.json(envelope(response.locals.requestId, { items }));
   });
 
@@ -514,12 +947,66 @@ export function createMemforgeApp(params: {
         notes: "Agent-created relations stay suggested until approved."
       });
     }
+    refreshAutomaticInferredRelationsForNode(repository, relation.fromNodeId, "node-write");
+    refreshAutomaticInferredRelationsForNode(repository, relation.toNodeId, "node-write");
     broadcastWorkspaceEvent({
       reason: "relation.created",
       entityType: "relation",
       entityId: relation.id
     });
     response.status(201).json(envelope(response.locals.requestId, { relation, reviewItem }));
+  });
+
+  app.post("/api/v1/inferred-relations", (request, response) => {
+    const relation = currentRepository().upsertInferredRelation(upsertInferredRelationSchema.parse(request.body ?? {}));
+    broadcastWorkspaceEvent({
+      reason: "inferred-relation.upserted",
+      entityType: "relation",
+      entityId: relation.id
+    });
+    response.status(201).json(envelope(response.locals.requestId, { relation }));
+  });
+
+  app.post("/api/v1/relation-usage-events", (request, response) => {
+    const event = currentRepository().appendRelationUsageEvent(appendRelationUsageEventSchema.parse(request.body ?? {}));
+    markPendingRelationUsage({
+      relationId: event.relationId,
+      createdAt: event.createdAt
+    });
+    scheduleAutoRecompute();
+    broadcastWorkspaceEvent({
+      reason: "relation-usage.appended",
+      entityType: "relation",
+      entityId: event.relationId
+    });
+    response.status(201).json(envelope(response.locals.requestId, { event }));
+  });
+
+  app.post("/api/v1/inferred-relations/recompute", async (request, response) => {
+    const input = recomputeInferredRelationsSchema.parse(request.body ?? {});
+    const isFullMaintenancePass = !input.generator && !input.relationIds?.length;
+    if (isFullMaintenancePass) {
+      const result = await runAutoRecompute("manual");
+      response.json(envelope(response.locals.requestId, result));
+      return;
+    }
+
+    const result = currentRepository().recomputeInferredRelationScores(input);
+    broadcastWorkspaceEvent({
+      reason: "inferred-relation.recomputed",
+      entityType: "relation"
+    });
+    response.json(envelope(response.locals.requestId, result));
+  });
+
+  app.post("/api/v1/inferred-relations/reindex", (request, response) => {
+    const input = reindexInferredRelationsSchema.parse(request.body ?? {});
+    const result = reindexAutomaticInferredRelations(currentRepository(), input);
+    broadcastWorkspaceEvent({
+      reason: "inferred-relation.reindexed",
+      entityType: "relation"
+    });
+    response.json(envelope(response.locals.requestId, result));
   });
 
   app.patch("/api/v1/relations/:id", (request, response) => {
@@ -533,6 +1020,8 @@ export function createMemforgeApp(params: {
       source: input.source,
       metadata: input.metadata
     });
+    refreshAutomaticInferredRelationsForNode(repository, relation.fromNodeId, "node-write");
+    refreshAutomaticInferredRelationsForNode(repository, relation.toNodeId, "node-write");
     broadcastWorkspaceEvent({
       reason: "relation.updated",
       entityType: "relation",
@@ -577,6 +1066,7 @@ export function createMemforgeApp(params: {
         promotedToSuggested: Boolean(promotion.suggestedNodeId)
       }
     });
+    refreshAutomaticInferredRelationsForNode(repository, activity.targetNodeId, "activity-append");
     broadcastWorkspaceEvent({
       reason: "activity.appended",
       entityType: "activity",
@@ -603,6 +1093,7 @@ export function createMemforgeApp(params: {
       operationType: "attach",
       source: input.source
     });
+    refreshAutomaticInferredRelationsForNode(repository, artifact.nodeId, "node-write");
     broadcastWorkspaceEvent({
       reason: "artifact.attached",
       entityType: "artifact",
@@ -643,7 +1134,10 @@ export function createMemforgeApp(params: {
   app.get("/api/v1/retrieval/decisions/:targetId", (request, response) => {
     const repository = currentRepository();
     const target = repository.getNode(request.params.targetId);
-    const related = repository.listRelatedNodes(target.id).map((item) => item.node.id);
+    const related = buildNeighborhoodItems(repository, target.id, {
+      includeInferred: true,
+      maxInferred: 4
+    }).map((item) => item.node.id);
     const items = repository
       .searchNodes({
         query: "",
@@ -659,7 +1153,10 @@ export function createMemforgeApp(params: {
   app.get("/api/v1/retrieval/open-questions/:targetId", (request, response) => {
     const repository = currentRepository();
     const target = repository.getNode(request.params.targetId);
-    const related = repository.listRelatedNodes(target.id).map((item) => item.node.id);
+    const related = buildNeighborhoodItems(repository, target.id, {
+      includeInferred: true,
+      maxInferred: 4
+    }).map((item) => item.node.id);
     const items = repository
       .searchNodes({
         query: "",
@@ -677,6 +1174,8 @@ export function createMemforgeApp(params: {
     const query = typeof request.body?.query === "string" ? request.body.query : "";
     const candidateNodeIds: string[] = Array.isArray(request.body?.candidateNodeIds) ? request.body.candidateNodeIds : [];
     const preset = typeof request.body?.preset === "string" ? request.body.preset : "for-assistant";
+    const targetNodeId = typeof request.body?.targetNodeId === "string" ? request.body.targetNodeId : null;
+    const relationBonuses = targetNodeId ? buildCandidateRelationBonusMap(repository, targetNodeId, candidateNodeIds) : new Map();
     const ranked = candidateNodeIds
       .map((id: string) => repository.getNode(id))
       .map((node) => ({
@@ -685,8 +1184,13 @@ export function createMemforgeApp(params: {
           (node.title?.toLowerCase().includes(query.toLowerCase()) ? 50 : 0) +
           (node.summary?.toLowerCase().includes(query.toLowerCase()) ? 20 : 0) +
           (preset === "for-coding" && node.type === "decision" ? 15 : 0) +
-          (node.canonicality === "canonical" ? 10 : 0),
-        title: node.title
+          (node.canonicality === "canonical" ? 10 : 0) +
+          (relationBonuses.get(node.id)?.score ?? 0),
+        title: node.title,
+        relationSource: relationBonuses.get(node.id)?.relationSource ?? null,
+        relationType: relationBonuses.get(node.id)?.relationType ?? null,
+        relationScore: relationBonuses.get(node.id)?.relationScore ?? null,
+        reason: relationBonuses.get(node.id)?.reason ?? null
       }))
       .sort((left: { score: number }, right: { score: number }) => right.score - left.score);
     response.json(envelope(response.locals.requestId, { items: ranked }));
@@ -746,8 +1250,17 @@ export function createMemforgeApp(params: {
   });
 
   app.post("/api/v1/review-queue/:id/approve", (request, response) => {
+    const repository = currentRepository();
     const input = reviewActionSchema.parse(request.body ?? {});
-    const result = applyReviewDecision(currentRepository(), request.params.id, "approve", input);
+    const review = repository.getReviewItem(request.params.id);
+    const result = applyReviewDecision(repository, request.params.id, "approve", input);
+    if (review.entityType === "relation") {
+      const relation = repository.getRelation(review.entityId);
+      refreshAutomaticInferredRelationsForNode(repository, relation.fromNodeId, "node-write");
+      refreshAutomaticInferredRelationsForNode(repository, relation.toNodeId, "node-write");
+    } else if (review.entityType === "node") {
+      refreshAutomaticInferredRelationsForNode(repository, review.entityId, "node-write");
+    }
     broadcastWorkspaceEvent({
       reason: "review.approved",
       entityType: "review",
@@ -757,8 +1270,17 @@ export function createMemforgeApp(params: {
   });
 
   app.post("/api/v1/review-queue/:id/reject", (request, response) => {
+    const repository = currentRepository();
     const input = reviewActionSchema.parse(request.body ?? {});
-    const result = applyReviewDecision(currentRepository(), request.params.id, "reject", input);
+    const review = repository.getReviewItem(request.params.id);
+    const result = applyReviewDecision(repository, request.params.id, "reject", input);
+    if (review.entityType === "relation") {
+      const relation = repository.getRelation(review.entityId);
+      refreshAutomaticInferredRelationsForNode(repository, relation.fromNodeId, "node-write");
+      refreshAutomaticInferredRelationsForNode(repository, relation.toNodeId, "node-write");
+    } else if (review.entityType === "node") {
+      refreshAutomaticInferredRelationsForNode(repository, review.entityId, "node-write");
+    }
     broadcastWorkspaceEvent({
       reason: "review.rejected",
       entityType: "review",
@@ -768,8 +1290,17 @@ export function createMemforgeApp(params: {
   });
 
   app.post("/api/v1/review-queue/:id/edit-and-approve", (request, response) => {
+    const repository = currentRepository();
     const input = reviewActionSchema.parse(request.body ?? {});
-    const result = applyReviewDecision(currentRepository(), request.params.id, "edit-and-approve", input);
+    const review = repository.getReviewItem(request.params.id);
+    const result = applyReviewDecision(repository, request.params.id, "edit-and-approve", input);
+    if (review.entityType === "relation") {
+      const relation = repository.getRelation(review.entityId);
+      refreshAutomaticInferredRelationsForNode(repository, relation.fromNodeId, "node-write");
+      refreshAutomaticInferredRelationsForNode(repository, relation.toNodeId, "node-write");
+    } else if (review.entityType === "node") {
+      refreshAutomaticInferredRelationsForNode(repository, review.entityId, "node-write");
+    }
     broadcastWorkspaceEvent({
       reason: "review.edit_and_approved",
       entityType: "review",
@@ -831,7 +1362,7 @@ export function createMemforgeApp(params: {
   app.use("/artifacts", (request, response, next) => {
     const workspaceRoot = currentWorkspaceRoot();
     const artifactPath = path.resolve(workspaceRoot, request.path.replace(/^\//, ""));
-    if (!artifactPath.startsWith(path.resolve(workspaceRoot))) {
+    if (!isPathWithinRoot(workspaceRoot, artifactPath)) {
       next(new AppError(403, "FORBIDDEN", "Artifact path escapes workspace root."));
       return;
     }

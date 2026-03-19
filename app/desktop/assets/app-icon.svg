@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#15283c"/>
+      <stop offset="1" stop-color="#08131f"/>
+    </linearGradient>
+    <linearGradient id="mint" x1="304" y1="316" x2="676" y2="744" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#c9fbec"/>
+      <stop offset="1" stop-color="#6fd5bd"/>
+    </linearGradient>
+    <radialGradient id="glowLeft" cx="0" cy="0" r="1" gradientTransform="translate(264 262) rotate(90) scale(300)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5fb9ad" stop-opacity="0.72"/>
+      <stop offset="1" stop-color="#5fb9ad" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowRight" cx="0" cy="0" r="1" gradientTransform="translate(736 274) rotate(90) scale(152)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8a7b5a" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#8a7b5a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#bg)"/>
+  <rect x="84" y="84" width="856" height="856" rx="160" fill="none" stroke="#29455e" stroke-width="12"/>
+
+  <circle cx="264" cy="262" r="300" fill="url(#glowLeft)"/>
+  <circle cx="736" cy="274" r="152" fill="url(#glowRight)"/>
+
+  <g>
+    <circle cx="278" cy="284" r="24" fill="#99f5dd"/>
+    <circle cx="744" cy="284" r="22" fill="#99f5dd"/>
+    <path d="M278 284H744" stroke="#8ddfce" stroke-width="12" stroke-linecap="round"/>
+  </g>
+
+  <g fill="url(#mint)">
+    <path d="M278 742V318h112l122 184 122-184h112v424H642V522L532 688H492L382 522v220z"/>
+  </g>
+
+  <path d="M512 444l28 44v190" stroke="#d9fff5" stroke-width="12" stroke-linecap="round"/>
+  <path d="M512 444l-132-126h88l44 72 44-72h88z" fill="#08131f"/>
+  <circle cx="512" cy="522" r="36" fill="#effffb" opacity="0.92"/>
+  <path d="M512 470v104" stroke="#93e4d2" stroke-width="10" stroke-linecap="round"/>
+
+  <circle cx="352" cy="742" r="22" fill="#ff9b5e"/>
+  <circle cx="670" cy="742" r="22" fill="#ff9b5e"/>
+</svg>

@@ -4,27 +4,39 @@ import type { DatabaseSync } from "node:sqlite";
 import type {
   ActivityRecord,
   ArtifactRecord,
+  InferredRelationRecord,
+  InferredRelationRecomputeResult,
   IntegrationRecord,
   JsonMap,
   NodeRecord,
+  PendingRelationUsageStats,
   ProvenanceRecord,
   RelationRecord,
+  RelationUsageEventRecord,
+  RelationUsageSummary,
   ReviewQueueRecord,
   SearchResultItem
 } from "../shared/types.js";
 import type {
   AppendActivityInput,
+  AppendRelationUsageEventInput,
   CreateNodeInput,
   CreateRelationInput,
+  RecomputeInferredRelationsInput,
   RegisterIntegrationInput,
   Source,
+  UpsertInferredRelationInput,
   UpdateIntegrationInput,
   UpdateNodeInput
 } from "../shared/contracts.js";
 import { AppError, assertPresent } from "./errors.js";
-import { checksumText, createId, nowIso, parseJson, stableSummary } from "./utils.js";
+import { computeMaintainedScores } from "./relation-scoring.js";
+import { checksumText, createId, isPathWithinRoot, nowIso, parseJson, stableSummary } from "./utils.js";
 
 type SqlValue = string | number | bigint | Uint8Array | null;
+
+const SUMMARY_UPDATED_AT_KEY = "summaryUpdatedAt";
+const SUMMARY_SOURCE_KEY = "summarySource";
 
 function mapNode(row: Record<string, unknown>): NodeRecord {
   return {
@@ -75,6 +87,41 @@ function mapActivity(row: Record<string, unknown>): ActivityRecord {
   };
 }
 
+function mapInferredRelation(row: Record<string, unknown>): InferredRelationRecord {
+  return {
+    id: String(row.id),
+    fromNodeId: String(row.from_node_id),
+    toNodeId: String(row.to_node_id),
+    relationType: row.relation_type as InferredRelationRecord["relationType"],
+    baseScore: Number(row.base_score),
+    usageScore: Number(row.usage_score),
+    finalScore: Number(row.final_score),
+    status: row.status as InferredRelationRecord["status"],
+    generator: String(row.generator),
+    evidence: parseJson<JsonMap>(row.evidence_json as string | null, {}),
+    lastComputedAt: String(row.last_computed_at),
+    expiresAt: row.expires_at ? String(row.expires_at) : null,
+    metadata: parseJson<JsonMap>(row.metadata_json as string | null, {})
+  };
+}
+
+function mapRelationUsageEvent(row: Record<string, unknown>): RelationUsageEventRecord {
+  return {
+    id: String(row.id),
+    relationId: String(row.relation_id),
+    relationSource: row.relation_source as RelationUsageEventRecord["relationSource"],
+    eventType: row.event_type as RelationUsageEventRecord["eventType"],
+    sessionId: row.session_id ? String(row.session_id) : null,
+    runId: row.run_id ? String(row.run_id) : null,
+    actorType: row.actor_type ? String(row.actor_type) : null,
+    actorLabel: row.actor_label ? String(row.actor_label) : null,
+    toolName: row.tool_name ? String(row.tool_name) : null,
+    delta: Number(row.delta),
+    createdAt: String(row.created_at),
+    metadata: parseJson<JsonMap>(row.metadata_json as string | null, {})
+  };
+}
+
 function mapArtifact(row: Record<string, unknown>): ArtifactRecord {
   return {
     id: String(row.id),
@@ -120,6 +167,18 @@ function mapReviewQueue(row: Record<string, unknown>): ReviewQueueRecord {
   };
 }
 
+function withSummaryMetadata(
+  metadata: JsonMap,
+  summaryUpdatedAt: string,
+  summarySource: "derived" | "explicit" | "manual_refresh"
+): JsonMap {
+  return {
+    ...metadata,
+    [SUMMARY_UPDATED_AT_KEY]: summaryUpdatedAt,
+    [SUMMARY_SOURCE_KEY]: summarySource
+  };
+}
+
 function mapIntegration(row: Record<string, unknown>): IntegrationRecord {
   return {
     id: String(row.id),
@@ -161,6 +220,94 @@ export class MemforgeRepository {
       updatedAt: String(row.updated_at),
       tags: parseJson<string[]>(row.tags_json as string | null, [])
     }));
+  }
+
+  listInferenceCandidateNodes(targetNodeId: string, limit = 200): NodeRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM nodes
+         WHERE id != ?
+           AND status IN ('active', 'review')
+         ORDER BY updated_at DESC
+         LIMIT ?`
+      )
+      .all(targetNodeId, limit) as Record<string, unknown>[];
+
+    return rows.map(mapNode);
+  }
+
+  listSharedProjectMemberNodeIds(targetNodeId: string, limit = 200): string[] {
+    const target = this.getNode(targetNodeId);
+    const projectIds = new Set<string>();
+
+    if (target.type === "project" && target.status === "active") {
+      projectIds.add(target.id);
+    }
+
+    for (const item of this.listRelatedNodes(targetNodeId)) {
+      if (item.relation.status === "active" && item.node.status === "active" && item.node.type === "project") {
+        projectIds.add(item.node.id);
+      }
+    }
+
+    if (!projectIds.size) {
+      return [];
+    }
+
+    const candidateIds = new Set<string>();
+    for (const projectId of projectIds) {
+      for (const item of this.listRelatedNodes(projectId)) {
+        if (item.relation.status !== "active" || item.node.status !== "active" || item.node.id === targetNodeId) {
+          continue;
+        }
+        candidateIds.add(item.node.id);
+        if (candidateIds.size >= limit) {
+          return Array.from(candidateIds);
+        }
+      }
+    }
+
+    return Array.from(candidateIds);
+  }
+
+  listNodesSharingArtifactPaths(targetNodeId: string, limit = 200): string[] {
+    const artifactPaths = Array.from(
+      new Set(
+        this.listArtifacts(targetNodeId)
+          .map((artifact) => artifact.path)
+          .filter(Boolean)
+      )
+    );
+    if (!artifactPaths.length) {
+      return [];
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT node_id
+         FROM artifacts
+         WHERE path IN (${artifactPaths.map(() => "?").join(", ")})
+           AND node_id != ?
+         ORDER BY created_at DESC
+         LIMIT ?`
+      )
+      .all(...artifactPaths, targetNodeId, limit) as Record<string, unknown>[];
+
+    return rows.map((row) => String(row.node_id));
+  }
+
+  listInferenceTargetNodeIds(limit = 250): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id
+         FROM nodes
+         WHERE status IN ('active', 'review')
+         ORDER BY updated_at DESC
+         LIMIT ?`
+      )
+      .all(limit) as Array<Record<string, unknown>>;
+
+    return rows.map((row) => String(row.id));
   }
 
   searchNodes(input: {
@@ -334,6 +481,8 @@ export class MemforgeRepository {
   createNode(input: CreateNodeInput & { resolvedCanonicality: string; resolvedStatus: string }): NodeRecord {
     const now = nowIso();
     const id = createId("node");
+    const nextSummary = input.summary ?? stableSummary(input.title, input.body);
+    const nextMetadata = withSummaryMetadata(input.metadata, now, input.summary !== undefined ? "explicit" : "derived");
     this.db
       .prepare(
         `INSERT INTO nodes (
@@ -348,14 +497,14 @@ export class MemforgeRepository {
         input.resolvedCanonicality,
         input.title,
         input.body,
-        input.summary ?? stableSummary(input.title, input.body),
+        nextSummary,
         input.source.actorLabel,
         input.source.actorType,
         input.source.actorLabel,
         now,
         now,
         JSON.stringify(input.tags),
-        JSON.stringify(input.metadata)
+        JSON.stringify(nextMetadata)
       );
 
     return this.getNode(id);
@@ -365,9 +514,28 @@ export class MemforgeRepository {
     const existing = this.getNode(id);
     const nextTitle = input.title ?? existing.title;
     const nextBody = input.body ?? existing.body;
-    const nextSummary = input.summary ?? stableSummary(nextTitle, nextBody);
+    const existingDerivedSummary = stableSummary(existing.title, existing.body);
+    const shouldRefreshDerivedSummary =
+      input.summary !== undefined
+        ? false
+        : input.title !== undefined || input.body !== undefined
+          ? !existing.summary || existing.summary === existingDerivedSummary
+          : false;
+    const nextSummary =
+      input.summary !== undefined
+        ? input.summary
+        : shouldRefreshDerivedSummary
+          ? stableSummary(nextTitle, nextBody)
+          : existing.summary;
     const nextTags = input.tags ?? existing.tags;
-    const nextMetadata = input.metadata ?? existing.metadata;
+    const mergedMetadata = input.metadata ? { ...existing.metadata, ...input.metadata } : existing.metadata;
+    const updatedAt = nowIso();
+    const nextMetadata =
+      input.summary !== undefined
+        ? withSummaryMetadata(mergedMetadata, updatedAt, "explicit")
+        : shouldRefreshDerivedSummary
+          ? withSummaryMetadata(mergedMetadata, updatedAt, "derived")
+          : mergedMetadata;
     const nextStatus = input.status ?? existing.status;
 
     this.db
@@ -383,9 +551,26 @@ export class MemforgeRepository {
         JSON.stringify(nextTags),
         JSON.stringify(nextMetadata),
         nextStatus,
-        nowIso(),
+        updatedAt,
         id
       );
+
+    return this.getNode(id);
+  }
+
+  refreshNodeSummary(id: string): NodeRecord {
+    const existing = this.getNode(id);
+    const updatedAt = nowIso();
+    const nextSummary = stableSummary(existing.title, existing.body);
+    const nextMetadata = withSummaryMetadata(existing.metadata, updatedAt, "manual_refresh");
+
+    this.db
+      .prepare(
+        `UPDATE nodes
+         SET summary = ?, metadata_json = ?, updated_at = ?
+         WHERE id = ?`
+      )
+      .run(nextSummary, JSON.stringify(nextMetadata), updatedAt, id);
 
     return this.getNode(id);
   }
@@ -453,9 +638,290 @@ export class MemforgeRepository {
     return this.getRelation(id);
   }
 
+  upsertInferredRelation(input: UpsertInferredRelationInput): InferredRelationRecord {
+    const existing = this.db
+      .prepare(
+        `SELECT id FROM inferred_relations
+         WHERE from_node_id = ? AND to_node_id = ? AND relation_type = ? AND generator = ?`
+      )
+      .get(input.fromNodeId, input.toNodeId, input.relationType, input.generator) as { id: string } | undefined;
+    const id = existing?.id ?? createId("irel");
+    const now = nowIso();
+
+    this.db
+      .prepare(
+        `INSERT INTO inferred_relations (
+          id, from_node_id, to_node_id, relation_type, base_score, usage_score, final_score, status,
+          generator, evidence_json, last_computed_at, expires_at, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(from_node_id, to_node_id, relation_type, generator) DO UPDATE SET
+          base_score = excluded.base_score,
+          usage_score = excluded.usage_score,
+          final_score = excluded.final_score,
+          status = excluded.status,
+          evidence_json = excluded.evidence_json,
+          last_computed_at = excluded.last_computed_at,
+          expires_at = excluded.expires_at,
+          metadata_json = excluded.metadata_json`
+      )
+      .run(
+        id,
+        input.fromNodeId,
+        input.toNodeId,
+        input.relationType,
+        input.baseScore,
+        input.usageScore,
+        input.finalScore,
+        input.status,
+        input.generator,
+        JSON.stringify(input.evidence),
+        now,
+        input.expiresAt ?? null,
+        JSON.stringify(input.metadata)
+      );
+
+    return this.getInferredRelationByIdentity(input.fromNodeId, input.toNodeId, input.relationType, input.generator);
+  }
+
   getRelation(id: string): RelationRecord {
     const row = this.db.prepare(`SELECT * FROM relations WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
     return mapRelation(assertPresent(row, `Relation ${id} not found`));
+  }
+
+  getInferredRelation(id: string): InferredRelationRecord {
+    const row = this.db
+      .prepare(`SELECT * FROM inferred_relations WHERE id = ?`)
+      .get(id) as Record<string, unknown> | undefined;
+    return mapInferredRelation(assertPresent(row, `Inferred relation ${id} not found`));
+  }
+
+  getInferredRelationByIdentity(fromNodeId: string, toNodeId: string, relationType: string, generator: string): InferredRelationRecord {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM inferred_relations
+         WHERE from_node_id = ? AND to_node_id = ? AND relation_type = ? AND generator = ?`
+      )
+      .get(fromNodeId, toNodeId, relationType, generator) as Record<string, unknown> | undefined;
+    return mapInferredRelation(assertPresent(row, `Inferred relation ${fromNodeId}:${toNodeId}:${relationType}:${generator} not found`));
+  }
+
+  listInferredRelationsForNode(nodeId: string, limit = 20, status = "active"): InferredRelationRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM inferred_relations
+         WHERE status = ?
+           AND (from_node_id = ? OR to_node_id = ?)
+           AND (expires_at IS NULL OR expires_at > ?)
+         ORDER BY final_score DESC, last_computed_at DESC
+         LIMIT ?`
+      )
+      .all(status, nodeId, nodeId, nowIso(), limit) as Record<string, unknown>[];
+    return rows.map(mapInferredRelation);
+  }
+
+  expireAutoInferredRelationsForNode(nodeId: string, generators: string[], keepRelationIds: string[] = []): number {
+    if (!generators.length) {
+      return 0;
+    }
+
+    const where = [
+      `(from_node_id = ? OR to_node_id = ?)`,
+      `generator IN (${generators.map(() => "?").join(", ")})`,
+      `status != 'expired'`
+    ];
+    const values: SqlValue[] = [nodeId, nodeId, ...generators];
+
+    if (keepRelationIds.length) {
+      where.push(`id NOT IN (${keepRelationIds.map(() => "?").join(", ")})`);
+      values.push(...keepRelationIds);
+    }
+
+    const result = this.db
+      .prepare(
+        `UPDATE inferred_relations
+         SET status = 'expired', last_computed_at = ?
+         WHERE ${where.join(" AND ")}`
+      )
+      .run(nowIso(), ...values);
+
+    return Number(result.changes ?? 0);
+  }
+
+  appendRelationUsageEvent(input: AppendRelationUsageEventInput): RelationUsageEventRecord {
+    const id = createId("rue");
+    const now = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO relation_usage_events (
+          id, relation_id, relation_source, event_type, session_id, run_id, actor_type, actor_label,
+          tool_name, delta, created_at, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        input.relationId,
+        input.relationSource,
+        input.eventType,
+        input.sessionId ?? null,
+        input.runId ?? null,
+        input.source?.actorType ?? null,
+        input.source?.actorLabel ?? null,
+        input.source?.toolName ?? null,
+        input.delta,
+        now,
+        JSON.stringify(input.metadata)
+      );
+    return this.getRelationUsageEvent(id);
+  }
+
+  getRelationUsageEvent(id: string): RelationUsageEventRecord {
+    const row = this.db
+      .prepare(`SELECT * FROM relation_usage_events WHERE id = ?`)
+      .get(id) as Record<string, unknown> | undefined;
+    return mapRelationUsageEvent(assertPresent(row, `Relation usage event ${id} not found`));
+  }
+
+  listRelationUsageEvents(relationId: string, limit = 50): RelationUsageEventRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM relation_usage_events
+         WHERE relation_id = ?
+         ORDER BY created_at DESC
+         LIMIT ?`
+      )
+      .all(relationId, limit) as Record<string, unknown>[];
+    return rows.map(mapRelationUsageEvent);
+  }
+
+  getRelationUsageSummaries(relationIds: string[]): Map<string, RelationUsageSummary> {
+    if (!relationIds.length) {
+      return new Map();
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT
+           relation_id,
+           COALESCE(SUM(delta), 0) AS total_delta,
+           COUNT(*) AS event_count,
+           MAX(created_at) AS last_event_at
+         FROM relation_usage_events
+         WHERE relation_id IN (${relationIds.map(() => "?").join(", ")})
+         GROUP BY relation_id`
+      )
+      .all(...relationIds) as Array<Record<string, unknown>>;
+
+    return new Map(
+      rows.map((row) => [
+        String(row.relation_id),
+        {
+          relationId: String(row.relation_id),
+          totalDelta: Number(row.total_delta),
+          eventCount: Number(row.event_count),
+          lastEventAt: row.last_event_at ? String(row.last_event_at) : null
+        }
+      ])
+    );
+  }
+
+  getPendingRelationUsageStats(since: string | null): PendingRelationUsageStats {
+    const whereClause = since ? "WHERE created_at > ?" : "";
+    const bindings = since ? [since] : [];
+    const statsRow = this.db
+      .prepare(
+        `SELECT
+           COUNT(*) AS event_count,
+           MIN(created_at) AS earliest_event_at,
+           MAX(created_at) AS latest_event_at
+         FROM relation_usage_events
+         ${whereClause}`
+      )
+      .get(...bindings) as Record<string, unknown>;
+    const relationRows = this.db
+      .prepare(
+        `SELECT
+           relation_id,
+           MAX(created_at) AS latest_event_at
+         FROM relation_usage_events
+         ${whereClause}
+         GROUP BY relation_id
+         ORDER BY latest_event_at DESC`
+      )
+      .all(...bindings) as Array<Record<string, unknown>>;
+
+    return {
+      relationIds: relationRows.map((row) => String(row.relation_id)),
+      eventCount: Number(statsRow.event_count ?? 0),
+      earliestEventAt: statsRow.earliest_event_at ? String(statsRow.earliest_event_at) : null,
+      latestEventAt: statsRow.latest_event_at ? String(statsRow.latest_event_at) : null
+    };
+  }
+
+  recomputeInferredRelationScores(input: RecomputeInferredRelationsInput): InferredRelationRecomputeResult {
+    const where: string[] = [];
+    const values: SqlValue[] = [];
+
+    if (input.generator) {
+      where.push("generator = ?");
+      values.push(input.generator);
+    }
+
+    if (input.relationIds?.length) {
+      where.push(`id IN (${input.relationIds.map(() => "?").join(", ")})`);
+      values.push(...input.relationIds);
+    }
+
+    const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM inferred_relations
+         ${whereClause}
+         ORDER BY last_computed_at ASC
+         LIMIT ?`
+      )
+      .all(...values, input.limit) as Record<string, unknown>[];
+
+    if (!rows.length) {
+      return {
+        updatedCount: 0,
+        expiredCount: 0,
+        items: []
+      };
+    }
+
+    const relationIds = rows.map((row) => String(row.id));
+    const summaries = this.getRelationUsageSummaries(relationIds);
+    const now = nowIso();
+    const updateStatement = this.db.prepare(
+      `UPDATE inferred_relations
+       SET usage_score = ?, final_score = ?, status = ?, last_computed_at = ?
+       WHERE id = ?`
+    );
+
+    let expiredCount = 0;
+    for (const row of rows) {
+      const id = String(row.id);
+      const currentStatus = String(row.status) as InferredRelationRecord["status"];
+      const expiresAt = row.expires_at ? String(row.expires_at) : null;
+      const recomputed = computeMaintainedScores(Number(row.base_score), summaries.get(id), String(row.last_computed_at));
+      const nextStatus =
+        expiresAt && expiresAt <= now ? "expired" : currentStatus === "expired" ? "active" : currentStatus;
+      if (nextStatus === "expired") {
+        expiredCount += 1;
+      }
+      updateStatement.run(recomputed.usageScore, recomputed.finalScore, nextStatus, now, id);
+    }
+
+    return {
+      updatedCount: rows.length,
+      expiredCount,
+      items: relationIds.map((id) => this.getInferredRelation(id))
+    };
+  }
+
+  countInferredRelations(): number {
+    const row = this.db.prepare(`SELECT COUNT(*) AS total FROM inferred_relations`).get() as { total: number };
+    return Number(row.total ?? 0);
   }
 
   updateRelationStatus(id: string, status: string): RelationRecord {
@@ -509,6 +975,9 @@ export class MemforgeRepository {
     const id = createId("art");
     const now = nowIso();
     const absolutePath = path.isAbsolute(input.path) ? input.path : path.resolve(this.workspaceRoot, input.path);
+    if (!isPathWithinRoot(this.workspaceRoot, absolutePath)) {
+      throw new AppError(403, "FORBIDDEN", "Artifact path escapes workspace root.");
+    }
     const stats = statSync(absolutePath);
     this.db
       .prepare(

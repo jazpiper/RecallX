@@ -21,16 +21,25 @@ This plan follows the project guardrails:
 
 ---
 
-## 1.1 Progress snapshot (2026-03-18)
+## 1.1 Progress snapshot (2026-03-19)
 
 - Phase 0 foundation is implemented as a local Node/TypeScript service with SQLite-backed workspaces, migrations, and runtime workspace switching.
-- Phase 1 human-readable workspace is in first-pass shape through the renderer home/search/review/settings flows and durable node inspection patterns.
+- Phase 1 human-readable workspace is in first-pass shape through the renderer home/search/review/settings flows, provenance-aware node detail surfaces, and an explicit graph focus picker.
 - Phase 2 fast retrieval is present through local search, related lookups, decision/open-question helpers, and compact context bundle assembly.
 - Phase 3 local API and CLI bridge is live through the loopback API, the `pnw` wrapper, service index discovery at `GET /api/v1`, and runtime workspace catalog operations.
 - Phase 4 append-first write-back is live through node, relation, activity, and artifact writes with provenance and governance-aware review creation.
-- Phase 5 review and curation is partially implemented: review queue endpoints and renderer actions exist, but the curation UX still needs tightening.
-- Phase 6 real integrations has started through the first-pass stdio MCP bridge for coding agents, but broader cross-tool workflows still need validation.
-- Phase 7 retrieval enhancement remains deferred until real usage proves deterministic retrieval is insufficient.
+- Phase 5 review and curation is in place through review queue endpoints, renderer review actions, and provenance-friendly detail flows.
+- Phase 6 real integrations now include documented `pnw`, raw HTTP bootstrap, and stdio MCP workflows in addition to the coding-agent path.
+- Phase 7 retrieval enhancement has started selectively through inferred-relation storage, deterministic inferred-link generation from tag/body/activity, project-membership, and shared-artifact signals, usage feedback capture, maintenance recompute, and relation-aware ranking. Semantic retrieval still remains deferred until real usage proves deterministic retrieval is insufficient.
+
+## 1.2 Current Plan (2026-03-19)
+
+The near-term backlog from the 2026-03-18 snapshot is closed in the current worktree.
+The next track is:
+
+- dogfood the new Electron desktop shell and add distribution polish such as icons, signing, and notarization when needed
+- tune inferred-relation thresholds and explainability based on real workspace usage so stronger signals do not make the graph noisy
+- decide whether richer digest materialization is worth adding beyond the current deterministic summary + stale-cue baseline
 
 ---
 
@@ -402,7 +411,7 @@ Improve recall without breaking speed.
 ### Possible additions
 - semantic retrieval
 - cheap-model scout compression
-- rankCandidates endpoint
+- automatic inferred-relation generation from deterministic signals
 - pinned context weighting
 - better digest generation
 
@@ -558,6 +567,95 @@ External tools may flood the workspace with low-signal content.
 Use append-first writes, provenance, and review queue early.
 
 ---
+
+## Appendix A — Inferred relation implementation track
+
+This appendix defines a concrete implementation track for the v2 inferred relation direction described in `docs/relation-layer-v2.md`.
+
+### Goal
+Increase graph density and retrieval usefulness without requiring humans to review large volumes of relation suggestions.
+
+### Phase A1 — Deterministic inferred relation layer
+
+Build:
+- `inferred_relations` schema and repository support
+- deterministic candidate generation from:
+  - project membership
+  - explicit body references
+  - tag overlap
+  - activity proximity
+- top-k and threshold pruning
+- retrieval read path that can include inferred links behind a flag
+
+Current implementation:
+- active for node create/update and activity append
+- relation/artifact/review write paths now refresh inferred links live
+- currently uses explicit body references, tag overlap, activity-body references, shared project membership, and shared artifact references
+- canonical inheritance remains follow-up work
+
+Do not build yet:
+- semantic generation
+- usage feedback loops
+- automatic promotion into canonical relations
+
+Success criteria:
+- graph density improves on active workspaces
+- retrieval recall improves on linked tasks
+- canonical relation quality stays unchanged
+
+### Phase A2 — Usage feedback instrumentation
+
+Build:
+- `relation_usage_events` append path
+- event emission from:
+  - context bundle assembly
+  - graph inspection clicks
+  - successful downstream linked-node use
+- offline aggregation into `usage_score`
+
+Success criteria:
+- inferred relation ranking starts adapting to real use
+- weak frequently ignored links decay naturally
+
+### Phase A3 — Graph/UI differentiation
+
+Build:
+- graph filters for canonical vs inferred
+- inferred edge evidence display
+- mute/hide affordances for noisy inferred links
+- score visibility for debugging and trust
+
+Success criteria:
+- the UI can show richer neighborhoods without implying that every visible edge is canonical truth
+
+### Phase A4 — Optional semantic pass
+
+Build only if deterministic inferred links leave clear recall gaps:
+- embeddings-backed candidate generation
+- semantic evidence fields
+- periodic rebuild job
+
+Success criteria:
+- recall improves measurably without making the hot path slow or opaque
+
+### Recommended implementation order
+
+1. storage and repository support
+2. deterministic candidate generator
+3. retrieval integration
+4. usage event logging
+5. score aggregation
+6. graph/UI exposure
+7. optional semantic expansion
+
+### Kill-switch requirement
+
+The inferred relation layer should be easy to disable:
+- per workspace
+- per retrieval preset
+- per UI surface
+
+This keeps the feature reversible if graph noise outweighs benefit.
 
 ## 10. Practical success tests
 

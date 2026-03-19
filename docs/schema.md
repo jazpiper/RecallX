@@ -54,6 +54,8 @@ There are also supporting entities:
 6. **review_queue_item** — pending approvals or suggestions
 7. **integration** — registered local tool/client metadata
 8. **setting** — workspace configuration
+9. **inferred_relation** — rebuildable weighted links used for retrieval support
+10. **relation_usage_event** — append-only usage signals that feed inferred-link maintenance
 
 ---
 
@@ -135,6 +137,25 @@ Optional later values:
 - `suggested`
 - `rejected`
 - `archived`
+
+## 5.5a InferredRelationStatus
+- `active`
+- `muted`
+- `hidden`
+- `expired`
+
+## 5.5b RelationSource
+- `canonical`
+- `inferred`
+
+## 5.5c RelationUsageEventType
+- `bundle_included`
+- `bundle_clicked`
+- `bundle_used_in_output`
+- `bundle_skipped`
+- `retrieval_confirmed`
+- `retrieval_muted`
+- `manual_hide`
 
 ## 5.6 ActivityType
 Required initial values:
@@ -263,7 +284,8 @@ v1 keeps relations intentionally minimal:
 - `status`
 - provenance fields
 
-Quantitative relation scoring such as `strength` and `confidence` is deferred to v2 after real graph-usage evidence exists.
+Quantitative relation scoring does not live on canonical `relations`.
+The current implementation keeps canonical relations minimal and stores retrieval-facing weighting in `inferred_relations` plus read-time bonuses from relation type specificity and usage summaries.
 
 ## 7.3 Constraints
 - `from_node_id != to_node_id`
@@ -285,6 +307,69 @@ This can be application-enforced first.
 - index on `to_node_id`
 - index on `relation_type`
 - compound index on `(from_node_id, relation_type)`
+
+---
+
+## 7.6 Inferred relations table
+
+The `inferred_relations` table stores rebuildable, weighted links used by retrieval and graph expansion.
+
+### Columns
+- `id TEXT PRIMARY KEY`
+- `from_node_id TEXT NOT NULL`
+- `to_node_id TEXT NOT NULL`
+- `relation_type TEXT NOT NULL`
+- `base_score REAL NOT NULL`
+- `usage_score REAL NOT NULL DEFAULT 0`
+- `final_score REAL NOT NULL`
+- `status TEXT NOT NULL DEFAULT 'active'`
+- `generator TEXT NOT NULL`
+- `evidence_json TEXT NOT NULL`
+- `last_computed_at TEXT NOT NULL`
+- `expires_at TEXT`
+- `metadata_json TEXT`
+
+### Notes
+- this layer is derived and rebuildable, not canonical truth
+- `base_score` comes from the generator or indexing pass that proposed the edge
+- `usage_score` is adjusted from aggregated `relation_usage_events`
+- `final_score` is the retrieval-visible score after maintenance
+- `generator` identifies the rule or process that produced the link
+
+### Suggested indexes
+- unique index on `(from_node_id, to_node_id, relation_type, generator)`
+- index on `(from_node_id, final_score DESC)`
+- index on `(to_node_id, final_score DESC)`
+- index on `status`
+
+---
+
+## 7.7 Relation usage events table
+
+The `relation_usage_events` table stores append-only feedback about whether canonical or inferred links were actually helpful.
+
+### Columns
+- `id TEXT PRIMARY KEY`
+- `relation_id TEXT NOT NULL`
+- `relation_source TEXT NOT NULL`
+- `event_type TEXT NOT NULL`
+- `session_id TEXT`
+- `run_id TEXT`
+- `actor_type TEXT`
+- `actor_label TEXT`
+- `tool_name TEXT`
+- `delta REAL NOT NULL`
+- `created_at TEXT NOT NULL`
+- `metadata_json TEXT`
+
+### Notes
+- `relation_source` distinguishes canonical from inferred links
+- `delta` is the lightweight signed signal later aggregated into `usage_score`
+- these rows are append-only and maintenance-friendly
+
+### Suggested indexes
+- index on `relation_id`
+- index on `created_at`
 
 ---
 
@@ -473,6 +558,12 @@ The `settings` table stores workspace-level configuration.
 - `search.semantic.enabled`
 - `review.autoApproveLowRisk`
 - `review.trustedSourceToolNames`
+- `relations.autoRecompute.enabled`
+- `relations.autoRecompute.eventThreshold`
+- `relations.autoRecompute.debounceMs`
+- `relations.autoRecompute.maxStalenessMs`
+- `relations.autoRecompute.batchLimit`
+- `relations.autoRecompute.lastRunAt`
 - `export.defaultFormat`
 
 ---
@@ -703,6 +794,117 @@ This rule, combined with the promotion table, guarantees the graph stays trustwo
   "timestamp": "2026-03-17T13:30:00Z"
 }
 ```
+
+---
+
+## Appendix A — V2 derived relation tables
+
+This appendix describes a likely v2 direction.
+
+It does **not** change the meaning of the v1 canonical `relations` table.
+Instead, it adds a separate derived layer for retrieval and graph support.
+
+### A.1 `inferred_relations`
+
+Suggested columns:
+- `id TEXT PRIMARY KEY`
+- `from_node_id TEXT NOT NULL`
+- `to_node_id TEXT NOT NULL`
+- `relation_type TEXT NOT NULL`
+- `base_score REAL NOT NULL`
+- `usage_score REAL NOT NULL DEFAULT 0`
+- `final_score REAL NOT NULL`
+- `status TEXT NOT NULL DEFAULT 'active'`
+- `generator TEXT NOT NULL`
+- `evidence_json TEXT NOT NULL`
+- `last_computed_at TEXT NOT NULL`
+- `expires_at TEXT`
+- `metadata_json TEXT`
+
+Purpose:
+- store auto-derived links from indexing or semantic passes
+- keep relation richness out of the canonical `relations` table
+- support retrieval ranking and graph inspection
+
+Important rules:
+- this table is derived, not canonical
+- rows may be recomputed, replaced, or dropped during rebuild
+- `final_score` should be explainable from `base_score`, `usage_score`, and decay rules
+
+Suggested indexes:
+- index on `from_node_id`
+- index on `to_node_id`
+- index on `relation_type`
+- index on `status`
+- compound index on `(from_node_id, final_score DESC)`
+- compound index on `(to_node_id, final_score DESC)`
+
+### A.2 `relation_usage_events`
+
+Suggested columns:
+- `id TEXT PRIMARY KEY`
+- `relation_id TEXT NOT NULL`
+- `relation_source TEXT NOT NULL`
+- `event_type TEXT NOT NULL`
+- `session_id TEXT`
+- `run_id TEXT`
+- `actor_type TEXT`
+- `actor_label TEXT`
+- `tool_name TEXT`
+- `delta REAL NOT NULL`
+- `created_at TEXT NOT NULL`
+- `metadata_json TEXT`
+
+Purpose:
+- record whether a relation actually helped downstream retrieval or agent work
+- support positive and negative adjustments without mutating canonical data
+
+Recommended `relation_source` values:
+- `canonical`
+- `inferred`
+
+Recommended `event_type` values:
+- `bundle_included`
+- `bundle_clicked`
+- `bundle_used_in_output`
+- `bundle_skipped`
+- `retrieval_confirmed`
+- `retrieval_muted`
+- `manual_hide`
+
+Suggested indexes:
+- index on `relation_id`
+- index on `(relation_source, relation_id)`
+- index on `event_type`
+- index on `created_at`
+
+### A.3 `node_coaccess_stats` (optional)
+
+This table is optional and should only exist if event volume makes per-event joins too expensive.
+
+Suggested columns:
+- `node_a_id TEXT NOT NULL`
+- `node_b_id TEXT NOT NULL`
+- `positive_events INTEGER NOT NULL`
+- `negative_events INTEGER NOT NULL`
+- `last_seen_at TEXT NOT NULL`
+- `metadata_json TEXT`
+
+Purpose:
+- compactly summarize repeated co-usage across retrieval runs
+- support cheap recalculation of usage-influenced inferred relation scores
+
+Suggested indexes:
+- compound primary key or uniqueness on `(node_a_id, node_b_id)`
+- index on `last_seen_at`
+
+### A.4 Canonical vs derived boundary
+
+Recommended rule:
+- canonical `relations` remain sparse, durable, and trusted
+- `inferred_relations` remain rebuildable and retrieval-oriented
+
+Do not auto-promote inferred links into canonical `relations` simply because they have high usage.
 
 ---
 

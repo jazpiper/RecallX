@@ -5,10 +5,13 @@ import {
   bundleModes,
   bundlePresets,
   canonicalities,
+  inferredRelationStatuses,
   nodeStatuses,
   nodeTypes,
+  relationSources,
   relationStatuses,
   relationTypes,
+  relationUsageEventTypes,
   reviewStatuses,
   reviewTypes,
   sourceTypes
@@ -218,26 +221,85 @@ export function createMemforgeMcpServer(params?: {
     "memforge_get_related",
     {
       title: "Get Related Nodes",
-      description: "Fetch related nodes for a target node with optional depth and relation type filters.",
+      description: "Fetch lightweight node neighborhood data with canonical relations and optional inferred relations.",
       annotations: {
         readOnlyHint: true,
         idempotentHint: true
       },
       inputSchema: {
         nodeId: z.string().min(1).describe("Target node id."),
-        depth: z.number().int().min(1).max(3).default(1),
-        relationTypes: z.array(z.enum(relationTypes)).default([])
+        depth: z.number().int().min(1).max(1).default(1),
+        relationTypes: z.array(z.enum(relationTypes)).default([]),
+        includeInferred: z.boolean().default(true),
+        maxInferred: z.number().int().min(0).max(10).default(4)
       }
     },
-    async ({ nodeId, depth, relationTypes: relationTypeFilter }) => {
+    async ({ nodeId, depth, relationTypes: relationTypeFilter, includeInferred, maxInferred }) => {
       const query = new URLSearchParams({
-        depth: String(depth)
+        depth: String(depth),
+        include_inferred: includeInferred ? "1" : "0",
+        max_inferred: String(maxInferred)
       });
       if (relationTypeFilter.length) {
         query.set("types", relationTypeFilter.join(","));
       }
-      return toolResult(await apiClient.get(`/nodes/${encodeURIComponent(nodeId)}/related?${query.toString()}`));
+      return toolResult(await apiClient.get(`/nodes/${encodeURIComponent(nodeId)}/neighborhood?${query.toString()}`));
     }
+  );
+
+  server.registerTool(
+    "memforge_upsert_inferred_relation",
+    {
+      title: "Upsert Inferred Relation",
+      description: "Upsert a lightweight inferred relation for retrieval, graph expansion, and later weight adjustment.",
+      inputSchema: {
+        fromNodeId: z.string().min(1),
+        toNodeId: z.string().min(1),
+        relationType: z.enum(relationTypes),
+        baseScore: z.number(),
+        usageScore: z.number().default(0),
+        finalScore: z.number(),
+        status: z.enum(inferredRelationStatuses).default("active"),
+        generator: z.string().min(1).describe("Short generator label such as deterministic-linker or coaccess-pass."),
+        evidence: jsonRecordSchema,
+        expiresAt: z.string().optional(),
+        metadata: jsonRecordSchema
+      }
+    },
+    async (input) => toolResult(await apiClient.post("/inferred-relations", input))
+  );
+
+  server.registerTool(
+    "memforge_append_relation_usage_event",
+    {
+      title: "Append Relation Usage Event",
+      description: "Append a lightweight usage signal after a relation actually helped retrieval or final output.",
+      inputSchema: {
+        relationId: z.string().min(1),
+        relationSource: z.enum(relationSources),
+        eventType: z.enum(relationUsageEventTypes),
+        sessionId: z.string().optional(),
+        runId: z.string().optional(),
+        source: sourceSchema.optional(),
+        delta: z.number(),
+        metadata: jsonRecordSchema
+      }
+    },
+    async (input) => toolResult(await apiClient.post("/relation-usage-events", input))
+  );
+
+  server.registerTool(
+    "memforge_recompute_inferred_relations",
+    {
+      title: "Recompute Inferred Relations",
+      description: "Run an explicit maintenance pass that refreshes inferred relation usage_score and final_score from usage events.",
+      inputSchema: {
+        relationIds: z.array(z.string().min(1)).max(200).optional(),
+        generator: z.string().min(1).optional(),
+        limit: z.number().int().min(1).max(500).default(100)
+      }
+    },
+    async (input) => toolResult(await apiClient.post("/inferred-relations/recompute", input))
   );
 
   server.registerTool(
@@ -377,16 +439,20 @@ export function createMemforgeMcpServer(params?: {
         options: z
           .object({
             includeRelated: z.boolean().default(true),
+            includeInferred: z.boolean().default(true),
             includeRecentActivities: z.boolean().default(true),
             includeDecisions: z.boolean().default(true),
             includeOpenQuestions: z.boolean().default(true),
+            maxInferred: z.number().int().min(0).max(10).default(4),
             maxItems: z.number().int().min(1).max(30).default(10)
           })
           .default({
             includeRelated: true,
+            includeInferred: true,
             includeRecentActivities: true,
             includeDecisions: true,
             includeOpenQuestions: true,
+            maxInferred: 4,
             maxItems: 10
           })
       }

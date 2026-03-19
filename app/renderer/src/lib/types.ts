@@ -89,6 +89,15 @@ export interface Relation {
   metadata: Record<string, string | number | boolean>;
 }
 
+export interface GraphConnection {
+  node: Node;
+  relation: Relation;
+  direction: 'incoming' | 'outgoing';
+  hop: 1 | 2;
+  viaNodeId?: string;
+  viaNodeTitle?: string;
+}
+
 export interface Activity {
   id: string;
   targetNodeId: string;

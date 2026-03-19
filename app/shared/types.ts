@@ -3,10 +3,13 @@ import type {
   BundleMode,
   BundlePreset,
   Canonicality,
+  InferredRelationStatus,
   NodeStatus,
   NodeType,
+  RelationSource,
   RelationStatus,
   RelationType,
+  RelationUsageEventType,
   ReviewStatus,
   ReviewType
 } from "./contracts.js";
@@ -92,6 +95,57 @@ export interface ActivityRecord {
   metadata: JsonMap;
 }
 
+export interface InferredRelationRecord {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+  relationType: RelationType;
+  baseScore: number;
+  usageScore: number;
+  finalScore: number;
+  status: InferredRelationStatus;
+  generator: string;
+  evidence: JsonMap;
+  lastComputedAt: string;
+  expiresAt: string | null;
+  metadata: JsonMap;
+}
+
+export interface RelationUsageEventRecord {
+  id: string;
+  relationId: string;
+  relationSource: RelationSource;
+  eventType: RelationUsageEventType;
+  sessionId: string | null;
+  runId: string | null;
+  actorType: string | null;
+  actorLabel: string | null;
+  toolName: string | null;
+  delta: number;
+  createdAt: string;
+  metadata: JsonMap;
+}
+
+export interface RelationUsageSummary {
+  relationId: string;
+  totalDelta: number;
+  eventCount: number;
+  lastEventAt: string | null;
+}
+
+export interface InferredRelationRecomputeResult {
+  updatedCount: number;
+  expiredCount: number;
+  items: InferredRelationRecord[];
+}
+
+export interface PendingRelationUsageStats {
+  relationIds: string[];
+  eventCount: number;
+  earliestEventAt: string | null;
+  latestEventAt: string | null;
+}
+
 export interface ArtifactRecord {
   id: string;
   nodeId: string;
@@ -160,6 +214,26 @@ export interface ContextBundleItem {
   title: string | null;
   summary: string | null;
   reason: string;
+  relationType?: RelationType;
+  relationSource?: RelationSource;
+  relationStatus?: RelationStatus | InferredRelationStatus;
+  relationScore?: number;
+  generator?: string | null;
+}
+
+export interface NeighborhoodItem {
+  node: NodeRecord;
+  edge: {
+    relationId: string;
+    relationType: RelationType;
+    relationSource: RelationSource;
+    relationStatus: RelationStatus | InferredRelationStatus;
+    relationScore: number | null;
+    generator: string | null;
+    reason: string;
+    direction: "incoming" | "outgoing";
+    hop: number;
+  };
 }
 
 export interface ContextBundle {
