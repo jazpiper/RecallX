@@ -600,22 +600,64 @@ This gives:
 
 ---
 
-## 16. Embeddings strategy
+## 16. Semantic indexing sidecar
 
-Embeddings should be optional and non-canonical.
+Semantic indexing is optional and non-canonical.
 
-## Suggested table: `node_embeddings`
+The current semantic skeleton uses three rebuildable tables.
+
+## 16.1 `node_index_state`
 - `node_id TEXT PRIMARY KEY`
-- `embedding_model TEXT NOT NULL`
-- `vector_blob BLOB or external ref`
-- `content_hash TEXT NOT NULL`
+- `content_hash TEXT`
+- `embedding_status TEXT NOT NULL`
+- `embedding_provider TEXT`
+- `embedding_model TEXT`
+- `embedding_version TEXT`
+- `stale_reason TEXT`
 - `updated_at TEXT NOT NULL`
-- `metadata_json TEXT`
+
+Use this table to:
+- track `pending / processing / stale / ready / failed`
+- avoid duplicate worker effort
+- surface backlog state to operators and the renderer
+
+## 16.2 `node_chunks`
+- `node_id TEXT NOT NULL`
+- `ordinal INTEGER NOT NULL`
+- `chunk_hash TEXT NOT NULL`
+- `chunk_text TEXT NOT NULL`
+- `token_count INTEGER`
+- `start_offset INTEGER`
+- `end_offset INTEGER`
+- `updated_at TEXT NOT NULL`
+
+Use this table to:
+- materialize rebuildable chunk boundaries for long notes
+- support chunk-level embeddings later without changing canonical node storage
+
+## 16.3 `node_embeddings`
+- `owner_type TEXT NOT NULL`
+- `owner_id TEXT NOT NULL`
+- `chunk_ordinal INTEGER`
+- `vector_ref TEXT`
+- `vector_blob BLOB`
+- `embedding_provider TEXT`
+- `embedding_model TEXT`
+- `embedding_version TEXT`
+- `content_hash TEXT`
+- `status TEXT NOT NULL`
+- `created_at TEXT NOT NULL`
+- `updated_at TEXT NOT NULL`
+
+Use this table to:
+- store rebuildable vector sidecar data
+- attach embeddings to node-level or chunk-level owners
+- keep provider-specific payloads outside canonical tables
 
 ### Notes
-- this table can be omitted in earliest prototype
-- embeddings can be rebuilt from node content
-- do not make the product depend on embeddings to function
+- the product must still function when these tables are empty or stale
+- writes should mark semantic state dirty, not generate embeddings inline
+- embeddings and chunks can be rebuilt from node content and settings
 
 ---
 

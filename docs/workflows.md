@@ -84,4 +84,9 @@ For example, this repo currently resolves to:
 
 - `~/.memforge/Memforge`
 
-If an older repo-local `.memforge-workspace` exists and the new home-directory root does not yet exist, the current implementation copies the legacy workspace forward into the new default location and then continues from the new root.
+CLI/server flows may still choose to copy forward a legacy repo-local `.memforge-workspace` when opening an unmanaged workspace for the first time.
+The packaged desktop app does not do that migration path and instead stays pinned to the managed home-directory root.
+
+The CLI also accepts:
+
+- `pnw workspace switch --root /path/to/workspace`

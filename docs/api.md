@@ -209,7 +209,11 @@ The API centers around these resource groups:
     "status": "ok",
     "workspaceLoaded": true,
     "workspaceRoot": "/path/to/workspace",
-    "schemaVersion": 1
+    "schemaVersion": 1,
+    "autoRecompute": {},
+    "autoRefresh": {},
+    "autoSemanticIndex": {},
+    "semantic": {}
   }
 }
 ```
@@ -262,6 +266,9 @@ Return safe startup metadata for renderer and local tools.
 - workspace info
 - auth mode
 - auto recompute status for inferred-relation maintenance
+- auto refresh status for deterministic inferred-link generation
+- auto semantic index status for background chunk or embedding work
+- current semantic sidecar summary
 
 ## 8.5 List known workspaces
 ### HTTP
@@ -610,8 +617,41 @@ Optional scout-stage ranking primitive.
 ```
 
 ### Note
-In earliest versions, this can be deterministic only.
-No model dependence required.
+The default path stays deterministic-first.
+When semantic indexing is enabled and there is no strong exact lexical candidate match, the endpoint may add a bounded local `local-ngram` bonus from indexed node embeddings.
+The current request-time tuning knobs are:
+- `search.semantic.augmentation.minSimilarity` with a default of `0.2`
+- `search.semantic.augmentation.maxBonus` with a default of `18`
+
+### Response note
+- `score` remains for compatibility
+- `retrievalRank` is the request-time ranking value
+- `score` and `retrievalRank` currently carry the same number for this endpoint
+- relation-derived ranking is folded into the request-time rank; persisted `inferred_relations.final_score` is not renamed here
+- `semanticSimilarity` is optional and only appears when local semantic augmentation contributed to the request-time rank
+
+### Example response
+```json
+{
+  "ok": true,
+  "requestId": "req_01",
+  "data": {
+    "items": [
+      {
+        "nodeId": "node_b",
+        "title": "Candidate node",
+        "score": 118.4,
+        "retrievalRank": 118.4,
+        "relationSource": "inferred",
+        "relationType": "supports",
+        "relationScore": 0.82,
+        "semanticSimilarity": 0.41,
+        "reason": "Inferred via supports (score 0.82), usage +0.06; Semantic similarity 0.41 via local-ngram across 1 chunk"
+      }
+    ]
+  }
+}
+```
 
 ---
 
@@ -657,6 +697,12 @@ Context bundles are a core primitive.
 - `for-writing`
 - `for-assistant`
 
+### Notes
+- deterministic related-context signals still rank first
+- when semantic indexing is enabled and target text does not already have a strong lexical candidate match, bundle ordering may add a bounded `local-ngram` bonus
+- `semanticSimilarity` is optional and only appears on items that benefited from that bonus
+- `relationId` is optional and only appears on relation-backed bundle items so UI and agents can attribute follow-up usage signals precisely
+
 ### Response shape
 ```json
 {
@@ -682,6 +728,8 @@ Context bundles are a core primitive.
           "relationSource": "inferred",
           "relationStatus": "active",
           "relationScore": 0.82,
+          "retrievalRank": 0.89,
+          "semanticSimilarity": 0.31,
           "generator": "deterministic-linker"
         }
       ],
@@ -758,6 +806,11 @@ Backfill or refresh automatically generated inferred relations across the active
 ## 15.1 List review items
 ### HTTP
 `GET /api/v1/review-queue?status=pending&limit=20`
+
+### Query parameters
+- `status`
+- `limit`
+- `review_type` — optional subtype filter such as `relation_suggestion` or `node_promotion`
 
 ## 15.2 Get review item detail
 ### HTTP
@@ -856,13 +909,104 @@ data: {"type":"workspace.updated","reason":"activity.appended","entityType":"act
 
 ---
 
-## 18. Settings endpoints
+## 18. Semantic indexing endpoints
 
-## 18.1 Get settings subset
+Semantic indexing is optional and currently operates as a background-maintained sidecar.
+
+- writes mark nodes as `pending` or `stale`
+- reindex endpoints only queue work; they do not generate embeddings inline
+- `enabled` can stay `false` even while queue metadata and index-state tables exist
+
+## 18.1 Get semantic indexing status
+### HTTP
+`GET /api/v1/semantic/status`
+
+### Response fields
+- `enabled`
+- `provider`
+- `model`
+- `chunkEnabled`
+- `lastBackfillAt`
+- `counts.pending`
+- `counts.processing`
+- `counts.stale`
+- `counts.ready`
+- `counts.failed`
+
+Notes:
+- `provider=disabled` keeps semantic work in chunk-only mode
+- `provider=local-ngram` is the built-in local provider for end-to-end validation without an external API
+- `search.semantic.chunk.aggregation=max` remains the default request-time chunk aggregation strategy
+- `search.semantic.chunk.aggregation=topk_mean` averages the top semantic chunk matches for each node without changing write-time indexing
+
+## 18.2 Queue workspace semantic reindex
+### HTTP
+`POST /api/v1/semantic/reindex`
+
+### Body
+```json
+{
+  "limit": 250
+}
+```
+
+### Response
+```json
+{
+  "queuedNodeIds": ["node_1", "node_2"],
+  "queuedCount": 2
+}
+```
+
+## 18.3 Get semantic indexing issues
+### HTTP
+`GET /api/v1/semantic/issues?limit=5&statuses=failed,stale&cursor=opaque`
+
+### Purpose
+Return a detail list for pending, stale, or failed semantic indexing items without widening the aggregate status contract.
+
+### Query parameters
+- `limit` — capped to `25`
+- `statuses` — optional comma-separated subset of `pending`, `stale`, `failed`
+- `cursor` — optional opaque cursor returned by the previous call
+
+### Response
+```json
+{
+  "items": [
+    {
+      "nodeId": "node_1",
+      "title": "Recovery checklist",
+      "embeddingStatus": "failed",
+      "staleReason": "embedding.provider_not_implemented:openai",
+      "updatedAt": "2026-03-19T04:00:00.000Z"
+    }
+  ],
+  "nextCursor": "eyJzdGF0dXNSYW5rIjowLCJ1cGRhdGVkQXQiOiIyMDI2LTAzLTE5VDA0OjAwOjAwLjAwMFoiLCJub2RlSWQiOiJub2RlXzEifQ"
+}
+```
+
+## 18.4 Queue semantic reindex for a single node
+### HTTP
+`POST /api/v1/semantic/reindex/:nodeId`
+
+### Response
+```json
+{
+  "nodeId": "node_1",
+  "queued": true
+}
+```
+
+---
+
+## 19. Settings endpoints
+
+## 19.1 Get settings subset
 ### HTTP
 `GET /api/v1/settings?keys=workspace.name,search.semantic.enabled`
 
-## 18.2 Update settings subset
+## 19.2 Update settings subset
 ### HTTP
 `PATCH /api/v1/settings`
 
@@ -876,11 +1020,11 @@ Useful review-related settings:
 
 ---
 
-## 19. CLI contract
+## 20. CLI contract
 
 The CLI should be a thin ergonomic layer over the API.
 
-## 19.1 Core commands
+## 20.1 Core commands
 - `pnw health`
 - `pnw search <query>`
 - `pnw get <node-id>`
@@ -899,8 +1043,9 @@ The CLI should be a thin ergonomic layer over the API.
 - `pnw workspace list`
 - `pnw workspace create`
 - `pnw workspace open`
+- `pnw workspace switch`
 
-## 19.2 CLI examples
+## 20.2 CLI examples
 ### Search
 ```bash
 pnw search "agent memory" --type project --limit 5
@@ -926,9 +1071,9 @@ pnw link node_a node_b supports --source claude-code --status suggested
 
 ---
 
-## 19. Error handling
+## 21. Error handling
 
-## Recommended error codes
+## 21.1 Recommended error codes
 - `INVALID_INPUT`
 - `NOT_FOUND`
 - `UNAUTHORIZED`
@@ -939,7 +1084,7 @@ pnw link node_a node_b supports --source claude-code --status suggested
 - `WORKSPACE_NOT_LOADED`
 - `INTERNAL_ERROR`
 
-## Error handling principles
+## 21.2 Error handling principles
 - return precise messages
 - do not leak unnecessary local secrets
 - validate enum and field errors clearly
@@ -947,7 +1092,7 @@ pnw link node_a node_b supports --source claude-code --status suggested
 
 ---
 
-## 20. Provenance requirements
+## 22. Provenance requirements
 
 These operations currently create provenance events:
 - create node

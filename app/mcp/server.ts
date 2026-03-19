@@ -175,6 +175,73 @@ export function createMemforgeMcpServer(params?: {
   );
 
   server.registerTool(
+    "memforge_semantic_status",
+    {
+      title: "Semantic Index Status",
+      description: "Read the current semantic indexing status, provider configuration, and queued item counts.",
+      annotations: {
+        readOnlyHint: true,
+        idempotentHint: true
+      },
+      outputSchema: z.object({
+        enabled: z.boolean(),
+        provider: z.string().nullable(),
+        model: z.string().nullable(),
+        chunkEnabled: z.boolean(),
+        lastBackfillAt: z.string().nullable(),
+        counts: z.object({
+          pending: z.number(),
+          processing: z.number(),
+          stale: z.number(),
+          ready: z.number(),
+          failed: z.number()
+        })
+      })
+    },
+    async () => toolResult(await apiClient.get("/semantic/status"))
+  );
+
+  server.registerTool(
+    "memforge_semantic_issues",
+    {
+      title: "Semantic Index Issues",
+      description: "Read semantic indexing issues with optional status filters and cursor pagination.",
+      annotations: {
+        readOnlyHint: true,
+        idempotentHint: true
+      },
+      inputSchema: {
+        limit: z.number().int().min(1).max(25).default(5).describe("Maximum number of semantic issue items to return."),
+        cursor: z.string().min(1).optional().describe("Opaque cursor from a previous semantic issues call."),
+        statuses: z.array(z.enum(["pending", "stale", "failed"])).max(3).optional().describe("Optional issue statuses to include.")
+      },
+      outputSchema: z.object({
+        items: z.array(
+          z.object({
+            nodeId: z.string(),
+            title: z.string().nullable(),
+            embeddingStatus: z.enum(["pending", "processing", "stale", "ready", "failed"]),
+            staleReason: z.string().nullable(),
+            updatedAt: z.string()
+          })
+        ),
+        nextCursor: z.string().nullable()
+      })
+    },
+    async ({ limit, cursor, statuses }) => {
+      const params = new URLSearchParams();
+      params.set("limit", String(limit));
+      if (cursor) {
+        params.set("cursor", cursor);
+      }
+      if (statuses?.length) {
+        params.set("statuses", statuses.join(","));
+      }
+      return toolResult(await apiClient.get(`/semantic/issues?${params.toString()}`));
+    }
+  );
+
+  server.registerTool(
     "memforge_search_nodes",
     {
       title: "Search Nodes",
@@ -467,6 +534,49 @@ export function createMemforgeMcpServer(params?: {
           }
         })
       )
+  );
+
+  server.registerTool(
+    "memforge_semantic_reindex",
+    {
+      title: "Queue Semantic Reindex",
+      description: "Queue semantic reindexing for a bounded set of recent active workspace nodes.",
+      inputSchema: {
+        limit: z.number().int().min(1).max(1000).default(250)
+      }
+    },
+    async (input) => toolResult(await apiClient.post("/semantic/reindex", input))
+  );
+
+  server.registerTool(
+    "memforge_semantic_reindex_node",
+    {
+      title: "Queue Node Semantic Reindex",
+      description: "Queue semantic reindexing for a specific node id.",
+      inputSchema: {
+        nodeId: z.string().min(1)
+      }
+    },
+    async ({ nodeId }) => toolResult(await apiClient.post(`/semantic/reindex/${encodeURIComponent(nodeId)}`, {}))
+  );
+
+  server.registerTool(
+    "memforge_rank_candidates",
+    {
+      title: "Rank Candidate Nodes",
+      description: "Rank a bounded set of candidate node ids for a target using Memforge request-time retrieval scoring.",
+      annotations: {
+        readOnlyHint: true,
+        idempotentHint: true
+      },
+      inputSchema: {
+        query: z.string().default(""),
+        candidateNodeIds: z.array(z.string().min(1)).min(1).max(100),
+        preset: z.enum(bundlePresets).default("for-assistant"),
+        targetNodeId: z.string().optional()
+      }
+    },
+    async (input) => toolResult(await apiClient.post("/retrieval/rank-candidates", input))
   );
 
   return server;

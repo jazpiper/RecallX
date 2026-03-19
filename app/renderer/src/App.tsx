@@ -1,10 +1,12 @@
-import { useDeferredValue, useEffect, useMemo, useState, startTransition } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState, startTransition } from 'react';
 import {
+  appendRelationUsageEvent,
   approveReview,
   clearRendererToken,
   createWorkspace as createWorkspaceSession,
   createNode,
   getBootstrap,
+  getContextBundlePreview,
   getActivities,
   getArtifacts,
   getNode,
@@ -14,11 +16,15 @@ import {
   getReviewSettings,
   getRelatedNodes,
   getReviewQueue,
+  getSemanticIssues,
+  getSemanticStatus,
   getSnapshot,
   getWorkspace,
   getWorkspaceCatalog,
   isAuthError,
   openWorkspace as openWorkspaceSession,
+  queueSemanticReindex,
+  queueSemanticReindexForNode,
   rejectReview,
   refreshNodeSummary as refreshNodeSummaryRequest,
   saveRendererToken,
@@ -29,11 +35,14 @@ import {
 import type {
   Activity,
   Artifact,
+  ContextBundlePreviewItem,
   GraphConnection,
   NavView,
   Node,
   ReviewSettings,
   ReviewQueueItem,
+  SemanticIssueItem,
+  SemanticStatusSummary,
   WorkspaceCatalogItem,
   WorkspaceSeed,
 } from './lib/types';
@@ -41,9 +50,12 @@ import type {
 type DetailPanel = {
   node: Node | null;
   related: Node[];
+  bundleItems: ContextBundlePreviewItem[];
   activities: Activity[];
   artifacts: Artifact[];
 };
+
+type SemanticIssueFilter = 'all' | 'failed' | 'stale' | 'pending';
 
 const navigation: { id: NavView; label: string; hint: string }[] = [
   { id: 'home', label: 'Home', hint: 're-entry' },
@@ -125,6 +137,47 @@ function formatTime(iso: string) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(iso));
+}
+
+function formatMaybeTime(iso: string | null) {
+  return iso ? formatTime(iso) : 'Not run yet';
+}
+
+function handleSearchSubmit(
+  event: React.FormEvent<HTMLFormElement>,
+  options: { query: string; onSelectSearch: () => void }
+) {
+  event.preventDefault();
+  if (!options.query.trim()) {
+    return;
+  }
+  options.onSelectSearch();
+}
+
+function semanticIssueFilterLabel(filter: SemanticIssueFilter) {
+  switch (filter) {
+    case 'failed':
+      return 'failed issues';
+    case 'stale':
+      return 'stale issues';
+    case 'pending':
+      return 'pending issues';
+    default:
+      return 'all issue buckets';
+  }
+}
+
+function semanticIssueEmptyState(filter: SemanticIssueFilter) {
+  switch (filter) {
+    case 'failed':
+      return 'No failed semantic issues in this workspace slice.';
+    case 'stale':
+      return 'No stale semantic issues in this workspace slice.';
+    case 'pending':
+      return 'No pending semantic issues in this workspace slice.';
+    default:
+      return 'No semantic issues to triage right now.';
+  }
 }
 
 function getSummaryLifecycle(node: Node | null) {
@@ -241,19 +294,72 @@ export default function App() {
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isSettingsDirty, setIsSettingsDirty] = useState(false);
+  const [semanticStatus, setSemanticStatus] = useState<SemanticStatusSummary | null>(null);
+  const [semanticIssues, setSemanticIssues] = useState<SemanticIssueItem[]>([]);
+  const [semanticIssueFilter, setSemanticIssueFilter] = useState<SemanticIssueFilter>('all');
+  const [semanticIssuesNextCursor, setSemanticIssuesNextCursor] = useState<string | null>(null);
+  const [semanticNotice, setSemanticNotice] = useState<string | null>(null);
+  const [semanticError, setSemanticError] = useState<string | null>(null);
+  const [isReindexingSemantic, setIsReindexingSemantic] = useState(false);
+  const [isReindexingSelectedNode, setIsReindexingSelectedNode] = useState(false);
+  const bundleUsageEventKeysRef = useRef(new Set<string>());
+  const relationUsageSessionIdRef = useRef(
+    globalThis.crypto?.randomUUID?.() ?? `memforge-renderer-${Date.now()}`
+  );
+
+  function semanticIssueStatuses(filter: SemanticIssueFilter): Array<'pending' | 'stale' | 'failed'> | undefined {
+    if (filter === 'all') {
+      return undefined;
+    }
+    return [filter];
+  }
+
+  async function loadSemanticIssues(options?: {
+    filter?: SemanticIssueFilter;
+    cursor?: string | null;
+    append?: boolean;
+  }) {
+    const filter = options?.filter ?? semanticIssueFilter;
+    const page = await getSemanticIssues({
+      limit: 5,
+      cursor: options?.cursor ?? undefined,
+      statuses: semanticIssueStatuses(filter),
+    });
+    setSemanticIssueFilter(filter);
+    setSemanticIssues((current) => {
+      if (!options?.append) {
+        return page.items;
+      }
+      const seen = new Set(current.map((item) => `${item.nodeId}:${item.embeddingStatus}:${item.updatedAt}`));
+      return [
+        ...current,
+        ...page.items.filter((item) => !seen.has(`${item.nodeId}:${item.embeddingStatus}:${item.updatedAt}`)),
+      ];
+    });
+    setSemanticIssuesNextCursor(page.nextCursor);
+    return page;
+  }
 
   async function refreshWorkspaceState(options?: { syncReviewSettings?: boolean }) {
-    const [workspaceResult, snapshotResult, catalog, nextReviewSettings] = await Promise.all([
+    const [workspaceResult, snapshotResult, catalog, nextReviewSettings, nextSemanticStatus, nextSemanticIssues] = await Promise.all([
       getWorkspace(),
       getSnapshot(),
       getWorkspaceCatalog(),
       getReviewSettings(),
+      getSemanticStatus(),
+      getSemanticIssues({
+        limit: 5,
+        statuses: semanticIssueStatuses(semanticIssueFilter),
+      }),
     ]);
     const shouldSyncReviewSettings = options?.syncReviewSettings ?? !isSettingsDirty;
     setWorkspace(workspaceResult);
     setSnapshot(snapshotResult);
     setWorkspaceCatalog(catalog.items);
     setWorkspaceRootInput(catalog.current.rootPath);
+    setSemanticStatus(nextSemanticStatus);
+    setSemanticIssues(nextSemanticIssues.items);
+    setSemanticIssuesNextCursor(nextSemanticIssues.nextCursor);
     if (shouldSyncReviewSettings) {
       const normalizedNextReviewSettings = {
         autoApproveLowRisk: nextReviewSettings.autoApproveLowRisk,
@@ -288,6 +394,7 @@ export default function App() {
         const bootstrap = await getBootstrap();
         if (!mounted) return;
         setWorkspace(bootstrap.workspace);
+        setSemanticStatus(bootstrap.semantic);
         if (bootstrap.authMode === 'bearer' && !bootstrap.hasToken) {
           setAuthRequired(true);
           setAuthError(null);
@@ -433,6 +540,7 @@ export default function App() {
   const [detail, setDetail] = useState<DetailPanel>({
     node: null,
     related: [],
+    bundleItems: [],
     activities: [],
     artifacts: [],
   });
@@ -450,9 +558,10 @@ export default function App() {
 
     async function loadDetail() {
       try {
-        const [node, related, activities, artifacts] = await Promise.all([
+        const [node, related, bundleItems, activities, artifacts] = await Promise.all([
           getNode(nodeId),
           getRelatedNodes(nodeId),
+          getContextBundlePreview(nodeId),
           getActivities(nodeId),
           getArtifacts(nodeId),
         ]);
@@ -461,6 +570,7 @@ export default function App() {
         setDetail({
           node: node ?? currentNode,
           related,
+          bundleItems,
           activities,
           artifacts,
         });
@@ -555,6 +665,13 @@ export default function App() {
 
   const homeActivities = detail.activities.slice(0, 3);
   const workspaceName = workspace?.name ?? 'Memforge';
+  const semanticCounts = semanticStatus?.counts ?? {
+    pending: 0,
+    processing: 0,
+    stale: 0,
+    ready: 0,
+    failed: 0,
+  };
   const desktopInfo = useMemo(() => getDesktopIntegrationInfo(), []);
   const apiBase = desktopInfo?.apiBase ?? `http://${workspace?.apiBind ?? '127.0.0.1:8787'}/api/v1`;
   const workspaceHome = desktopInfo?.workspaceHome ?? '';
@@ -612,6 +729,116 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
       setLoadError(null);
     } catch (error) {
       handleRequestFailure(error, 'Failed to refresh review queue.');
+    }
+  }
+
+  async function handleSemanticIssueFilterChange(nextFilter: SemanticIssueFilter) {
+    try {
+      setSemanticError(null);
+      await loadSemanticIssues({ filter: nextFilter });
+    } catch (error) {
+      setSemanticError(error instanceof Error ? error.message : 'Could not refresh semantic issues.');
+    }
+  }
+
+  async function handleLoadMoreSemanticIssues() {
+    if (!semanticIssuesNextCursor) {
+      return;
+    }
+
+    try {
+      setSemanticError(null);
+      await loadSemanticIssues({ cursor: semanticIssuesNextCursor, append: true });
+    } catch (error) {
+      setSemanticError(error instanceof Error ? error.message : 'Could not load more semantic issues.');
+    }
+  }
+
+  async function handleQueueSemanticReindex() {
+    setIsReindexingSemantic(true);
+    setSemanticError(null);
+    setSemanticNotice(null);
+    try {
+      const result = await queueSemanticReindex();
+      const [nextStatus, nextIssues] = await Promise.all([
+        getSemanticStatus(),
+        getSemanticIssues({
+          limit: 5,
+          statuses: semanticIssueStatuses(semanticIssueFilter),
+        }),
+      ]);
+      setSemanticStatus(nextStatus);
+      setSemanticIssues(nextIssues.items);
+      setSemanticIssuesNextCursor(nextIssues.nextCursor);
+      setSemanticNotice(`Queued ${result.queuedCount} nodes for semantic reindex.`);
+      setLoadError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to queue semantic reindex.';
+      setSemanticError(message);
+      handleRequestFailure(error, message);
+    } finally {
+      setIsReindexingSemantic(false);
+    }
+  }
+
+  async function handleQueueSelectedNodeSemanticReindex() {
+    if (!detail.node) {
+      return;
+    }
+    setIsReindexingSelectedNode(true);
+    setSemanticError(null);
+    setSemanticNotice(null);
+    try {
+      await queueSemanticReindexForNode(detail.node.id);
+      const [nextStatus, nextIssues] = await Promise.all([
+        getSemanticStatus(),
+        getSemanticIssues({
+          limit: 5,
+          statuses: semanticIssueStatuses(semanticIssueFilter),
+        }),
+      ]);
+      setSemanticStatus(nextStatus);
+      setSemanticIssues(nextIssues.items);
+      setSemanticIssuesNextCursor(nextIssues.nextCursor);
+      setSemanticNotice(`Queued semantic reindex for "${detail.node.title}".`);
+      setLoadError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to queue node reindex.';
+      setSemanticError(message);
+      handleRequestFailure(error, message);
+    } finally {
+      setIsReindexingSelectedNode(false);
+    }
+  }
+
+  async function handleBundlePreviewClick(item: ContextBundlePreviewItem) {
+    const targetNodeId = detail.node?.id;
+    setSelectedNodeId(item.nodeId);
+    if (!targetNodeId || !item.relationId || !item.relationSource) {
+      return;
+    }
+
+    const eventKey = `${targetNodeId}:${item.relationId}:bundle_clicked`;
+    if (bundleUsageEventKeysRef.current.has(eventKey)) {
+      return;
+    }
+
+    bundleUsageEventKeysRef.current.add(eventKey);
+    try {
+      await appendRelationUsageEvent({
+        relationId: item.relationId,
+        relationSource: item.relationSource,
+        eventType: 'bundle_clicked',
+        sessionId: relationUsageSessionIdRef.current,
+        delta: 0.4,
+        metadata: {
+          targetNodeId,
+          surfacedVia: 'context_bundle_preview',
+          selectedNodeId: item.nodeId,
+        },
+      });
+    } catch {
+      bundleUsageEventKeysRef.current.delete(eventKey);
     }
   }
 
@@ -734,7 +961,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
       });
       const nextSnapshot = await refreshWorkspaceState();
       setSelectedNodeId(nextSnapshot.nodes[0]?.id ?? '');
-      setDetail({ node: null, related: [], activities: [], artifacts: [] });
+      setDetail({ node: null, related: [], bundleItems: [], activities: [], artifacts: [] });
       setWorkspaceNameInput('');
     } catch (error) {
       handleRequestFailure(error, 'Failed to create workspace.');
@@ -751,7 +978,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
       await openWorkspaceSession(rootPath);
       const nextSnapshot = await refreshWorkspaceState();
       setSelectedNodeId(nextSnapshot.nodes[0]?.id ?? '');
-      setDetail({ node: null, related: [], activities: [], artifacts: [] });
+      setDetail({ node: null, related: [], bundleItems: [], activities: [], artifacts: [] });
     } catch (error) {
       handleRequestFailure(error, 'Failed to switch workspace.');
       setWorkspaceActionError(error instanceof Error ? error.message : 'Failed to switch workspace.');
@@ -1403,6 +1630,23 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
                 Retrieve compact context quickly, inspect provenance, and keep suggested content
                 reviewable.
               </p>
+              <form
+                className="hero-search"
+                onSubmit={(event) =>
+                  handleSearchSubmit(event, {
+                    query,
+                    onSelectSearch: () => selectView('search'),
+                  })
+                }
+              >
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Search Memforge"
+                  aria-label="Quick search"
+                />
+                <button type="submit">Search</button>
+              </form>
             </div>
             <div className="mini-card">
               <span className="eyebrow">Pinned</span>
@@ -1437,6 +1681,62 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
               </p>
               <pre className="code-block">{genericMcpConfig}</pre>
               <pre className="code-block">{mcpCommand}</pre>
+            </article>
+            <article className="mini-card">
+              <span className="eyebrow">Semantic indexing</span>
+              <strong>{semanticStatus?.enabled ? 'Enabled' : 'Disabled'}</strong>
+              <p>
+                Provider {semanticStatus?.provider ?? 'disabled'} · model {semanticStatus?.model ?? 'none'} · chunks{' '}
+                {semanticStatus?.chunkEnabled ? 'on' : 'off'}
+              </p>
+              <div className="chip-row">
+                <span className="pill tone-info">pending {semanticCounts.pending}</span>
+                <span className="pill tone-muted">processing {semanticCounts.processing}</span>
+                <span className="pill tone-warn">stale {semanticCounts.stale}</span>
+                <span className="pill tone-good">ready {semanticCounts.ready}</span>
+                <span className="pill tone-muted">failed {semanticCounts.failed}</span>
+              </div>
+              <p>Last workspace reindex: {formatMaybeTime(semanticStatus?.lastBackfillAt ?? null)}</p>
+              <div className="chip-row">
+                {(['all', 'failed', 'stale', 'pending'] as const).map((filter) => (
+                  <button
+                    key={filter}
+                    type="button"
+                    className={`tool-chip ${semanticIssueFilter === filter ? 'tool-chip--active' : ''}`}
+                    onClick={() => void handleSemanticIssueFilterChange(filter)}
+                  >
+                    {filter === 'all' ? 'All issues' : filter}
+                  </button>
+                ))}
+              </div>
+              <p className="semantic-issue-summary">
+                Showing {semanticIssues.length} {semanticIssueFilterLabel(semanticIssueFilter)}
+                {semanticIssuesNextCursor ? ' with more available.' : '.'}
+              </p>
+              {semanticIssues.length ? (
+                <div className="semantic-issue-list">
+                  {semanticIssues.map((issue) => (
+                    <p key={`${issue.nodeId}:${issue.embeddingStatus}:${issue.updatedAt}`}>
+                      <strong>{issue.title ?? issue.nodeId}</strong> · {issue.embeddingStatus}
+                      {issue.staleReason ? ` · ${issue.staleReason}` : ''}
+                    </p>
+                  ))}
+                </div>
+              ) : (
+                <div className="empty-state compact">{semanticIssueEmptyState(semanticIssueFilter)}</div>
+              )}
+              <div className="action-row">
+                <button type="button" onClick={() => void handleQueueSemanticReindex()} disabled={isReindexingSemantic}>
+                  {isReindexingSemantic ? 'Queueing reindex...' : 'Reindex workspace'}
+                </button>
+                {semanticIssuesNextCursor ? (
+                  <button type="button" className="ghost" onClick={() => void handleLoadMoreSemanticIssues()}>
+                    Load more issues
+                  </button>
+                ) : null}
+              </div>
+              {semanticNotice ? <p>{semanticNotice}</p> : null}
+              {semanticError ? <p>{semanticError}</p> : null}
             </article>
           </div>
           <div className="integration-grid">
@@ -1636,6 +1936,14 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
                     <button type="button" onClick={() => void handleRefreshSummary()} disabled={isRefreshingSummary}>
                       {isRefreshingSummary ? 'Refreshing summary...' : 'Refresh summary'}
                     </button>
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => void handleQueueSelectedNodeSemanticReindex()}
+                      disabled={isReindexingSelectedNode}
+                    >
+                      {isReindexingSelectedNode ? 'Queueing node reindex...' : 'Reindex selected node'}
+                    </button>
                   </div>
                   <div className="body-copy">{detail.node.body}</div>
                   <div className="chip-row">
@@ -1681,6 +1989,41 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
                         {node.title}
                       </button>
                     ))}
+                  </div>
+                </div>
+                <div>
+                  <span className="eyebrow">Bundle preview</span>
+                  <p className="context-hint">Click a preview item to open it and reinforce useful relation context.</p>
+                  <div className="stack compact">
+                    {detail.bundleItems.slice(0, 4).map((item) => (
+                      <button
+                        key={item.nodeId}
+                        type="button"
+                        className="mini-card mini-card--interactive"
+                        onClick={() => void handleBundlePreviewClick(item)}
+                      >
+                        <div className="result-card__top">
+                          <strong>{item.title ?? item.nodeId}</strong>
+                          <div className="bundle-preview-actions">
+                            <span className="pill tone-muted">{item.type}</span>
+                            <span className="bundle-preview-open">Open</span>
+                          </div>
+                        </div>
+                        <p>{item.summary ?? item.reason}</p>
+                        <p className="bundle-preview-meta">
+                          {[
+                            item.relationSource,
+                            item.relationType,
+                            typeof item.semanticSimilarity === 'number' ? `semantic ${item.semanticSimilarity.toFixed(2)}` : null,
+                            typeof item.retrievalRank === 'number' ? `rank ${item.retrievalRank.toFixed(1)}` : null,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ') || 'Context preview'}
+                        </p>
+                        <p className="context-reason">{item.reason}</p>
+                      </button>
+                    ))}
+                    {!detail.bundleItems.length ? <div className="empty-state">No bundle preview items yet.</div> : null}
                   </div>
                 </div>
                 <div>

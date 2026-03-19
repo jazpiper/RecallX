@@ -53,6 +53,49 @@ export interface WorkspaceCatalogItem extends Workspace {
   lastOpenedAt: string;
 }
 
+export interface SemanticStatusSummary {
+  enabled: boolean;
+  provider: string | null;
+  model: string | null;
+  chunkEnabled: boolean;
+  lastBackfillAt: string | null;
+  counts: {
+    pending: number;
+    processing: number;
+    stale: number;
+    ready: number;
+    failed: number;
+  };
+}
+
+export interface SemanticIssueItem {
+  nodeId: string;
+  title: string | null;
+  embeddingStatus: 'pending' | 'processing' | 'stale' | 'ready' | 'failed';
+  staleReason: string | null;
+  updatedAt: string;
+}
+
+export interface SemanticIssuePage {
+  items: SemanticIssueItem[];
+  nextCursor: string | null;
+}
+
+export interface ContextBundlePreviewItem {
+  nodeId: string;
+  type: NodeType;
+  title: string | null;
+  summary: string | null;
+  reason: string;
+  relationId?: string;
+  relationType?: RelationType;
+  relationSource?: 'canonical' | 'inferred';
+  relationScore?: number;
+  retrievalRank?: number;
+  semanticSimilarity?: number;
+  generator?: string | null;
+}
+
 export interface ReviewSettings {
   autoApproveLowRisk: boolean;
   trustedSourceToolNames: string[];

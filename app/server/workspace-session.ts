@@ -107,8 +107,24 @@ export class WorkspaceSessionManager {
     repository.setSetting("api.auth.mode", this.authMode);
     repository.ensureBaseSettings({
       "search.semantic.enabled": false,
+      "search.semantic.provider": "disabled",
+      "search.semantic.model": "none",
+      "search.semantic.chunk.enabled": false,
+      "search.semantic.chunk.aggregation": "max",
+      "search.semantic.augmentation.minSimilarity": 0.2,
+      "search.semantic.augmentation.maxBonus": 18,
+      "search.semantic.last_backfill_at": null,
+      "search.semantic.autoIndex.enabled": true,
+      "search.semantic.autoIndex.debounceMs": 1500,
+      "search.semantic.autoIndex.batchLimit": 20,
+      "search.semantic.autoIndex.lastRunAt": null,
+      "search.tagIndex.version": 0,
       "review.autoApproveLowRisk": true,
       "review.trustedSourceToolNames": [],
+      "relations.autoRefresh.enabled": true,
+      "relations.autoRefresh.debounceMs": 150,
+      "relations.autoRefresh.maxStalenessMs": 2_000,
+      "relations.autoRefresh.batchLimit": 24,
       "relations.autoRecompute.enabled": true,
       "relations.autoRecompute.eventThreshold": 12,
       "relations.autoRecompute.debounceMs": 30_000,
@@ -117,6 +133,7 @@ export class WorkspaceSessionManager {
       "relations.autoRecompute.lastRunAt": null,
       "export.defaultFormat": "markdown",
     });
+    repository.ensureSearchTagIndex();
 
     return {
       db,

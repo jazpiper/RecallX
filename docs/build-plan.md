@@ -37,6 +37,7 @@ This plan follows the project guardrails:
 The near-term backlog from the 2026-03-18 snapshot is closed in the current worktree.
 The next track is:
 
+- keep product docs aligned with the shipped renderer/API/MCP surfaces instead of future-state assumptions
 - dogfood the new Electron desktop shell and add distribution polish such as icons, signing, and notarization when needed
 - tune inferred-relation thresholds and explainability based on real workspace usage so stronger signals do not make the graph noisy
 - decide whether richer digest materialization is worth adding beyond the current deterministic summary + stale-cue baseline
@@ -239,12 +240,12 @@ Create the project skeleton and storage core.
 Make the product minimally useful as a personal knowledge tool.
 
 ### Deliverables
-- create/edit/archive node
-- create relation manually
+- create node
 - node detail view
 - recent node list
 - recent activity view
 - simple workspace home
+- summary refresh / graph inspection / semantic reindex affordances are acceptable first-pass substitutes for fuller node editing
 
 ### Recommended screens
 - workspace home
@@ -366,8 +367,9 @@ Preserve quality as multiple tools begin writing.
 - review queue UI
 - suggested relation review
 - suggested note promotion flow
-- archive/reject controls
-- provenance inspection panel
+- approve/reject controls first
+- provenance-friendly detail flow
+- edit/dismiss/archive can remain deferred if the lightweight queue stays usable
 
 ### Why this phase matters
 Without curation, the workspace will become noisy and retrieval quality will degrade.

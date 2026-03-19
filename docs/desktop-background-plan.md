@@ -1,5 +1,29 @@
 # Memforge - Desktop Background + Menu Bar Plan
 
+## Status snapshot (2026-03-19)
+
+Implemented today:
+- single-instance packaged desktop shell
+- background mode after window close
+- menu bar item
+- `Open Memforge`
+- `Quick Capture`
+- `Open Search`
+- `Copy API URL`
+- `Copy MCP Command`
+- `Reveal Workspace Folder`
+- `Restart Local Service`
+- `Launch at Login`
+- `Quit Memforge`
+
+Still planned, not implemented:
+- richer tray visual states such as degraded/error-specific icons
+- `Stop Local Service` / `Start Local Service`
+- `Open Settings` from the tray
+- `Copy MCP Launcher Path`
+- dedicated `Server Status...` / `Workspace Status...`
+- `Show dock icon when closed`
+
 ## 1. Goal
 
 Let Memforge behave like a local memory utility instead of only a foreground windowed app.

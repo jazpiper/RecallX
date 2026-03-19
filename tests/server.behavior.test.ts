@@ -8,11 +8,41 @@ import { createServerConfig } from "../app/server/config.js";
 import { openDatabase } from "../app/server/db.js";
 import { applyReviewDecision } from "../app/server/governance.js";
 import { MemforgeRepository } from "../app/server/repositories.js";
+import { embedSemanticQueryText } from "../app/server/semantic/provider.js";
 import { isPathWithinRoot } from "../app/server/utils.js";
 import { ensureWorkspace } from "../app/server/workspace.js";
 import { WorkspaceSessionManager } from "../app/server/workspace-session.js";
 
 const tempRoots: string[] = [];
+
+async function waitFor<T>(
+  check: () => T | null | undefined | Promise<T | null | undefined>,
+  options: { timeoutMs?: number; intervalMs?: number } = {}
+): Promise<NonNullable<T>> {
+  const timeoutMs = options.timeoutMs ?? 2_000;
+  const intervalMs = options.intervalMs ?? 25;
+  const startedAt = Date.now();
+  let lastError: unknown;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const value = await check();
+      if (value) {
+        return value as NonNullable<T>;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error(`Timed out after ${timeoutMs}ms waiting for condition`);
+}
 
 function createRepository() {
   const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
@@ -86,6 +116,49 @@ describe("search punctuation handling", () => {
     expect(cppResults.items[0]?.title).toBe("C++ retrieval note");
     expect(colonResults.total).toBe(1);
     expect(colonResults.items[0]?.title).toBe("C++ retrieval note");
+  });
+
+  it("matches tag filters exactly through the normalized tag index", () => {
+    const repository = createRepository();
+    repository.createNode({
+      type: "note",
+      title: "Graph retrieval note",
+      body: "Exact graph tag",
+      tags: ["Graph"],
+      source: {
+        actorType: "human",
+        actorLabel: "juhwan",
+        toolName: "memforge-test"
+      },
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    repository.createNode({
+      type: "note",
+      title: "Graphical rendering note",
+      body: "Different tag family",
+      tags: ["graphical"],
+      source: {
+        actorType: "human",
+        actorLabel: "juhwan",
+        toolName: "memforge-test"
+      },
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+
+    const results = repository.searchNodes({
+      query: "",
+      filters: { tags: [" graph "] },
+      limit: 10,
+      offset: 0,
+      sort: "updated_at"
+    });
+
+    expect(results.total).toBe(1);
+    expect(results.items[0]?.title).toBe("Graph retrieval note");
   });
 });
 
@@ -534,6 +607,424 @@ describe("inferred relation storage", () => {
   });
 });
 
+describe("semantic skeleton", () => {
+  it("creates semantic index tables in a fresh workspace", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspace = ensureWorkspace(root);
+    const db = openDatabase(workspace);
+
+    const tableNames = ["node_index_state", "node_chunks", "node_embeddings"].map((name) =>
+      db
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
+        .get(name) as Record<string, unknown> | undefined
+    );
+
+    expect(tableNames.map((row) => row?.name)).toEqual(["node_index_state", "node_chunks", "node_embeddings"]);
+  });
+
+  it("marks semantic index state as pending on node and activity writes", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspace = ensureWorkspace(root);
+    const db = openDatabase(workspace);
+    const repository = new MemforgeRepository(db, root);
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "memforge-test"
+    };
+
+    const node = repository.createNode({
+      type: "note",
+      title: "Semantic target",
+      body: "Needs indexing",
+      tags: ["semantic"],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    repository.appendActivity({
+      targetNodeId: node.id,
+      activityType: "agent_run_summary",
+      body: "Updated semantic context",
+      source,
+      metadata: {}
+    });
+
+    const status = repository.getSemanticStatus();
+    const row = db
+      .prepare(`SELECT embedding_status, stale_reason FROM node_index_state WHERE node_id = ?`)
+      .get(node.id) as Record<string, unknown> | undefined;
+
+    expect(status.counts.pending).toBe(1);
+    expect(row?.embedding_status).toBe("pending");
+    expect(row?.stale_reason).toBe("activity.appended");
+  });
+
+  it("surfaces semantic defaults and reindex status through the HTTP API", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const source = {
+        actorType: "human" as const,
+        actorLabel: "juhwan",
+        toolName: "memforge-test"
+      };
+
+      const bootstrapResponse = await fetch(`${baseUrl}/bootstrap`);
+      const bootstrapBody = await bootstrapResponse.json();
+
+      const node = workspaceSessionManager.getCurrent().repository.createNode({
+        type: "note",
+        title: "Queued semantic node",
+        body: "Pending semantic indexing",
+        tags: ["semantic"],
+        source,
+        metadata: {},
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active"
+      });
+
+      const reindexResponse = await fetch(`${baseUrl}/semantic/reindex/${node.id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" }
+      });
+      const statusResponse = await fetch(`${baseUrl}/semantic/status`);
+      const statusBody = await statusResponse.json();
+
+      expect(bootstrapResponse.status).toBe(200);
+      expect(bootstrapBody.data.semantic).toMatchObject({
+        enabled: false,
+        provider: "disabled",
+        model: "none",
+        chunkEnabled: false
+      });
+      expect(bootstrapBody.data.autoSemanticIndex).toMatchObject({
+        enabled: true,
+        batchLimit: 20,
+      });
+      expect(reindexResponse.status).toBe(200);
+      expect(statusResponse.status).toBe(200);
+      expect(statusBody.data.counts.pending).toBeGreaterThanOrEqual(1);
+
+      const issuesResponse = await fetch(`${baseUrl}/semantic/issues?limit=2`);
+      const issuesBody = await issuesResponse.json();
+      expect(issuesResponse.status).toBe(200);
+      expect(issuesBody.data.items[0]).toMatchObject({
+        nodeId: node.id,
+        embeddingStatus: "pending",
+        staleReason: "manual.reindex"
+      });
+      expect(issuesBody.data.nextCursor).toBeNull();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("filters and paginates semantic issues without widening the aggregate semantic status contract", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const db = workspaceSessionManager.getCurrent().db;
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "memforge-test"
+    };
+    const failedNode = repository.createNode({
+      type: "note",
+      title: "Failed semantic item",
+      body: "Will fail",
+      tags: ["semantic"],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    const staleNode = repository.createNode({
+      type: "note",
+      title: "Stale semantic item",
+      body: "Will become stale",
+      tags: ["semantic"],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    const pendingNode = repository.createNode({
+      type: "note",
+      title: "Pending semantic item",
+      body: "Will stay pending",
+      tags: ["semantic"],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    db.prepare(
+      `UPDATE node_index_state
+       SET embedding_status = ?, stale_reason = ?, updated_at = ?
+       WHERE node_id = ?`
+    ).run("failed", "provider.failed", "2026-03-18T10:00:00.000Z", failedNode.id);
+    db.prepare(
+      `UPDATE node_index_state
+       SET embedding_status = ?, stale_reason = ?, updated_at = ?
+       WHERE node_id = ?`
+    ).run("stale", "content.changed", "2026-03-18T09:00:00.000Z", staleNode.id);
+    db.prepare(
+      `UPDATE node_index_state
+       SET embedding_status = ?, stale_reason = ?, updated_at = ?
+       WHERE node_id = ?`
+    ).run("pending", "manual.reindex", "2026-03-18T08:00:00.000Z", pendingNode.id);
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      const filteredResponse = await fetch(`${baseUrl}/semantic/issues?limit=1&statuses=failed,stale`);
+      const filteredBody = await filteredResponse.json();
+
+      expect(filteredResponse.status).toBe(200);
+      expect(filteredBody.data.items).toHaveLength(1);
+      expect(filteredBody.data.items[0]).toMatchObject({
+        nodeId: failedNode.id,
+        embeddingStatus: "failed"
+      });
+      expect(typeof filteredBody.data.nextCursor).toBe("string");
+
+      const nextResponse = await fetch(
+        `${baseUrl}/semantic/issues?limit=1&statuses=failed,stale&cursor=${encodeURIComponent(filteredBody.data.nextCursor)}`
+      );
+      const nextBody = await nextResponse.json();
+
+      expect(nextResponse.status).toBe(200);
+      expect(nextBody.data.items).toHaveLength(1);
+      expect(nextBody.data.items[0]).toMatchObject({
+        nodeId: staleNode.id,
+        embeddingStatus: "stale"
+      });
+      expect(nextBody.data.nextCursor).toBeNull();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("processes pending semantic items into chunks and marks them ready in chunk-only mode", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspace = ensureWorkspace(root);
+    const db = openDatabase(workspace);
+    const repository = new MemforgeRepository(db, root);
+    repository.ensureBaseSettings({
+      "search.semantic.enabled": false,
+      "search.semantic.provider": "disabled",
+      "search.semantic.model": "none",
+      "search.semantic.chunk.enabled": true,
+    });
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "memforge-test"
+    };
+
+    const node = repository.createNode({
+      type: "note",
+      title: "Chunk me",
+      body: "A".repeat(1800),
+      tags: ["semantic", "chunk"],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+
+    const result = await repository.processPendingSemanticIndex(10);
+    const state = db
+      .prepare(`SELECT embedding_status, stale_reason FROM node_index_state WHERE node_id = ?`)
+      .get(node.id) as Record<string, unknown> | undefined;
+    const chunkRows = db
+      .prepare(`SELECT ordinal, chunk_text FROM node_chunks WHERE node_id = ? ORDER BY ordinal ASC`)
+      .all(node.id) as Array<Record<string, unknown>>;
+
+    expect(result.processedCount).toBe(1);
+    expect(result.mode).toBe("chunk-only");
+    expect(state?.embedding_status).toBe("ready");
+    expect(state?.stale_reason).toBeNull();
+    expect(chunkRows.length).toBeGreaterThan(1);
+    expect(String(chunkRows[0]?.chunk_text ?? "")).toContain("Chunk me");
+  });
+
+  it("writes local-ngram embeddings and remains idempotent across repeated worker runs", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspace = ensureWorkspace(root);
+    const db = openDatabase(workspace);
+    const repository = new MemforgeRepository(db, root);
+    repository.ensureBaseSettings({
+      "search.semantic.enabled": true,
+      "search.semantic.provider": "local-ngram",
+      "search.semantic.model": "chargram-v1",
+      "search.semantic.chunk.enabled": false,
+    });
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "memforge-test"
+    };
+
+    const node = repository.createNode({
+      type: "note",
+      title: "Local n-gram embedding target",
+      body: "This content should receive a stable local n-gram vector.",
+      tags: ["semantic", "vector"],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+
+    const first = await repository.processPendingSemanticIndex(10);
+    const firstState = db
+      .prepare(`SELECT embedding_status, embedding_provider, embedding_model FROM node_index_state WHERE node_id = ?`)
+      .get(node.id) as Record<string, unknown> | undefined;
+    const firstEmbeddings = db
+      .prepare(`SELECT chunk_ordinal, vector_blob, embedding_provider, embedding_model, status FROM node_embeddings WHERE owner_type = 'node' AND owner_id = ? ORDER BY chunk_ordinal ASC`)
+      .all(node.id) as Array<Record<string, unknown>>;
+
+    const second = await repository.processPendingSemanticIndex(10);
+    const secondEmbeddings = db
+      .prepare(`SELECT chunk_ordinal, vector_blob, embedding_provider, embedding_model, status FROM node_embeddings WHERE owner_type = 'node' AND owner_id = ? ORDER BY chunk_ordinal ASC`)
+      .all(node.id) as Array<Record<string, unknown>>;
+
+    expect(first.processedCount).toBe(1);
+    expect(first.readyCount).toBe(1);
+    expect(firstState?.embedding_status).toBe("ready");
+    expect(firstState?.embedding_provider).toBe("local-ngram");
+    expect(firstState?.embedding_model).toBe("chargram-v1");
+    expect(firstEmbeddings).toHaveLength(1);
+    expect(firstEmbeddings[0]?.embedding_provider).toBe("local-ngram");
+    expect(firstEmbeddings[0]?.embedding_model).toBe("chargram-v1");
+    expect(firstEmbeddings[0]?.status).toBe("ready");
+    expect((firstEmbeddings[0]?.vector_blob as Uint8Array).byteLength).toBeGreaterThan(0);
+    expect(second.processedCount).toBe(0);
+    expect(secondEmbeddings).toHaveLength(1);
+  });
+
+  it("normalizes legacy deterministic semantic settings onto the local-ngram surface", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspace = ensureWorkspace(root);
+    const db = openDatabase(workspace);
+    const repository = new MemforgeRepository(db, root);
+    repository.ensureBaseSettings({
+      "search.semantic.enabled": true,
+      "search.semantic.provider": "deterministic",
+      "search.semantic.model": "hash-v1",
+      "search.semantic.chunk.enabled": false,
+    });
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "memforge-test"
+    };
+
+    const node = repository.createNode({
+      type: "note",
+      title: "Legacy semantic target",
+      body: "Older workspaces should still land on the local n-gram provider.",
+      tags: ["semantic", "legacy"],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+
+    const status = repository.getSemanticStatus();
+    const result = await repository.processPendingSemanticIndex(10);
+    const state = db
+      .prepare(`SELECT embedding_status, embedding_provider, embedding_model FROM node_index_state WHERE node_id = ?`)
+      .get(node.id) as Record<string, unknown> | undefined;
+
+    expect(status.provider).toBe("local-ngram");
+    expect(status.model).toBe("chargram-v1");
+    expect(result.readyCount).toBe(1);
+    expect(state?.embedding_status).toBe("ready");
+    expect(state?.embedding_provider).toBe("local-ngram");
+    expect(state?.embedding_model).toBe("chargram-v1");
+  });
+
+  it("fails semantic processing cleanly when a provider is configured but not implemented", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspace = ensureWorkspace(root);
+    const db = openDatabase(workspace);
+    const repository = new MemforgeRepository(db, root);
+    repository.ensureBaseSettings({
+      "search.semantic.enabled": true,
+      "search.semantic.provider": "openai",
+      "search.semantic.model": "text-embedding-3-small",
+      "search.semantic.chunk.enabled": false,
+    });
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "memforge-test"
+    };
+
+    const node = repository.createNode({
+      type: "note",
+      title: "Provider required",
+      body: "This should stop at the worker contract boundary for now.",
+      tags: ["semantic"],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+
+    const result = await repository.processPendingSemanticIndex(10);
+    const state = db
+      .prepare(`SELECT embedding_status, stale_reason, embedding_provider, embedding_model FROM node_index_state WHERE node_id = ?`)
+      .get(node.id) as Record<string, unknown> | undefined;
+
+    expect(result.processedCount).toBe(1);
+    expect(result.failedCount).toBe(1);
+    expect(result.mode).toBe("provider-required");
+    expect(state?.embedding_status).toBe("failed");
+    expect(state?.stale_reason).toBe("embedding.provider_not_implemented:openai");
+    expect(state?.embedding_provider).toBe("openai");
+    expect(state?.embedding_model).toBe("text-embedding-3-small");
+  });
+});
+
 describe("relation usage events", () => {
   it("appends and lists usage events in reverse chronological order", async () => {
     const repository = createRepository();
@@ -578,6 +1069,64 @@ describe("relation usage events", () => {
     expect(listed[0]?.eventType).toBe("bundle_used_in_output");
     expect(listed[0]?.actorLabel).toBe("juhwan");
     expect(listed[0]?.toolName).toBe("memforge-test");
+  });
+
+  it("backfills relation usage rollups from existing raw events on startup", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspace = ensureWorkspace(root);
+    const db = openDatabase(workspace);
+
+    db.prepare(
+      `INSERT INTO relation_usage_events (
+         id, relation_id, relation_source, event_type, session_id, run_id, actor_type, actor_label,
+         tool_name, delta, created_at, metadata_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      "rue_legacy_1",
+      "irel_legacy",
+      "inferred",
+      "bundle_included",
+      "session-legacy",
+      "run-legacy-1",
+      "human",
+      "juhwan",
+      "memforge-test",
+      0.1,
+      "2025-01-01T00:00:00.000Z",
+      "{}"
+    );
+    db.prepare(
+      `INSERT INTO relation_usage_events (
+         id, relation_id, relation_source, event_type, session_id, run_id, actor_type, actor_label,
+         tool_name, delta, created_at, metadata_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      "rue_legacy_2",
+      "irel_legacy",
+      "inferred",
+      "bundle_used_in_output",
+      "session-legacy",
+      "run-legacy-2",
+      "human",
+      "juhwan",
+      "memforge-test",
+      0.2,
+      "2025-01-02T00:00:00.000Z",
+      "{}"
+    );
+
+    const repository = new MemforgeRepository(db, root);
+    const summary = repository.getRelationUsageSummaries(["irel_legacy"]).get("irel_legacy");
+    const rollup = db
+      .prepare(`SELECT * FROM relation_usage_rollups WHERE relation_id = ?`)
+      .get("irel_legacy") as Record<string, unknown> | undefined;
+
+    expect(summary?.eventCount).toBe(2);
+    expect(summary?.totalDelta).toBeCloseTo(0.3, 6);
+    expect(summary?.lastEventAt).toBe("2025-01-02T00:00:00.000Z");
+    expect(Number(rollup?.event_count ?? 0)).toBe(2);
+    expect(Number(rollup?.total_delta ?? 0)).toBeCloseTo(0.3, 6);
   });
 });
 
@@ -1056,7 +1605,7 @@ describe("automatic inferred relation generation", () => {
       }
       const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
       const source = {
-        actorType: "human",
+        actorType: "human" as const,
         actorLabel: "juhwan",
         toolName: "memforge-test",
       };
@@ -1092,7 +1641,13 @@ describe("automatic inferred relation generation", () => {
       const noteId = noteBody.data.node.id as string;
 
       const repository = workspaceSessionManager.getCurrent().repository;
-      const inferred = repository.listInferredRelationsForNode(noteId, 10);
+      const inferred = await waitFor(() => {
+        const items = repository.listInferredRelationsForNode(noteId, 10);
+        return items.some((item) => item.generator === "deterministic-tag-overlap") &&
+          items.some((item) => item.generator === "deterministic-body-reference")
+          ? items
+          : null;
+      });
       const neighborhoodResponse = await fetch(`${baseUrl}/nodes/${noteId}/neighborhood?include_inferred=1&max_inferred=4`);
       const neighborhoodBody = await neighborhoodResponse.json();
 
@@ -1126,7 +1681,7 @@ describe("automatic inferred relation generation", () => {
       }
       const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
       const source = {
-        actorType: "human",
+        actorType: "human" as const,
         actorLabel: "juhwan",
         toolName: "memforge-test",
       };
@@ -1195,7 +1750,17 @@ describe("automatic inferred relation generation", () => {
         }),
       });
       const repository = workspaceSessionManager.getCurrent().repository;
-      const inferred = repository.listInferredRelationsForNode(noteBId, 20);
+      const inferred = await waitFor(() => {
+        const items = repository.listInferredRelationsForNode(noteBId, 20);
+        return items.some((item) => item.generator === "deterministic-project-membership") &&
+          items.some(
+            (item) =>
+              item.generator === "deterministic-project-membership" &&
+              [item.fromNodeId, item.toNodeId].includes(noteAId)
+          )
+          ? items
+          : null;
+      });
 
       expect(relationResponse.status).toBe(201);
       expect(inferred.some((item) => item.generator === "deterministic-project-membership")).toBe(true);
@@ -1286,7 +1851,17 @@ describe("automatic inferred relation generation", () => {
         }),
       });
       const repository = workspaceSessionManager.getCurrent().repository;
-      const inferred = repository.listInferredRelationsForNode(noteBId, 20);
+      const inferred = await waitFor(() => {
+        const items = repository.listInferredRelationsForNode(noteBId, 20);
+        return items.some((item) => item.generator === "deterministic-shared-artifact") &&
+          items.some(
+            (item) =>
+              item.generator === "deterministic-shared-artifact" &&
+              [item.fromNodeId, item.toNodeId].includes(noteAId)
+          )
+          ? items
+          : null;
+      });
 
       expect(artifactResponse.status).toBe(201);
       expect(inferred.some((item) => item.generator === "deterministic-shared-artifact")).toBe(true);
@@ -1320,45 +1895,43 @@ describe("automatic inferred relation generation", () => {
         throw new Error("Failed to resolve test server address");
       }
       const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
-      const source = {
+      const source: {
+        actorType: "human";
+        actorLabel: string;
+        toolName: string;
+      } = {
         actorType: "human",
         actorLabel: "juhwan",
         toolName: "memforge-test",
       };
 
-      const targetResponse = await fetch(`${baseUrl}/nodes`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          type: "note",
-          title: "Runtime Notes",
-          body: "Operational notes",
-          tags: [],
-          metadata: {},
-          source,
-        }),
+      const repository = workspaceSessionManager.getCurrent().repository;
+      const targetNode = repository.createNode({
+        type: "note",
+        title: "Runtime Notes",
+        body: "Operational notes",
+        tags: [],
+        metadata: {},
+        source,
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active",
       });
-      const targetId = (await targetResponse.json()).data.node.id as string;
-
-      const relatedResponse = await fetch(`${baseUrl}/nodes`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          type: "note",
-          title: "Deployment Checklist",
-          body: "Restart steps",
-          tags: [],
-          metadata: {},
-          source,
-        }),
+      const relatedNode = repository.createNode({
+        type: "note",
+        title: "Deployment Checklist",
+        body: "Restart steps",
+        tags: [],
+        metadata: {},
+        source,
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active",
       });
-      const relatedId = (await relatedResponse.json()).data.node.id as string;
 
       await fetch(`${baseUrl}/activities`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          targetNodeId: targetId,
+          targetNodeId: targetNode.id,
           activityType: "agent_run_summary",
           body: "Follow Deployment Checklist after the restart.",
           metadata: {},
@@ -1366,15 +1939,20 @@ describe("automatic inferred relation generation", () => {
         }),
       });
 
-      const repository = workspaceSessionManager.getCurrent().repository;
-      const inferred = repository.listInferredRelationsForNode(targetId, 10);
+      const inferred = await waitFor(() => {
+        const items = repository.listInferredRelationsForNode(targetNode.id, 10);
+        return items.some((item) => item.generator === "deterministic-activity-reference") &&
+          items.some((item) => item.fromNodeId === relatedNode.id || item.toNodeId === relatedNode.id)
+          ? items
+          : null;
+      }, { timeoutMs: 5_000 });
 
       expect(inferred.some((item) => item.generator === "deterministic-activity-reference")).toBe(true);
-      expect(inferred.some((item) => item.fromNodeId === relatedId || item.toNodeId === relatedId)).toBe(true);
+      expect(inferred.some((item) => item.fromNodeId === relatedNode.id || item.toNodeId === relatedNode.id)).toBe(true);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
-  });
+  }, 15_000);
 
   it("expires stale auto-generated links when deterministic signals disappear", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
@@ -1427,7 +2005,10 @@ describe("automatic inferred relation generation", () => {
       const relatedNode = (await relatedResponse.json()).data.node as { id: string };
 
       const repository = workspaceSessionManager.getCurrent().repository;
-      const activeBefore = repository.listInferredRelationsForNode(relatedNode.id, 10);
+      const activeBefore = await waitFor(() => {
+        const items = repository.listInferredRelationsForNode(relatedNode.id, 10);
+        return items.some((item) => item.generator === "deterministic-tag-overlap") ? items : null;
+      });
       const autoRelation = activeBefore.find((item) => item.generator === "deterministic-tag-overlap");
       if (!autoRelation) {
         throw new Error("Expected tag-overlap inferred relation to exist before cleanup.");
@@ -1443,7 +2024,10 @@ describe("automatic inferred relation generation", () => {
         }),
       });
 
-      const refreshed = repository.getInferredRelation(autoRelation.id);
+      const refreshed = await waitFor(() => {
+        const relation = repository.getInferredRelation(autoRelation.id);
+        return relation.status === "expired" ? relation : null;
+      });
 
       expect(updateResponse.status).toBe(200);
       expect(refreshed.status).toBe("expired");
@@ -1612,6 +2196,7 @@ describe("inferred relation API integration", () => {
       expect(neighborhoodBody.data.items).toHaveLength(1);
       expect(neighborhoodBody.data.items[0]?.edge.relationSource).toBe("inferred");
       expect(neighborhoodBody.data.items[0]?.edge.relationScore).toBe(0.76);
+      expect(neighborhoodBody.data.items[0]?.edge.retrievalRank).toBeGreaterThan(0.76);
       expect(bundleResponse.status).toBe(200);
       expect(bundleBody.data.bundle.items).toEqual(
         expect.arrayContaining([
@@ -1620,9 +2205,106 @@ describe("inferred relation API integration", () => {
             relationSource: "inferred",
             relationType: "supports",
             relationScore: 0.76,
+            retrievalRank: expect.any(Number),
           }),
         ])
       );
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("adds local-ngram semantic bonuses to context bundles when lexical overlap is weak", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    repository.setSetting("search.semantic.enabled", true);
+    repository.setSetting("search.semantic.provider", "local-ngram");
+    repository.setSetting("search.semantic.model", "chargram-v1");
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const source = {
+        actorType: "agent" as const,
+        actorLabel: "Codex",
+        toolName: "codex",
+      };
+      const targetNode = repository.createNode({
+        type: "project",
+        title: "Service recovery workspace",
+        body: "Operations guide for outage stabilization and deploy verification.",
+        source,
+        tags: ["ops"],
+        metadata: {},
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active",
+      });
+      const semanticRelated = repository.createNode({
+        type: "note",
+        title: "Recovery sequencing",
+        body: "Restart rollback runbook for outage recovery and deploy verification.",
+        source,
+        tags: ["ops", "runbook"],
+        metadata: {},
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active",
+      });
+      repository.upsertInferredRelation({
+        fromNodeId: targetNode.id,
+        toNodeId: semanticRelated.id,
+        relationType: "supports",
+        baseScore: 0.36,
+        usageScore: 0,
+        finalScore: 0.36,
+        status: "active",
+        generator: "deterministic-linker",
+        evidence: {},
+        metadata: {},
+      });
+      await repository.processPendingSemanticIndex(20);
+
+      const bundleResponse = await fetch(`${baseUrl}/context/bundles`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          target: {
+            type: "node",
+            id: targetNode.id,
+          },
+          mode: "compact",
+          preset: "for-assistant",
+          options: {
+            includeRelated: true,
+            includeInferred: true,
+            includeRecentActivities: false,
+            includeDecisions: false,
+            includeOpenQuestions: false,
+            maxInferred: 4,
+            maxItems: 5,
+          },
+        }),
+      });
+      const bundleBody = await bundleResponse.json();
+
+      const semanticItem = bundleBody.data.bundle.items.find((item: { nodeId: string }) => item.nodeId === semanticRelated.id);
+
+      expect(bundleResponse.status).toBe(200);
+      expect(semanticItem).toBeTruthy();
+      expect(semanticItem?.semanticSimilarity).toBeGreaterThan(0.2);
+      expect(semanticItem?.reason).toContain("Semantic similarity");
+      expect(bundleBody.data.bundle.items.filter((item: { nodeId: string }) => item.nodeId === semanticRelated.id)).toHaveLength(1);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
@@ -1899,6 +2581,426 @@ describe("inferred relation API integration", () => {
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
+  });
+
+  it("adds local-ngram semantic bonuses when deterministic candidate signals are weak", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    repository.setSetting("search.semantic.enabled", true);
+    repository.setSetting("search.semantic.provider", "local-ngram");
+    repository.setSetting("search.semantic.model", "chargram-v1");
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const source = {
+        actorType: "agent" as const,
+        actorLabel: "Codex",
+        toolName: "codex",
+      };
+      const plainCandidate = repository.createNode({
+        type: "note",
+        title: "Budget planning memo",
+        body: "Quarterly budgeting, forecast tracking, and finance alignment.",
+        source,
+        tags: ["finance"],
+        metadata: {},
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active",
+      });
+      const semanticCandidate = repository.createNode({
+        type: "note",
+        title: "Recovery checklist",
+        body: "Service restart rollback runbook for outage recovery and deploy verification.",
+        source,
+        tags: ["ops", "runbook"],
+        metadata: {},
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active",
+      });
+      await repository.processPendingSemanticIndex(10);
+
+      const rankingResponse = await fetch(`${baseUrl}/retrieval/rank-candidates`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "rollback runbook service restart",
+          candidateNodeIds: [plainCandidate.id, semanticCandidate.id],
+          preset: "for-assistant",
+        }),
+      });
+      const rankingBody = await rankingResponse.json();
+
+      expect(rankingResponse.status).toBe(200);
+      expect(rankingBody.data.items[0]?.nodeId).toBe(semanticCandidate.id);
+      expect(rankingBody.data.items[0]?.semanticSimilarity).toBeGreaterThan(0.2);
+      expect(rankingBody.data.items[0]?.reason).toContain("Semantic similarity");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("skips local-ngram semantic bonuses when a strong lexical match already exists", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    repository.setSetting("search.semantic.enabled", true);
+    repository.setSetting("search.semantic.provider", "local-ngram");
+    repository.setSetting("search.semantic.model", "chargram-v1");
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const source = {
+        actorType: "agent" as const,
+        actorLabel: "Codex",
+        toolName: "codex",
+      };
+      const directMatch = repository.createNode({
+        type: "note",
+        title: "Restart checklist",
+        body: "Service restart rollback runbook for outage recovery.",
+        source,
+        tags: ["ops"],
+        metadata: {},
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active",
+      });
+      const semanticCandidate = repository.createNode({
+        type: "note",
+        title: "Recovery guide",
+        body: "Service restart rollback runbook for outage recovery and deploy verification.",
+        source,
+        tags: ["ops", "runbook"],
+        metadata: {},
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active",
+      });
+      await repository.processPendingSemanticIndex(10);
+
+      const rankingResponse = await fetch(`${baseUrl}/retrieval/rank-candidates`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "Restart checklist",
+          candidateNodeIds: [semanticCandidate.id, directMatch.id],
+          preset: "for-assistant",
+        }),
+      });
+      const rankingBody = await rankingResponse.json();
+
+      expect(rankingResponse.status).toBe(200);
+      expect(rankingBody.data.items[0]?.nodeId).toBe(directMatch.id);
+      expect(rankingBody.data.items[0]?.semanticSimilarity).toBeNull();
+      expect(rankingBody.data.items[1]?.semanticSimilarity).toBeNull();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("respects semantic augmentation minSimilarity and maxBonus settings without changing the default gate", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    repository.setSetting("search.semantic.enabled", true);
+    repository.setSetting("search.semantic.provider", "local-ngram");
+    repository.setSetting("search.semantic.model", "chargram-v1");
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const source = {
+        actorType: "agent" as const,
+        actorLabel: "Codex",
+        toolName: "codex",
+      };
+      const plainCandidate = repository.createNode({
+        type: "note",
+        title: "Deploy notes",
+        body: "Generic operational notes with no rollback checklist or restart details.",
+        source,
+        tags: ["ops"],
+        metadata: {},
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active",
+      });
+      const semanticCandidate = repository.createNode({
+        type: "note",
+        title: "Recovery checklist",
+        body: "Service restart rollback runbook for outage recovery and deploy verification.",
+        source,
+        tags: ["ops", "runbook"],
+        metadata: {},
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active",
+      });
+      await repository.processPendingSemanticIndex(10);
+
+      repository.setSetting("search.semantic.augmentation.maxBonus", 4);
+      const tunedResponse = await fetch(`${baseUrl}/retrieval/rank-candidates`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "rollback runbook service restart",
+          candidateNodeIds: [plainCandidate.id, semanticCandidate.id],
+          preset: "for-assistant",
+        }),
+      });
+      const tunedBody = await tunedResponse.json();
+
+      expect(tunedResponse.status).toBe(200);
+      expect(tunedBody.data.items[0]?.nodeId).toBe(semanticCandidate.id);
+      expect(tunedBody.data.items[0]?.semanticSimilarity).toBeGreaterThan(0.2);
+      expect(tunedBody.data.items[0]?.score).toBeLessThanOrEqual(24);
+
+      repository.setSetting("search.semantic.augmentation.minSimilarity", 0.99);
+      const suppressedResponse = await fetch(`${baseUrl}/retrieval/rank-candidates`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "rollback runbook service restart",
+          candidateNodeIds: [plainCandidate.id, semanticCandidate.id],
+          preset: "for-assistant",
+        }),
+      });
+      const suppressedBody = await suppressedResponse.json();
+
+      expect(suppressedResponse.status).toBe(200);
+      expect(suppressedBody.data.items[0]?.semanticSimilarity).toBeNull();
+      expect(suppressedBody.data.items[0]?.reason ?? "").not.toContain("Semantic similarity");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("includes relation ids in context bundle items for relation-backed preview actions", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const source = {
+        actorType: "human" as const,
+        actorLabel: "juhwan",
+        toolName: "memforge-test",
+      };
+      const target = repository.createNode({
+        type: "project",
+        title: "Context target",
+        body: "Primary project",
+        source,
+        tags: [],
+        metadata: {},
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active",
+      });
+      const related = repository.createNode({
+        type: "note",
+        title: "Context related",
+        body: "Related note",
+        source,
+        tags: [],
+        metadata: {},
+        resolvedCanonicality: "canonical",
+        resolvedStatus: "active",
+      });
+      const relation = repository.createRelation({
+        fromNodeId: target.id,
+        toNodeId: related.id,
+        relationType: "supports",
+        metadata: {},
+        source,
+        resolvedStatus: "active",
+      });
+
+      const bundleResponse = await fetch(`${baseUrl}/context/bundles`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          target: { type: "node", id: target.id },
+          mode: "compact",
+          preset: "for-assistant",
+          options: {
+            includeRelated: true,
+            includeInferred: false,
+            includeRecentActivities: false,
+            includeDecisions: false,
+            includeOpenQuestions: false,
+            maxInferred: 0,
+            maxItems: 5
+          }
+        }),
+      });
+      const bundleBody = await bundleResponse.json();
+      const bundleItem = bundleBody.data.bundle.items.find((item: { nodeId: string }) => item.nodeId === related.id);
+
+      expect(bundleResponse.status).toBe(200);
+      expect(bundleItem).toMatchObject({
+        nodeId: related.id,
+        relationId: relation.id,
+        relationType: "supports"
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("supports top-k mean semantic chunk aggregation without changing the default max strategy", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspace = ensureWorkspace(root);
+    const db = openDatabase(workspace);
+    const repository = new MemforgeRepository(db, root);
+    repository.ensureBaseSettings({
+      "search.semantic.enabled": true,
+      "search.semantic.provider": "local-ngram",
+      "search.semantic.model": "chargram-v1",
+      "search.semantic.chunk.enabled": true,
+      "search.semantic.chunk.aggregation": "max",
+    });
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "memforge-test"
+    };
+    const exactChunkNode = repository.createNode({
+      type: "note",
+      title: "Exact chunk node",
+      body: "placeholder",
+      tags: [],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    const steadyChunkNode = repository.createNode({
+      type: "note",
+      title: "Steady chunk node",
+      body: "placeholder",
+      tags: [],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+
+    const queryVector = (await embedSemanticQueryText({
+      provider: "local-ngram",
+      model: "chargram-v1",
+      text: "rollback runbook service restart"
+    }))?.vector;
+    if (!queryVector?.length) {
+      throw new Error("Expected local-ngram query vector");
+    }
+
+    const buildOrthogonalUnitVector = (base: number[]) => {
+      const pivot = base.reduce(
+        (best, value, index) => (Math.abs(value) < Math.abs(base[best] ?? Infinity) ? index : best),
+        0
+      );
+      const candidate = new Array<number>(base.length).fill(0);
+      candidate[pivot] = 1;
+      const projection = base.reduce((sum, value, index) => sum + value * candidate[index], 0);
+      const orthogonal = candidate.map((value, index) => value - projection * base[index]);
+      const magnitude = Math.sqrt(orthogonal.reduce((sum, value) => sum + value * value, 0));
+      return orthogonal.map((value) => value / magnitude);
+    };
+    const orthogonalVector = buildOrthogonalUnitVector(queryVector);
+    const blendVector = (targetSimilarity: number) =>
+      queryVector.map(
+        (value, index) => targetSimilarity * value + Math.sqrt(1 - targetSimilarity ** 2) * orthogonalVector[index]
+      );
+    const encodeVector = (vector: number[]) => new Uint8Array(new Float32Array(vector).buffer);
+    const now = "2026-03-19T00:00:00.000Z";
+    const insertEmbedding = db.prepare(
+      `INSERT INTO node_embeddings (
+         owner_type, owner_id, chunk_ordinal, vector_ref, vector_blob, embedding_provider, embedding_model, embedding_version,
+         content_hash, status, created_at, updated_at
+       ) VALUES ('node', ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`
+    );
+    const setReadyState = db.prepare(
+      `UPDATE node_index_state
+       SET embedding_status = 'ready', embedding_provider = ?, embedding_model = ?, embedding_version = ?, stale_reason = NULL, updated_at = ?
+       WHERE node_id = ?`
+    );
+
+    insertEmbedding.run(exactChunkNode.id, 0, null, encodeVector(queryVector), "local-ngram", "chargram-v1", "1", "hash-a", now, now);
+    insertEmbedding.run(
+      exactChunkNode.id,
+      1,
+      null,
+      encodeVector(new Array<number>(queryVector.length).fill(0)),
+      "local-ngram",
+      "chargram-v1",
+      "1",
+      "hash-a",
+      now,
+      now
+    );
+    insertEmbedding.run(steadyChunkNode.id, 0, null, encodeVector(blendVector(0.8)), "local-ngram", "chargram-v1", "1", "hash-b", now, now);
+    insertEmbedding.run(steadyChunkNode.id, 1, null, encodeVector(blendVector(0.8)), "local-ngram", "chargram-v1", "1", "hash-b", now, now);
+    setReadyState.run("local-ngram", "chargram-v1", "1", now, exactChunkNode.id);
+    setReadyState.run("local-ngram", "chargram-v1", "1", now, steadyChunkNode.id);
+
+    const maxMatches = await repository.rankSemanticCandidates("rollback runbook service restart", [
+      exactChunkNode.id,
+      steadyChunkNode.id
+    ]);
+    expect(maxMatches.get(exactChunkNode.id)?.similarity).toBeGreaterThan(maxMatches.get(steadyChunkNode.id)?.similarity ?? 0);
+
+    repository.setSetting("search.semantic.chunk.aggregation", "topk_mean");
+    const topKMatches = await repository.rankSemanticCandidates("rollback runbook service restart", [
+      exactChunkNode.id,
+      steadyChunkNode.id
+    ]);
+    expect(topKMatches.get(steadyChunkNode.id)?.similarity).toBeGreaterThan(topKMatches.get(exactChunkNode.id)?.similarity ?? 0);
   });
 
   it("recomputes inferred relation scores through the HTTP API", async () => {

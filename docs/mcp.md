@@ -73,6 +73,8 @@ Rules:
 | `memforge_workspace_list` | List known workspaces | `GET /workspaces` |
 | `memforge_workspace_create` | Create and switch workspace | `POST /workspaces` |
 | `memforge_workspace_open` | Switch to existing workspace | `POST /workspaces/open` |
+| `memforge_semantic_status` | Read semantic index status and queue counts | `GET /semantic/status` |
+| `memforge_semantic_issues` | Read semantic issue details with optional status filters and cursor pagination | `GET /semantic/issues` |
 | `memforge_search_nodes` | Search nodes with filters | `POST /nodes/search` |
 | `memforge_get_node` | Read node detail bundle | `GET /nodes/:id` |
 | `memforge_get_related` | Read canonical plus inferred neighborhood items | `GET /nodes/:id/neighborhood` |
@@ -86,6 +88,9 @@ Rules:
 | `memforge_review_get` | Read one review item | `GET /review-queue/:id` |
 | `memforge_review_decide` | Approve / reject / edit-and-approve | `POST /review-queue/:id/:action` |
 | `memforge_context_bundle` | Build compact agent context | `POST /context/bundles` |
+| `memforge_rank_candidates` | Rank candidate nodes with relation and semantic request-time signals | `POST /retrieval/rank-candidates` |
+| `memforge_semantic_reindex` | Queue workspace semantic reindex | `POST /semantic/reindex` |
+| `memforge_semantic_reindex_node` | Queue semantic reindex for one node | `POST /semantic/reindex/:nodeId` |
 
 ### Tool design notes
 

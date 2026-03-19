@@ -8,6 +8,10 @@ import type {
   Relation,
   ReviewSettings,
   ReviewQueueItem,
+  ContextBundlePreviewItem,
+  SemanticIssueItem,
+  SemanticIssuePage,
+  SemanticStatusSummary,
   Workspace,
   WorkspaceCatalogItem,
   WorkspaceSeed,
@@ -38,6 +42,7 @@ export interface BootstrapInfo {
   workspace: Workspace;
   authMode: Workspace['authMode'];
   hasToken: boolean;
+  semantic: SemanticStatusSummary;
 }
 
 export interface WorkspaceCatalog {
@@ -83,6 +88,42 @@ function mapWorkspaceCatalogItem(raw: any): WorkspaceCatalogItem {
     ...workspace,
     isCurrent: Boolean(raw?.isCurrent),
     lastOpenedAt: raw?.lastOpenedAt ?? new Date().toISOString(),
+  };
+}
+
+function defaultSemanticStatus(): SemanticStatusSummary {
+  return {
+    enabled: false,
+    provider: 'disabled',
+    model: 'none',
+    chunkEnabled: false,
+    lastBackfillAt: null,
+    counts: {
+      pending: 0,
+      processing: 0,
+      stale: 0,
+      ready: 0,
+      failed: 0,
+    },
+  };
+}
+
+function mapSemanticStatus(raw: any): SemanticStatusSummary {
+  const fallback = defaultSemanticStatus();
+  const counts = raw?.counts ?? {};
+  return {
+    enabled: typeof raw?.enabled === 'boolean' ? raw.enabled : fallback.enabled,
+    provider: typeof raw?.provider === 'string' ? raw.provider : fallback.provider,
+    model: typeof raw?.model === 'string' ? raw.model : fallback.model,
+    chunkEnabled: typeof raw?.chunkEnabled === 'boolean' ? raw.chunkEnabled : fallback.chunkEnabled,
+    lastBackfillAt: typeof raw?.lastBackfillAt === 'string' ? raw.lastBackfillAt : fallback.lastBackfillAt,
+    counts: {
+      pending: typeof counts.pending === 'number' ? counts.pending : fallback.counts.pending,
+      processing: typeof counts.processing === 'number' ? counts.processing : fallback.counts.processing,
+      stale: typeof counts.stale === 'number' ? counts.stale : fallback.counts.stale,
+      ready: typeof counts.ready === 'number' ? counts.ready : fallback.counts.ready,
+      failed: typeof counts.failed === 'number' ? counts.failed : fallback.counts.failed,
+    },
   };
 }
 
@@ -282,14 +323,165 @@ export async function getBootstrap(): Promise<BootstrapInfo> {
         workspace,
         authMode: data.authMode === 'bearer' ? 'bearer' : workspace.authMode,
         hasToken: Boolean(getRendererToken()),
+        semantic: mapSemanticStatus(data.semantic),
       };
     },
     async () => ({
       workspace: fallbackState.workspace,
       authMode: 'optional',
       hasToken: false,
+      semantic: defaultSemanticStatus(),
     }),
   );
+}
+
+export async function getSemanticStatus(): Promise<SemanticStatusSummary> {
+  return withFallback(
+    async () => {
+      const payload = await requestJson('/semantic/status');
+      return mapSemanticStatus(payload?.data ?? payload);
+    },
+    async () => defaultSemanticStatus(),
+  );
+}
+
+export async function getSemanticIssues(options?: {
+  limit?: number;
+  cursor?: string | null;
+  statuses?: Array<'pending' | 'stale' | 'failed'>;
+}): Promise<SemanticIssuePage> {
+  return withFallback(
+    async () => {
+      const params = new URLSearchParams();
+      params.set('limit', String(Math.min(Math.max(options?.limit ?? 5, 1), 25)));
+      if (options?.cursor) {
+        params.set('cursor', options.cursor);
+      }
+      if (options?.statuses?.length) {
+        params.set('statuses', options.statuses.join(','));
+      }
+      const payload = await requestJson(`/semantic/issues?${params.toString()}`);
+      const items = Array.isArray(payload?.data?.items)
+        ? payload.data.items
+            .filter((item: any) => item && typeof item.nodeId === 'string')
+            .map((item: any) => ({
+              nodeId: item.nodeId,
+              title: typeof item.title === 'string' ? item.title : null,
+              embeddingStatus:
+                item.embeddingStatus === 'pending' ||
+                item.embeddingStatus === 'processing' ||
+                item.embeddingStatus === 'stale' ||
+                item.embeddingStatus === 'ready' ||
+                item.embeddingStatus === 'failed'
+                  ? item.embeddingStatus
+                  : 'pending',
+              staleReason: typeof item.staleReason === 'string' ? item.staleReason : null,
+              updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date().toISOString(),
+            }))
+        : [];
+      return {
+        items,
+        nextCursor: typeof payload?.data?.nextCursor === 'string' ? payload.data.nextCursor : null,
+      };
+    },
+    async () => ({
+      items: [],
+      nextCursor: null,
+    }),
+  );
+}
+
+export async function getContextBundlePreview(targetId: string): Promise<ContextBundlePreviewItem[]> {
+  return withFallback(
+    async () => {
+      const payload = await requestJson('/context/bundles', {
+        method: 'POST',
+        body: JSON.stringify({
+          target: {
+            type: 'node',
+            id: targetId,
+          },
+          mode: 'compact',
+          preset: 'for-assistant',
+          options: {
+            includeRelated: true,
+            includeInferred: true,
+            includeRecentActivities: false,
+            includeDecisions: true,
+            includeOpenQuestions: true,
+            maxInferred: 4,
+            maxItems: 6,
+          },
+        }),
+      });
+
+      return Array.isArray(payload?.data?.bundle?.items)
+        ? payload.data.bundle.items
+            .filter((item: any) => item && typeof item.nodeId === 'string' && item.nodeId !== targetId)
+            .map((item: any) => ({
+              nodeId: item.nodeId,
+              type: item.type,
+              title: typeof item.title === 'string' ? item.title : null,
+              summary: typeof item.summary === 'string' ? item.summary : null,
+              reason: typeof item.reason === 'string' ? item.reason : 'Included for context',
+              relationId: typeof item.relationId === 'string' ? item.relationId : undefined,
+              relationType: typeof item.relationType === 'string' ? item.relationType : undefined,
+              relationSource:
+                item.relationSource === 'canonical' || item.relationSource === 'inferred'
+                  ? item.relationSource
+                  : undefined,
+              relationScore: typeof item.relationScore === 'number' ? item.relationScore : undefined,
+              retrievalRank: typeof item.retrievalRank === 'number' ? item.retrievalRank : undefined,
+              semanticSimilarity: typeof item.semanticSimilarity === 'number' ? item.semanticSimilarity : undefined,
+              generator: typeof item.generator === 'string' ? item.generator : null,
+            }))
+        : [];
+    },
+    async () => [],
+  );
+}
+
+export async function appendRelationUsageEvent(input: {
+  relationId: string;
+  relationSource: 'canonical' | 'inferred';
+  eventType: 'bundle_clicked';
+  sessionId?: string;
+  delta: number;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  await requestJson('/relation-usage-events', {
+    method: 'POST',
+    body: JSON.stringify({
+      relationId: input.relationId,
+      relationSource: input.relationSource,
+      eventType: input.eventType,
+      sessionId: input.sessionId,
+      delta: input.delta,
+      source: DEFAULT_SOURCE,
+      metadata: input.metadata ?? {},
+    }),
+  });
+}
+
+export async function queueSemanticReindex(limit = 250): Promise<{ queuedNodeIds: string[]; queuedCount: number }> {
+  const payload = await requestJson('/semantic/reindex', {
+    method: 'POST',
+    body: JSON.stringify({ limit }),
+  });
+  return {
+    queuedNodeIds: Array.isArray(payload?.data?.queuedNodeIds) ? payload.data.queuedNodeIds : [],
+    queuedCount: typeof payload?.data?.queuedCount === 'number' ? payload.data.queuedCount : 0,
+  };
+}
+
+export async function queueSemanticReindexForNode(nodeId: string): Promise<{ nodeId: string; queued: boolean }> {
+  const payload = await requestJson(`/semantic/reindex/${encodeURIComponent(nodeId)}`, {
+    method: 'POST',
+  });
+  return {
+    nodeId: typeof payload?.data?.nodeId === 'string' ? payload.data.nodeId : nodeId,
+    queued: Boolean(payload?.data?.queued),
+  };
 }
 
 export async function getReviewSettings(): Promise<ReviewSettings> {

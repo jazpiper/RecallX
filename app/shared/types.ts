@@ -52,6 +52,34 @@ export interface WorkspaceCatalogItem extends WorkspaceInfo {
   lastOpenedAt: string;
 }
 
+export interface SemanticStatusSummary {
+  enabled: boolean;
+  provider: string | null;
+  model: string | null;
+  chunkEnabled: boolean;
+  lastBackfillAt: string | null;
+  counts: {
+    pending: number;
+    processing: number;
+    stale: number;
+    ready: number;
+    failed: number;
+  };
+}
+
+export interface SemanticIssueItem {
+  nodeId: string;
+  title: string | null;
+  embeddingStatus: 'pending' | 'processing' | 'stale' | 'ready' | 'failed';
+  staleReason: string | null;
+  updatedAt: string;
+}
+
+export interface SemanticIssuePage {
+  items: SemanticIssueItem[];
+  nextCursor: string | null;
+}
+
 export interface NodeRecord {
   id: string;
   type: NodeType;
@@ -214,10 +242,13 @@ export interface ContextBundleItem {
   title: string | null;
   summary: string | null;
   reason: string;
+  relationId?: string;
   relationType?: RelationType;
   relationSource?: RelationSource;
   relationStatus?: RelationStatus | InferredRelationStatus;
   relationScore?: number;
+  retrievalRank?: number;
+  semanticSimilarity?: number;
   generator?: string | null;
 }
 
@@ -229,6 +260,7 @@ export interface NeighborhoodItem {
     relationSource: RelationSource;
     relationStatus: RelationStatus | InferredRelationStatus;
     relationScore: number | null;
+    retrievalRank?: number | null;
     generator: string | null;
     reason: string;
     direction: "incoming" | "outgoing";

@@ -37,11 +37,14 @@ import {
 } from "./governance.js";
 import { refreshAutomaticInferredRelationsForNode, reindexAutomaticInferredRelations } from "./inferred-relations.js";
 import {
+  buildSemanticCandidateBonusMap,
+  buildCandidateRelationBonusMap,
   buildContextBundle,
   buildNeighborhoodItems,
-  bundleAsMarkdown
+  bundleAsMarkdown,
+  computeRankCandidateScore,
+  shouldUseSemanticCandidateAugmentation
 } from "./retrieval.js";
-import { computeUsageBonus, relationTypeSpecificityBonus } from "./relation-scoring.js";
 import { createId, isPathWithinRoot } from "./utils.js";
 import type { WorkspaceSessionManager } from "./workspace-session.js";
 
@@ -71,40 +74,6 @@ function isAllowedBrowserOrigin(origin: string): boolean {
   } catch {
     return false;
   }
-}
-
-function buildCandidateRelationBonusMap(
-  repository: ReturnType<WorkspaceSessionManager["getCurrent"]>["repository"],
-  targetNodeId: string,
-  candidateNodeIds: string[]
-) {
-  const neighborhood = buildNeighborhoodItems(repository, targetNodeId, {
-    includeInferred: true,
-    maxInferred: Math.max(4, Math.min(candidateNodeIds.length, 10))
-  });
-  const usageSummaries = repository.getRelationUsageSummaries(neighborhood.map((item) => item.edge.relationId));
-
-  return new Map(
-    neighborhood
-      .filter((item) => candidateNodeIds.includes(item.node.id))
-      .map((item) => {
-        const usageBonus = computeUsageBonus(usageSummaries.get(item.edge.relationId));
-        const relationBonus =
-          item.edge.relationSource === "canonical"
-            ? 70 + relationTypeSpecificityBonus(item.edge.relationType) * 100 + usageBonus * 60
-            : ((item.edge.relationScore ?? 0) + relationTypeSpecificityBonus(item.edge.relationType) + usageBonus) * 35;
-        return [
-          item.node.id,
-          {
-            score: relationBonus,
-            relationSource: item.edge.relationSource,
-            relationType: item.edge.relationType,
-            relationScore: item.edge.relationScore,
-            reason: item.edge.reason
-          }
-        ] as const;
-      })
-  );
 }
 
 type AutoRecomputeConfig = {
@@ -137,6 +106,56 @@ type AutoRecomputeStatus = {
   pendingRelationCount: number;
   earliestPendingEventAt: string | null;
   latestPendingEventAt: string | null;
+  running: boolean;
+};
+
+type InferredRefreshTrigger = "node-write" | "activity-append";
+
+type AutoRefreshConfig = {
+  enabled: boolean;
+  debounceMs: number;
+  maxStalenessMs: number;
+  batchLimit: number;
+};
+
+type AutoRefreshState = {
+  workspaceRoot: string | null;
+  pendingNodeTriggers: Map<string, InferredRefreshTrigger>;
+  earliestPendingAt: string | null;
+  latestPendingAt: string | null;
+  timer: ReturnType<typeof setTimeout> | null;
+  running: boolean;
+};
+
+type AutoRefreshStatus = {
+  enabled: boolean;
+  debounceMs: number;
+  maxStalenessMs: number;
+  batchLimit: number;
+  pendingNodeCount: number;
+  earliestPendingAt: string | null;
+  latestPendingAt: string | null;
+  running: boolean;
+};
+
+type AutoSemanticIndexConfig = {
+  enabled: boolean;
+  debounceMs: number;
+  batchLimit: number;
+  lastRunAt: string | null;
+};
+
+type AutoSemanticIndexState = {
+  workspaceRoot: string | null;
+  timer: ReturnType<typeof setTimeout> | null;
+  running: boolean;
+};
+
+type AutoSemanticIndexStatus = {
+  enabled: boolean;
+  debounceMs: number;
+  batchLimit: number;
+  lastRunAt: string | null;
   running: boolean;
 };
 
@@ -220,6 +239,7 @@ function buildServiceIndex(workspaceInfo: {
       "create nodes, relations, activities, and artifacts with provenance",
       "upsert inferred relations and append relation usage signals for retrieval feedback",
       "recompute inferred relation scores in an explicit maintenance pass",
+      "inspect semantic indexing status and queue bounded reindex passes",
       "list and act on review queue items",
       "build compact context bundles for coding/research/writing",
       "create or open workspaces without restarting the server"
@@ -323,6 +343,24 @@ function buildServiceIndex(workspaceInfo: {
       },
       {
         method: "GET",
+        path: "/api/v1/semantic/status",
+        purpose: "Read semantic indexing provider settings and pending or stale queue counts."
+      },
+      {
+        method: "GET",
+        path: "/api/v1/semantic/issues?limit=5",
+        purpose: "Read a capped list of pending, stale, or failed semantic indexing items and their reasons."
+      },
+      {
+        method: "POST",
+        path: "/api/v1/semantic/reindex",
+        purpose: "Queue semantic reindexing for a bounded set of active workspace nodes.",
+        requestExample: {
+          limit: 250
+        }
+      },
+      {
+        method: "GET",
         path: "/api/v1/review-queue?status=pending",
         purpose: "Read pending governance items."
       },
@@ -372,7 +410,8 @@ function buildServiceIndex(workspaceInfo: {
     notes: [
       "Do not expect GET /api/v1/nodes/search. Search is POST-based.",
       "Reuse the existing running local service instead of starting a second instance when possible.",
-      "All durable writes should include a source object for provenance."
+      "All durable writes should include a source object for provenance.",
+      "Semantic reindex endpoints only queue work. They do not generate embeddings inline on the write path."
     ]
   };
 }
@@ -417,11 +456,38 @@ export function createMemforgeApp(params: {
     timer: null,
     running: false
   };
+  const autoRefreshState: AutoRefreshState = {
+    workspaceRoot: null,
+    pendingNodeTriggers: new Map(),
+    earliestPendingAt: null,
+    latestPendingAt: null,
+    timer: null,
+    running: false
+  };
+  const autoSemanticIndexState: AutoSemanticIndexState = {
+    workspaceRoot: null,
+    timer: null,
+    running: false
+  };
 
   function clearAutoRecomputeTimer() {
     if (autoRecomputeState.timer) {
       clearTimeout(autoRecomputeState.timer);
       autoRecomputeState.timer = null;
+    }
+  }
+
+  function clearAutoRefreshTimer() {
+    if (autoRefreshState.timer) {
+      clearTimeout(autoRefreshState.timer);
+      autoRefreshState.timer = null;
+    }
+  }
+
+  function clearAutoSemanticIndexTimer() {
+    if (autoSemanticIndexState.timer) {
+      clearTimeout(autoSemanticIndexState.timer);
+      autoSemanticIndexState.timer = null;
     }
   }
 
@@ -433,6 +499,21 @@ export function createMemforgeApp(params: {
     autoRecomputeState.earliestPendingEventAt = null;
     autoRecomputeState.latestPendingEventAt = null;
     autoRecomputeState.running = false;
+  }
+
+  function resetAutoRefreshState(workspaceRoot: string) {
+    clearAutoRefreshTimer();
+    autoRefreshState.workspaceRoot = workspaceRoot;
+    autoRefreshState.pendingNodeTriggers = new Map();
+    autoRefreshState.earliestPendingAt = null;
+    autoRefreshState.latestPendingAt = null;
+    autoRefreshState.running = false;
+  }
+
+  function resetAutoSemanticIndexState(workspaceRoot: string) {
+    clearAutoSemanticIndexTimer();
+    autoSemanticIndexState.workspaceRoot = workspaceRoot;
+    autoSemanticIndexState.running = false;
   }
 
   function readAutoRecomputeConfig(): AutoRecomputeConfig {
@@ -456,6 +537,39 @@ export function createMemforgeApp(params: {
     };
   }
 
+  function readAutoRefreshConfig(): AutoRefreshConfig {
+    const settings = currentRepository().getSettings([
+      "relations.autoRefresh.enabled",
+      "relations.autoRefresh.debounceMs",
+      "relations.autoRefresh.maxStalenessMs",
+      "relations.autoRefresh.batchLimit"
+    ]);
+    return {
+      enabled: parseBooleanSetting(settings["relations.autoRefresh.enabled"], true),
+      debounceMs: parseNumberSetting(settings["relations.autoRefresh.debounceMs"], 150),
+      maxStalenessMs: parseNumberSetting(settings["relations.autoRefresh.maxStalenessMs"], 2_000),
+      batchLimit: parseNumberSetting(settings["relations.autoRefresh.batchLimit"], 24)
+    };
+  }
+
+  function readAutoSemanticIndexConfig(): AutoSemanticIndexConfig {
+    const settings = currentRepository().getSettings([
+      "search.semantic.autoIndex.enabled",
+      "search.semantic.autoIndex.debounceMs",
+      "search.semantic.autoIndex.batchLimit",
+      "search.semantic.autoIndex.lastRunAt"
+    ]);
+    return {
+      enabled: parseBooleanSetting(settings["search.semantic.autoIndex.enabled"], true),
+      debounceMs: Math.max(100, parseNumberSetting(settings["search.semantic.autoIndex.debounceMs"], 1_500)),
+      batchLimit: Math.max(1, parseNumberSetting(settings["search.semantic.autoIndex.batchLimit"], 20)),
+      lastRunAt:
+        typeof settings["search.semantic.autoIndex.lastRunAt"] === "string"
+          ? String(settings["search.semantic.autoIndex.lastRunAt"])
+          : null
+    };
+  }
+
   function buildAutoRecomputeStatus(): AutoRecomputeStatus {
     const config = readAutoRecomputeConfig();
     return {
@@ -473,6 +587,31 @@ export function createMemforgeApp(params: {
     };
   }
 
+  function buildAutoRefreshStatus(): AutoRefreshStatus {
+    const config = readAutoRefreshConfig();
+    return {
+      enabled: config.enabled,
+      debounceMs: config.debounceMs,
+      maxStalenessMs: config.maxStalenessMs,
+      batchLimit: config.batchLimit,
+      pendingNodeCount: autoRefreshState.pendingNodeTriggers.size,
+      earliestPendingAt: autoRefreshState.earliestPendingAt,
+      latestPendingAt: autoRefreshState.latestPendingAt,
+      running: autoRefreshState.running
+    };
+  }
+
+  function buildAutoSemanticIndexStatus(): AutoSemanticIndexStatus {
+    const config = readAutoSemanticIndexConfig();
+    return {
+      enabled: config.enabled,
+      debounceMs: config.debounceMs,
+      batchLimit: config.batchLimit,
+      lastRunAt: config.lastRunAt,
+      running: autoSemanticIndexState.running
+    };
+  }
+
   function markPendingRelationUsage(params: { relationId: string; createdAt: string }) {
     const workspaceRoot = currentWorkspaceRoot();
     if (autoRecomputeState.workspaceRoot !== workspaceRoot) {
@@ -485,6 +624,32 @@ export function createMemforgeApp(params: {
     }
     if (!autoRecomputeState.latestPendingEventAt || params.createdAt > autoRecomputeState.latestPendingEventAt) {
       autoRecomputeState.latestPendingEventAt = params.createdAt;
+    }
+  }
+
+  function mergeRefreshTrigger(
+    current: InferredRefreshTrigger | undefined,
+    next: InferredRefreshTrigger
+  ): InferredRefreshTrigger {
+    if (current === "activity-append" || next === "activity-append") {
+      return "activity-append";
+    }
+    return "node-write";
+  }
+
+  function markPendingInferredRefresh(nodeId: string, trigger: InferredRefreshTrigger) {
+    const workspaceRoot = currentWorkspaceRoot();
+    if (autoRefreshState.workspaceRoot !== workspaceRoot) {
+      resetAutoRefreshState(workspaceRoot);
+    }
+
+    const now = new Date().toISOString();
+    autoRefreshState.pendingNodeTriggers.set(nodeId, mergeRefreshTrigger(autoRefreshState.pendingNodeTriggers.get(nodeId), trigger));
+    if (!autoRefreshState.earliestPendingAt || now < autoRefreshState.earliestPendingAt) {
+      autoRefreshState.earliestPendingAt = now;
+    }
+    if (!autoRefreshState.latestPendingAt || now > autoRefreshState.latestPendingAt) {
+      autoRefreshState.latestPendingAt = now;
     }
   }
 
@@ -514,6 +679,48 @@ export function createMemforgeApp(params: {
     autoRecomputeState.timer.unref?.();
   }
 
+  function scheduleAutoRefresh() {
+    const config = readAutoRefreshConfig();
+    clearAutoRefreshTimer();
+
+    if (!config.enabled || autoRefreshState.running || autoRefreshState.pendingNodeTriggers.size === 0) {
+      return;
+    }
+
+    const now = Date.now();
+    const latestMs = autoRefreshState.latestPendingAt ? Date.parse(autoRefreshState.latestPendingAt) : null;
+    const earliestMs = autoRefreshState.earliestPendingAt ? Date.parse(autoRefreshState.earliestPendingAt) : null;
+    const dueDebounceMs = latestMs ? Math.max(0, latestMs + config.debounceMs - now) : Number.POSITIVE_INFINITY;
+    const dueStalenessMs = earliestMs ? Math.max(0, earliestMs + config.maxStalenessMs - now) : Number.POSITIVE_INFINITY;
+    const nextDelayMs = Math.min(dueDebounceMs, dueStalenessMs);
+
+    if (!Number.isFinite(nextDelayMs)) {
+      return;
+    }
+
+    autoRefreshState.timer = setTimeout(() => {
+      void runAutoRefresh();
+    }, nextDelayMs);
+    autoRefreshState.timer.unref?.();
+  }
+
+  function scheduleAutoSemanticIndex() {
+    const config = readAutoSemanticIndexConfig();
+    clearAutoSemanticIndexTimer();
+
+    const semanticStatus = currentRepository().getSemanticStatus();
+    const pendingCount = semanticStatus.counts.pending + semanticStatus.counts.stale;
+    const workerActive = semanticStatus.enabled || semanticStatus.chunkEnabled;
+    if (!config.enabled || !workerActive || autoSemanticIndexState.running || pendingCount === 0) {
+      return;
+    }
+
+    autoSemanticIndexState.timer = setTimeout(() => {
+      void runAutoSemanticIndex();
+    }, config.debounceMs);
+    autoSemanticIndexState.timer.unref?.();
+  }
+
   function hydrateAutoRecomputeState() {
     const workspaceRoot = currentWorkspaceRoot();
     if (autoRecomputeState.workspaceRoot !== workspaceRoot) {
@@ -536,6 +743,39 @@ export function createMemforgeApp(params: {
     autoRecomputeState.earliestPendingEventAt = pending.earliestEventAt;
     autoRecomputeState.latestPendingEventAt = pending.latestEventAt;
     scheduleAutoRecompute();
+  }
+
+  function hydrateAutoRefreshState() {
+    const workspaceRoot = currentWorkspaceRoot();
+    if (autoRefreshState.workspaceRoot !== workspaceRoot) {
+      resetAutoRefreshState(workspaceRoot);
+    }
+
+    const config = readAutoRefreshConfig();
+    if (!config.enabled) {
+      clearAutoRefreshTimer();
+      autoRefreshState.pendingNodeTriggers.clear();
+      autoRefreshState.earliestPendingAt = null;
+      autoRefreshState.latestPendingAt = null;
+      return;
+    }
+
+    scheduleAutoRefresh();
+  }
+
+  function hydrateAutoSemanticIndexState() {
+    const workspaceRoot = currentWorkspaceRoot();
+    if (autoSemanticIndexState.workspaceRoot !== workspaceRoot) {
+      resetAutoSemanticIndexState(workspaceRoot);
+    }
+
+    const config = readAutoSemanticIndexConfig();
+    if (!config.enabled) {
+      clearAutoSemanticIndexTimer();
+      return;
+    }
+
+    scheduleAutoSemanticIndex();
   }
 
   async function runAutoRecompute(reason: "auto" | "manual") {
@@ -616,6 +856,116 @@ export function createMemforgeApp(params: {
     }
   }
 
+  async function runAutoRefresh() {
+    if (autoRefreshState.running) {
+      return;
+    }
+
+    const config = readAutoRefreshConfig();
+    if (!config.enabled || autoRefreshState.pendingNodeTriggers.size === 0) {
+      return;
+    }
+
+    clearAutoRefreshTimer();
+    autoRefreshState.running = true;
+
+    try {
+      const batch = Array.from(autoRefreshState.pendingNodeTriggers.entries()).slice(0, config.batchLimit);
+      for (const [nodeId] of batch) {
+        autoRefreshState.pendingNodeTriggers.delete(nodeId);
+      }
+
+      if (autoRefreshState.pendingNodeTriggers.size === 0) {
+        autoRefreshState.earliestPendingAt = null;
+        autoRefreshState.latestPendingAt = null;
+      }
+
+      const repository = currentRepository();
+      const touchedRelationIds = new Set<string>();
+      let processedNodes = 0;
+
+      for (const [nodeId, trigger] of batch) {
+        try {
+          const result = refreshAutomaticInferredRelationsForNode(repository, nodeId, trigger);
+          processedNodes += 1;
+          for (const relationId of result.relationIds) {
+            touchedRelationIds.add(relationId);
+          }
+        } catch (error) {
+          console.error(`Failed to refresh inferred relations for node ${nodeId}`, error);
+        }
+      }
+
+      if (processedNodes > 0) {
+        broadcastWorkspaceEvent({
+          reason: "inferred-relation.auto-refreshed",
+          entityType: "relation"
+        });
+      }
+
+      if (touchedRelationIds.size > 0) {
+        scheduleAutoRecompute();
+      }
+    } finally {
+      autoRefreshState.running = false;
+      hydrateAutoRefreshState();
+    }
+  }
+
+  async function runAutoSemanticIndex() {
+    if (autoSemanticIndexState.running) {
+      return;
+    }
+
+    const config = readAutoSemanticIndexConfig();
+    if (!config.enabled) {
+      return;
+    }
+
+    clearAutoSemanticIndexTimer();
+    autoSemanticIndexState.running = true;
+    const startedAt = new Date().toISOString();
+    let shouldHydrate = true;
+
+    try {
+      try {
+        const result = await currentRepository().processPendingSemanticIndex(config.batchLimit);
+        currentRepository().setSetting("search.semantic.autoIndex.lastRunAt", startedAt);
+        if (result.processedCount > 0) {
+          broadcastWorkspaceEvent({
+            reason: "semantic.auto-indexed",
+            entityType: "settings"
+          });
+        }
+        if (result.remainingCount > 0) {
+          scheduleAutoSemanticIndex();
+        }
+        return result;
+      } catch (error) {
+        shouldHydrate = false;
+        console.error("Failed to process semantic index backlog", error);
+      }
+    } finally {
+      autoSemanticIndexState.running = false;
+      if (shouldHydrate) {
+        hydrateAutoSemanticIndexState();
+      } else {
+        clearAutoSemanticIndexTimer();
+      }
+    }
+  }
+
+  function queueInferredRefresh(nodeId: string, trigger: InferredRefreshTrigger) {
+    markPendingInferredRefresh(nodeId, trigger);
+    scheduleAutoRefresh();
+  }
+
+  function queueInferredRefreshForNodes(nodeIds: string[], trigger: InferredRefreshTrigger) {
+    for (const nodeId of new Set(nodeIds)) {
+      queueInferredRefresh(nodeId, trigger);
+    }
+  }
+
   function broadcastWorkspaceEvent(event: {
     reason: string;
     entityType?: "node" | "relation" | "activity" | "artifact" | "review" | "workspace" | "integration" | "settings";
@@ -638,6 +988,8 @@ export function createMemforgeApp(params: {
   }
 
   hydrateAutoRecomputeState();
+  hydrateAutoRefreshState();
+  hydrateAutoSemanticIndexState();
 
   app.use((request, response, next) => {
     const requestId = createId("req");
@@ -678,7 +1030,10 @@ export function createMemforgeApp(params: {
         workspaceLoaded: true,
         workspaceRoot: workspaceInfo.rootPath,
         schemaVersion: workspaceInfo.schemaVersion,
-        autoRecompute: buildAutoRecomputeStatus()
+        autoRecompute: buildAutoRecomputeStatus(),
+        autoRefresh: buildAutoRefreshStatus(),
+        autoSemanticIndex: buildAutoSemanticIndexStatus(),
+        semantic: currentRepository().getSemanticStatus()
       })
     );
   });
@@ -697,7 +1052,67 @@ export function createMemforgeApp(params: {
       envelope(response.locals.requestId, {
         workspace: workspaceInfo,
         authMode: workspaceInfo.authMode,
-        autoRecompute: buildAutoRecomputeStatus()
+        autoRecompute: buildAutoRecomputeStatus(),
+        autoRefresh: buildAutoRefreshStatus(),
+        autoSemanticIndex: buildAutoSemanticIndexStatus(),
+        semantic: currentRepository().getSemanticStatus()
+      })
+    );
+  });
+
+  app.get("/api/v1/semantic/status", (_request, response) => {
+    response.json(envelope(response.locals.requestId, currentRepository().getSemanticStatus()));
+  });
+
+  app.get("/api/v1/semantic/issues", (request, response) => {
+    const rawLimit = typeof request.query.limit === "string" ? Number.parseInt(request.query.limit, 10) : 5;
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 25) : 5;
+    const cursor = typeof request.query.cursor === "string" && request.query.cursor.trim() ? request.query.cursor : null;
+    const statuses =
+      typeof request.query.statuses === "string" && request.query.statuses.trim()
+        ? request.query.statuses
+            .split(",")
+            .map((value) => value.trim())
+            .filter((value): value is "pending" | "stale" | "failed" => value === "pending" || value === "stale" || value === "failed")
+        : undefined;
+    response.json(
+      envelope(
+        response.locals.requestId,
+        currentRepository().listSemanticIssues({
+          limit,
+          cursor,
+          statuses
+        })
+      )
+    );
+  });
+
+  app.post("/api/v1/semantic/reindex", (request, response) => {
+    const limit =
+      typeof request.body?.limit === "number" && Number.isFinite(request.body.limit)
+        ? Math.max(1, Math.min(1000, Math.trunc(request.body.limit)))
+        : 250;
+    const result = currentRepository().queueSemanticReindex(limit);
+    broadcastWorkspaceEvent({
+      reason: "semantic.reindex_queued",
+      entityType: "settings"
+    });
+    scheduleAutoSemanticIndex();
+    response.json(envelope(response.locals.requestId, result));
+  });
+
+  app.post("/api/v1/semantic/reindex/:nodeId", (request, response) => {
+    const node = currentRepository().queueSemanticReindexForNode(request.params.nodeId);
+    broadcastWorkspaceEvent({
+      reason: "semantic.node_reindex_queued",
+      entityType: "node",
+      entityId: node.id
+    });
+    scheduleAutoSemanticIndex();
+    response.json(
+      envelope(response.locals.requestId, {
+        nodeId: node.id,
+        queued: true
       })
     );
   });
@@ -736,6 +1151,8 @@ export function createMemforgeApp(params: {
     const input = createWorkspaceSchema.parse(request.body ?? {});
     const workspace = params.workspaceSessionManager.createWorkspace(input.rootPath, input.workspaceName);
     hydrateAutoRecomputeState();
+    hydrateAutoRefreshState();
+    hydrateAutoSemanticIndexState();
     broadcastWorkspaceEvent({
       reason: "workspace.created",
       entityType: "workspace"
@@ -753,6 +1170,8 @@ export function createMemforgeApp(params: {
     const input = openWorkspaceSchema.parse(request.body ?? {});
     const workspace = params.workspaceSessionManager.openWorkspace(input.rootPath);
     hydrateAutoRecomputeState();
+    hydrateAutoRefreshState();
+    hydrateAutoSemanticIndexState();
     broadcastWorkspaceEvent({
       reason: "workspace.opened",
       entityType: "workspace"
@@ -819,7 +1238,8 @@ export function createMemforgeApp(params: {
         }
       });
     }
-    refreshAutomaticInferredRelationsForNode(repository, node.id, "node-write");
+    queueInferredRefresh(node.id, "node-write");
+    scheduleAutoSemanticIndex();
     broadcastWorkspaceEvent({
       reason: "node.created",
       entityType: "node",
@@ -842,7 +1262,8 @@ export function createMemforgeApp(params: {
         fields: Object.keys(input).filter((key) => key !== "source")
       }
     });
-    refreshAutomaticInferredRelationsForNode(repository, node.id, "node-write");
+    queueInferredRefresh(node.id, "node-write");
+    scheduleAutoSemanticIndex();
     broadcastWorkspaceEvent({
       reason: "node.updated",
       entityType: "node",
@@ -865,7 +1286,8 @@ export function createMemforgeApp(params: {
         reason: "summary.refreshed"
       }
     });
-    refreshAutomaticInferredRelationsForNode(repository, node.id, "node-write");
+    queueInferredRefresh(node.id, "node-write");
+    scheduleAutoSemanticIndex();
     broadcastWorkspaceEvent({
       reason: "node.summary_refreshed",
       entityType: "node",
@@ -884,7 +1306,8 @@ export function createMemforgeApp(params: {
       operationType: "archive",
       source: body.source
     });
-    refreshAutomaticInferredRelationsForNode(repository, node.id, "node-write");
+    queueInferredRefresh(node.id, "node-write");
+    scheduleAutoSemanticIndex();
     broadcastWorkspaceEvent({
       reason: "node.archived",
       entityType: "node",
@@ -947,8 +1370,7 @@ export function createMemforgeApp(params: {
         notes: "Agent-created relations stay suggested until approved."
       });
     }
-    refreshAutomaticInferredRelationsForNode(repository, relation.fromNodeId, "node-write");
-    refreshAutomaticInferredRelationsForNode(repository, relation.toNodeId, "node-write");
+    queueInferredRefreshForNodes([relation.fromNodeId, relation.toNodeId], "node-write");
     broadcastWorkspaceEvent({
       reason: "relation.created",
       entityType: "relation",
@@ -1020,8 +1442,7 @@ export function createMemforgeApp(params: {
       source: input.source,
       metadata: input.metadata
     });
-    refreshAutomaticInferredRelationsForNode(repository, relation.fromNodeId, "node-write");
-    refreshAutomaticInferredRelationsForNode(repository, relation.toNodeId, "node-write");
+    queueInferredRefreshForNodes([relation.fromNodeId, relation.toNodeId], "node-write");
     broadcastWorkspaceEvent({
       reason: "relation.updated",
       entityType: "relation",
@@ -1066,7 +1487,8 @@ export function createMemforgeApp(params: {
         promotedToSuggested: Boolean(promotion.suggestedNodeId)
       }
     });
-    refreshAutomaticInferredRelationsForNode(repository, activity.targetNodeId, "activity-append");
+    queueInferredRefresh(activity.targetNodeId, "activity-append");
+    scheduleAutoSemanticIndex();
     broadcastWorkspaceEvent({
       reason: "activity.appended",
       entityType: "activity",
@@ -1093,7 +1515,8 @@ export function createMemforgeApp(params: {
       operationType: "attach",
       source: input.source
     });
-    refreshAutomaticInferredRelationsForNode(repository, artifact.nodeId, "node-write");
+    queueInferredRefresh(artifact.nodeId, "node-write");
+    scheduleAutoSemanticIndex();
     broadcastWorkspaceEvent({
       reason: "artifact.attached",
       entityType: "artifact",
@@ -1169,42 +1592,54 @@ export function createMemforgeApp(params: {
     response.json(envelope(response.locals.requestId, { items }));
   });
 
-  app.post("/api/v1/retrieval/rank-candidates", (request, response) => {
+  app.post("/api/v1/retrieval/rank-candidates", async (request, response) => {
     const repository = currentRepository();
     const query = typeof request.body?.query === "string" ? request.body.query : "";
     const candidateNodeIds: string[] = Array.isArray(request.body?.candidateNodeIds) ? request.body.candidateNodeIds : [];
     const preset = typeof request.body?.preset === "string" ? request.body.preset : "for-assistant";
     const targetNodeId = typeof request.body?.targetNodeId === "string" ? request.body.targetNodeId : null;
     const relationBonuses = targetNodeId ? buildCandidateRelationBonusMap(repository, targetNodeId, candidateNodeIds) : new Map();
-    const ranked = candidateNodeIds
+    const candidates = candidateNodeIds
       .map((id: string) => repository.getNode(id))
-      .map((node) => ({
-        nodeId: node.id,
-        score:
-          (node.title?.toLowerCase().includes(query.toLowerCase()) ? 50 : 0) +
-          (node.summary?.toLowerCase().includes(query.toLowerCase()) ? 20 : 0) +
-          (preset === "for-coding" && node.type === "decision" ? 15 : 0) +
-          (node.canonicality === "canonical" ? 10 : 0) +
-          (relationBonuses.get(node.id)?.score ?? 0),
-        title: node.title,
-        relationSource: relationBonuses.get(node.id)?.relationSource ?? null,
-        relationType: relationBonuses.get(node.id)?.relationType ?? null,
-        relationScore: relationBonuses.get(node.id)?.relationScore ?? null,
-        reason: relationBonuses.get(node.id)?.reason ?? null
-      }))
+      .map((node) => {
+        return node;
+      });
+    const semanticAugmentation = repository.getSemanticAugmentationSettings();
+    const semanticBonuses = shouldUseSemanticCandidateAugmentation(query, candidates)
+      ? buildSemanticCandidateBonusMap(await repository.rankSemanticCandidates(query, candidateNodeIds), semanticAugmentation)
+      : new Map();
+    const ranked = candidates
+      .map((node) => {
+        const relationRetrievalRank = relationBonuses.get(node.id)?.retrievalRank ?? 0;
+        const semanticRetrievalRank = semanticBonuses.get(node.id)?.retrievalRank ?? 0;
+        const rankingScore = computeRankCandidateScore(node, query, preset, relationRetrievalRank + semanticRetrievalRank);
+        const relationReason = relationBonuses.get(node.id)?.reason ?? null;
+        const semanticReason = semanticBonuses.get(node.id)?.reason ?? null;
+        return {
+          nodeId: node.id,
+          score: rankingScore,
+          retrievalRank: rankingScore,
+          title: node.title,
+          relationSource: relationBonuses.get(node.id)?.relationSource ?? null,
+          relationType: relationBonuses.get(node.id)?.relationType ?? null,
+          relationScore: relationBonuses.get(node.id)?.relationScore ?? null,
+          semanticSimilarity: semanticBonuses.get(node.id)?.semanticSimilarity ?? null,
+          reason: [relationReason, semanticReason].filter(Boolean).join("; ") || null
+        };
+      })
       .sort((left: { score: number }, right: { score: number }) => right.score - left.score);
     response.json(envelope(response.locals.requestId, { items: ranked }));
   });
 
-  app.post("/api/v1/context/bundles", (request, response) => {
+  app.post("/api/v1/context/bundles", async (request, response) => {
     const input = buildContextBundleSchema.parse(request.body ?? {});
-    const bundle = buildContextBundle(currentRepository(), input);
+    const bundle = await buildContextBundle(currentRepository(), input);
     response.json(envelope(response.locals.requestId, { bundle }));
   });
 
-  app.post("/api/v1/context/bundles/preview", (request, response) => {
+  app.post("/api/v1/context/bundles/preview", async (request, response) => {
     const input = buildContextBundleSchema.parse(request.body ?? {});
-    const bundle = buildContextBundle(currentRepository(), input);
+    const bundle = await buildContextBundle(currentRepository(), input);
     response.json(
       envelope(response.locals.requestId, {
         bundle,
@@ -1213,10 +1648,10 @@ export function createMemforgeApp(params: {
     );
   });
 
-  app.post("/api/v1/context/bundles/export", (request, response) => {
+  app.post("/api/v1/context/bundles/export", async (request, response) => {
     const input = buildContextBundleSchema.parse(request.body ?? {});
     const format = request.body?.format === "json" ? "json" : request.body?.format === "text" ? "text" : "markdown";
-    const bundle = buildContextBundle(currentRepository(), input);
+    const bundle = await buildContextBundle(currentRepository(), input);
     const output =
       format === "json"
         ? JSON.stringify(bundle, null, 2)
@@ -1256,10 +1691,9 @@ export function createMemforgeApp(params: {
     const result = applyReviewDecision(repository, request.params.id, "approve", input);
     if (review.entityType === "relation") {
       const relation = repository.getRelation(review.entityId);
-      refreshAutomaticInferredRelationsForNode(repository, relation.fromNodeId, "node-write");
-      refreshAutomaticInferredRelationsForNode(repository, relation.toNodeId, "node-write");
+      queueInferredRefreshForNodes([relation.fromNodeId, relation.toNodeId], "node-write");
     } else if (review.entityType === "node") {
-      refreshAutomaticInferredRelationsForNode(repository, review.entityId, "node-write");
+      queueInferredRefresh(review.entityId, "node-write");
     }
     broadcastWorkspaceEvent({
       reason: "review.approved",
@@ -1276,10 +1710,9 @@ export function createMemforgeApp(params: {
     const result = applyReviewDecision(repository, request.params.id, "reject", input);
     if (review.entityType === "relation") {
       const relation = repository.getRelation(review.entityId);
-      refreshAutomaticInferredRelationsForNode(repository, relation.fromNodeId, "node-write");
-      refreshAutomaticInferredRelationsForNode(repository, relation.toNodeId, "node-write");
+      queueInferredRefreshForNodes([relation.fromNodeId, relation.toNodeId], "node-write");
     } else if (review.entityType === "node") {
-      refreshAutomaticInferredRelationsForNode(repository, review.entityId, "node-write");
+      queueInferredRefresh(review.entityId, "node-write");
     }
     broadcastWorkspaceEvent({
       reason: "review.rejected",
@@ -1296,10 +1729,9 @@ export function createMemforgeApp(params: {
     const result = applyReviewDecision(repository, request.params.id, "edit-and-approve", input);
     if (review.entityType === "relation") {
       const relation = repository.getRelation(review.entityId);
-      refreshAutomaticInferredRelationsForNode(repository, relation.fromNodeId, "node-write");
-      refreshAutomaticInferredRelationsForNode(repository, relation.toNodeId, "node-write");
+      queueInferredRefreshForNodes([relation.fromNodeId, relation.toNodeId], "node-write");
     } else if (review.entityType === "node") {
-      refreshAutomaticInferredRelationsForNode(repository, review.entityId, "node-write");
+      queueInferredRefresh(review.entityId, "node-write");
     }
     broadcastWorkspaceEvent({
       reason: "review.edit_and_approved",

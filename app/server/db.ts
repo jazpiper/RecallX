@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import type { WorkspacePaths } from "./workspace.js";
 
-const schemaVersion = 2;
+const schemaVersion = 5;
 
 function execMigration(db: DatabaseSync): void {
   db.exec(`
@@ -28,6 +28,54 @@ function execMigration(db: DatabaseSync): void {
       updated_at TEXT NOT NULL,
       tags_json TEXT,
       metadata_json TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS node_tags (
+      node_id TEXT NOT NULL,
+      tag TEXT NOT NULL,
+      PRIMARY KEY (node_id, tag),
+      FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS node_index_state (
+      node_id TEXT PRIMARY KEY,
+      content_hash TEXT,
+      embedding_status TEXT NOT NULL DEFAULT 'pending',
+      embedding_provider TEXT,
+      embedding_model TEXT,
+      embedding_version TEXT,
+      stale_reason TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS node_chunks (
+      node_id TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      chunk_hash TEXT NOT NULL,
+      chunk_text TEXT NOT NULL,
+      token_count INTEGER,
+      start_offset INTEGER,
+      end_offset INTEGER,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (node_id, ordinal),
+      FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS node_embeddings (
+      owner_type TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      chunk_ordinal INTEGER,
+      vector_ref TEXT,
+      vector_blob BLOB,
+      embedding_provider TEXT,
+      embedding_model TEXT,
+      embedding_version TEXT,
+      content_hash TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (owner_type, owner_id, chunk_ordinal)
     );
 
     CREATE TABLE IF NOT EXISTS relations (
@@ -89,6 +137,21 @@ function execMigration(db: DatabaseSync): void {
       delta REAL NOT NULL,
       created_at TEXT NOT NULL,
       metadata_json TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS relation_usage_rollups (
+      relation_id TEXT PRIMARY KEY,
+      total_delta REAL NOT NULL DEFAULT 0,
+      event_count INTEGER NOT NULL DEFAULT 0,
+      last_event_at TEXT NOT NULL,
+      last_event_rowid INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS relation_usage_rollup_state (
+      id TEXT PRIMARY KEY,
+      last_event_rowid INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS artifacts (
@@ -170,8 +233,22 @@ function execMigration(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);
     CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
     CREATE INDEX IF NOT EXISTS idx_nodes_updated_at ON nodes(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_node_tags_tag_node
+      ON node_tags(tag, node_id);
+    CREATE INDEX IF NOT EXISTS idx_node_index_state_status
+      ON node_index_state(embedding_status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_node_chunks_hash
+      ON node_chunks(chunk_hash);
+    CREATE INDEX IF NOT EXISTS idx_node_embeddings_status
+      ON node_embeddings(status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_node_embeddings_owner
+      ON node_embeddings(owner_type, owner_id);
     CREATE INDEX IF NOT EXISTS idx_relations_from ON relations(from_node_id);
     CREATE INDEX IF NOT EXISTS idx_relations_to ON relations(to_node_id);
+    CREATE INDEX IF NOT EXISTS idx_relations_from_status_created_at
+      ON relations(from_node_id, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_relations_to_status_created_at
+      ON relations(to_node_id, status, created_at DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_inferred_relations_identity
       ON inferred_relations(from_node_id, to_node_id, relation_type, generator);
     CREATE INDEX IF NOT EXISTS idx_inferred_relations_from_score
@@ -184,10 +261,22 @@ function execMigration(db: DatabaseSync): void {
       ON relation_usage_events(relation_id);
     CREATE INDEX IF NOT EXISTS idx_relation_usage_created_at
       ON relation_usage_events(created_at);
+    CREATE INDEX IF NOT EXISTS idx_relation_usage_rollups_last_event_at
+      ON relation_usage_rollups(last_event_at);
     CREATE INDEX IF NOT EXISTS idx_activities_target ON activities(target_node_id);
+    CREATE INDEX IF NOT EXISTS idx_activities_target_created_at
+      ON activities(target_node_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_artifacts_node ON artifacts(node_id);
+    CREATE INDEX IF NOT EXISTS idx_artifacts_node_created_at
+      ON artifacts(node_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_artifacts_path_created_at
+      ON artifacts(path, created_at DESC, node_id);
     CREATE INDEX IF NOT EXISTS idx_review_queue_status ON review_queue(status);
+    CREATE INDEX IF NOT EXISTS idx_review_queue_status_type_created_at
+      ON review_queue(status, review_type, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_provenance_entity ON provenance_events(entity_type, entity_id);
+    CREATE INDEX IF NOT EXISTS idx_provenance_entity_timestamp
+      ON provenance_events(entity_type, entity_id, timestamp DESC);
   `);
 }
 

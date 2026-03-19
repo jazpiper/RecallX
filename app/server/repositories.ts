@@ -31,12 +31,182 @@ import type {
 } from "../shared/contracts.js";
 import { AppError, assertPresent } from "./errors.js";
 import { computeMaintainedScores } from "./relation-scoring.js";
+import { buildSemanticChunks, buildSemanticDocumentText, normalizeTagList } from "./semantic/chunker.js";
+import { embedSemanticQueryText, normalizeSemanticProviderConfig, resolveSemanticEmbeddingProvider } from "./semantic/provider.js";
+import type { SemanticChunkRecord } from "./semantic/types.js";
 import { checksumText, createId, isPathWithinRoot, nowIso, parseJson, stableSummary } from "./utils.js";
 
 type SqlValue = string | number | bigint | Uint8Array | null;
 
 const SUMMARY_UPDATED_AT_KEY = "summaryUpdatedAt";
 const SUMMARY_SOURCE_KEY = "summarySource";
+const SEARCH_TAG_INDEX_VERSION = 1;
+const SEMANTIC_INDEX_STATUS_VALUES = ["pending", "processing", "stale", "ready", "failed"] as const;
+const SEMANTIC_ISSUE_STATUS_VALUES = ["pending", "stale", "failed"] as const;
+const DEFAULT_SEMANTIC_CHUNK_AGGREGATION = "max" as const;
+const SEMANTIC_TOP_K_CHUNK_COUNT = 2;
+
+type SemanticIndexStatus = (typeof SEMANTIC_INDEX_STATUS_VALUES)[number];
+type SemanticIssueStatus = (typeof SEMANTIC_ISSUE_STATUS_VALUES)[number];
+type SemanticChunkAggregation = "max" | "topk_mean";
+
+type SemanticStatusSummary = {
+  enabled: boolean;
+  provider: string | null;
+  model: string | null;
+  chunkEnabled: boolean;
+  lastBackfillAt: string | null;
+  counts: Record<SemanticIndexStatus, number>;
+};
+
+type SemanticIssueItem = {
+  nodeId: string;
+  title: string | null;
+  embeddingStatus: SemanticIndexStatus;
+  staleReason: string | null;
+  updatedAt: string;
+};
+
+type SemanticIssuePage = {
+  items: SemanticIssueItem[];
+  nextCursor: string | null;
+};
+
+type SemanticIssueCursor = {
+  statusRank: number;
+  updatedAt: string;
+  nodeId: string;
+};
+
+type SemanticIndexSettings = {
+  enabled: boolean;
+  provider: string | null;
+  model: string | null;
+  chunkEnabled: boolean;
+  chunkAggregation: SemanticChunkAggregation;
+};
+
+type SemanticAugmentationSettings = {
+  minSimilarity: number;
+  maxBonus: number;
+};
+
+type PendingSemanticIndexRow = {
+  nodeId: string;
+  contentHash: string | null;
+  embeddingStatus: SemanticIndexStatus;
+  staleReason: string | null;
+  updatedAt: string;
+};
+
+type SemanticCandidateSimilarity = {
+  similarity: number;
+  matchedChunks: number;
+};
+
+function normalizeTagValue(tag: string): string {
+  return tag.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function buildSemanticContentHash(input: {
+  title: string | null;
+  body: string | null;
+  summary: string | null;
+  tags: string[];
+}): string {
+  return checksumText(
+    JSON.stringify({
+      title: input.title ?? "",
+      body: input.body ?? "",
+      summary: input.summary ?? "",
+      tags: normalizeTagList(input.tags)
+    })
+  );
+}
+
+function decodeVectorBlob(blob: Uint8Array): Float32Array {
+  return new Float32Array(blob.buffer.slice(blob.byteOffset, blob.byteOffset + blob.byteLength));
+}
+
+function computeCosineSimilarity(left: ArrayLike<number>, right: ArrayLike<number>): number {
+  const length = Math.min(left.length, right.length);
+  let dot = 0;
+  let leftMagnitude = 0;
+  let rightMagnitude = 0;
+  for (let index = 0; index < length; index += 1) {
+    const leftValue = Number(left[index] ?? 0);
+    const rightValue = Number(right[index] ?? 0);
+    dot += leftValue * rightValue;
+    leftMagnitude += leftValue * leftValue;
+    rightMagnitude += rightValue * rightValue;
+  }
+
+  if (!leftMagnitude || !rightMagnitude) {
+    return 0;
+  }
+
+  return dot / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
+}
+
+function semanticIssueStatusRank(status: SemanticIndexStatus): number {
+  switch (status) {
+    case "failed":
+      return 0;
+    case "stale":
+      return 1;
+    default:
+      return 2;
+  }
+}
+
+function encodeSemanticIssueCursor(cursor: SemanticIssueCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeSemanticIssueCursor(cursor: string | null | undefined): SemanticIssueCursor | null {
+  if (!cursor) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Partial<SemanticIssueCursor>;
+    if (
+      typeof parsed.statusRank !== "number" ||
+      !Number.isFinite(parsed.statusRank) ||
+      typeof parsed.updatedAt !== "string" ||
+      !parsed.updatedAt ||
+      typeof parsed.nodeId !== "string" ||
+      !parsed.nodeId
+    ) {
+      return null;
+    }
+
+    return {
+      statusRank: parsed.statusRank,
+      updatedAt: parsed.updatedAt,
+      nodeId: parsed.nodeId
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSemanticChunkAggregation(value: unknown): SemanticChunkAggregation {
+  return value === "topk_mean" ? "topk_mean" : DEFAULT_SEMANTIC_CHUNK_AGGREGATION;
+}
+
+function aggregateChunkSimilarities(similarities: number[], aggregation: SemanticChunkAggregation): number {
+  if (!similarities.length) {
+    return 0;
+  }
+
+  if (aggregation === "topk_mean") {
+    const topK = [...similarities].sort((left, right) => right - left).slice(0, SEMANTIC_TOP_K_CHUNK_COUNT);
+    return topK.reduce((sum, value) => sum + value, 0) / topK.length;
+  }
+
+  return Math.max(...similarities);
+}
 
 function mapNode(row: Record<string, unknown>): NodeRecord {
   return {
@@ -192,11 +362,683 @@ function mapIntegration(row: Record<string, unknown>): IntegrationRecord {
   };
 }
 
+const RELATION_USAGE_ROLLUP_STATE_ID = "bootstrap";
+
 export class MemforgeRepository {
   constructor(private readonly db: DatabaseSync, private readonly workspaceRoot: string) {}
 
+  private runInTransaction<T>(operation: () => T): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = operation();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures and rethrow the original error
+      }
+      throw error;
+    }
+  }
+
+  private ensureRelationUsageRollupState(updatedAt = nowIso()): void {
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO relation_usage_rollup_state (id, last_event_rowid, updated_at)
+         VALUES (?, 0, ?)`
+      )
+      .run(RELATION_USAGE_ROLLUP_STATE_ID, updatedAt);
+  }
+
+  private getRelationUsageRollupWatermark(): number {
+    this.ensureRelationUsageRollupState();
+    const row = this.db
+      .prepare(`SELECT last_event_rowid FROM relation_usage_rollup_state WHERE id = ?`)
+      .get(RELATION_USAGE_ROLLUP_STATE_ID) as Record<string, unknown> | undefined;
+    return Number(row?.last_event_rowid ?? 0);
+  }
+
+  private syncRelationUsageRollups(): void {
+    const lastEventRowid = this.getRelationUsageRollupWatermark();
+    const maxRowidRow = this.db
+      .prepare(`SELECT COALESCE(MAX(rowid), 0) AS max_rowid FROM relation_usage_events`)
+      .get() as Record<string, unknown>;
+    const maxRowid = Number(maxRowidRow.max_rowid ?? 0);
+
+    if (maxRowid <= lastEventRowid) {
+      return;
+    }
+
+    const updatedAt = nowIso();
+    this.runInTransaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO relation_usage_rollups (
+             relation_id, total_delta, event_count, last_event_at, last_event_rowid, updated_at
+           )
+           SELECT
+             relation_id,
+             COALESCE(SUM(delta), 0) AS total_delta,
+             COUNT(*) AS event_count,
+             MAX(created_at) AS last_event_at,
+             MAX(rowid) AS last_event_rowid,
+             ? AS updated_at
+           FROM relation_usage_events
+           WHERE rowid > ?
+           GROUP BY relation_id
+           ON CONFLICT(relation_id) DO UPDATE SET
+             total_delta = total_delta + excluded.total_delta,
+             event_count = event_count + excluded.event_count,
+             last_event_at = CASE
+               WHEN excluded.last_event_at > last_event_at THEN excluded.last_event_at
+               ELSE last_event_at
+             END,
+             last_event_rowid = CASE
+               WHEN excluded.last_event_rowid > last_event_rowid THEN excluded.last_event_rowid
+               ELSE last_event_rowid
+             END,
+             updated_at = excluded.updated_at`
+        )
+        .run(updatedAt, lastEventRowid);
+
+      this.db
+        .prepare(
+          `UPDATE relation_usage_rollup_state
+           SET last_event_rowid = ?, updated_at = ?
+           WHERE id = ?`
+        )
+        .run(maxRowid, updatedAt, RELATION_USAGE_ROLLUP_STATE_ID);
+    });
+  }
+
   private touchNode(id: string): void {
     this.db.prepare(`UPDATE nodes SET updated_at = ? WHERE id = ?`).run(nowIso(), id);
+  }
+
+  private upsertSemanticIndexState(params: {
+    nodeId: string;
+    status: SemanticIndexStatus;
+    staleReason?: string | null;
+    contentHash?: string | null;
+    embeddingProvider?: string | null;
+    embeddingModel?: string | null;
+    embeddingVersion?: string | null;
+    updatedAt?: string;
+  }): void {
+    const updatedAt = params.updatedAt ?? nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO node_index_state (
+           node_id, content_hash, embedding_status, embedding_provider, embedding_model, embedding_version, stale_reason, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(node_id) DO UPDATE SET
+           content_hash = excluded.content_hash,
+           embedding_status = excluded.embedding_status,
+           embedding_provider = excluded.embedding_provider,
+           embedding_model = excluded.embedding_model,
+           embedding_version = excluded.embedding_version,
+           stale_reason = excluded.stale_reason,
+           updated_at = excluded.updated_at`
+      )
+      .run(
+        params.nodeId,
+        params.contentHash ?? null,
+        params.status,
+        params.embeddingProvider ?? null,
+        params.embeddingModel ?? null,
+        params.embeddingVersion ?? null,
+        params.staleReason ?? null,
+        updatedAt
+      );
+  }
+
+  private markNodeSemanticIndexState(
+    nodeId: string,
+    reason: string,
+    input: { status?: SemanticIndexStatus; contentHash?: string | null; updatedAt?: string } = {}
+  ): void {
+    this.upsertSemanticIndexState({
+      nodeId,
+      status: input.status ?? "pending",
+      staleReason: reason,
+      contentHash: input.contentHash,
+      updatedAt: input.updatedAt
+    });
+  }
+
+  private syncNodeTags(nodeId: string, tags: string[]): void {
+    const normalizedTags = normalizeTagList(tags);
+    this.db.prepare(`DELETE FROM node_tags WHERE node_id = ?`).run(nodeId);
+    if (!normalizedTags.length) {
+      return;
+    }
+
+    const insertStatement = this.db.prepare(`INSERT INTO node_tags (node_id, tag) VALUES (?, ?)`);
+    for (const tag of normalizedTags) {
+      insertStatement.run(nodeId, tag);
+    }
+  }
+
+  private readSemanticIndexSettings(): SemanticIndexSettings {
+    const settings = this.getSettings([
+      "search.semantic.enabled",
+      "search.semantic.provider",
+      "search.semantic.model",
+      "search.semantic.chunk.enabled",
+      "search.semantic.chunk.aggregation"
+    ]);
+    const normalizedProvider = normalizeSemanticProviderConfig({
+      provider: typeof settings["search.semantic.provider"] === "string" ? String(settings["search.semantic.provider"]) : null,
+      model: typeof settings["search.semantic.model"] === "string" ? String(settings["search.semantic.model"]) : null,
+    });
+    return {
+      enabled: typeof settings["search.semantic.enabled"] === "boolean" ? Boolean(settings["search.semantic.enabled"]) : false,
+      provider: normalizedProvider.provider,
+      model: normalizedProvider.model,
+      chunkEnabled:
+        typeof settings["search.semantic.chunk.enabled"] === "boolean"
+          ? Boolean(settings["search.semantic.chunk.enabled"])
+          : false,
+      chunkAggregation: normalizeSemanticChunkAggregation(settings["search.semantic.chunk.aggregation"])
+    };
+  }
+
+  getSemanticAugmentationSettings(): SemanticAugmentationSettings {
+    const settings = this.getSettings([
+      "search.semantic.augmentation.minSimilarity",
+      "search.semantic.augmentation.maxBonus"
+    ]);
+
+    return {
+      minSimilarity:
+        typeof settings["search.semantic.augmentation.minSimilarity"] === "number" &&
+        Number.isFinite(settings["search.semantic.augmentation.minSimilarity"])
+          ? Math.min(Math.max(Number(settings["search.semantic.augmentation.minSimilarity"]), 0), 1)
+          : 0.2,
+      maxBonus:
+        typeof settings["search.semantic.augmentation.maxBonus"] === "number" &&
+        Number.isFinite(settings["search.semantic.augmentation.maxBonus"])
+          ? Math.max(Number(settings["search.semantic.augmentation.maxBonus"]), 0)
+          : 18
+    };
+  }
+
+  private listPendingSemanticIndexRows(limit = 25): PendingSemanticIndexRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT node_id, content_hash, embedding_status, stale_reason, updated_at
+         FROM node_index_state
+         WHERE embedding_status IN ('pending', 'stale')
+         ORDER BY updated_at ASC
+         LIMIT ?`
+      )
+      .all(limit) as Array<Record<string, unknown>>;
+
+    return rows.map((row) => ({
+      nodeId: String(row.node_id),
+      contentHash: row.content_hash ? String(row.content_hash) : null,
+      embeddingStatus: String(row.embedding_status) as SemanticIndexStatus,
+      staleReason: row.stale_reason ? String(row.stale_reason) : null,
+      updatedAt: String(row.updated_at)
+    }));
+  }
+
+  private replaceSemanticChunks(nodeId: string, chunks: SemanticChunkRecord[], updatedAt: string): void {
+    this.db.prepare(`DELETE FROM node_chunks WHERE node_id = ?`).run(nodeId);
+    if (!chunks.length) {
+      return;
+    }
+
+    const insertStatement = this.db.prepare(
+      `INSERT INTO node_chunks (
+         node_id, ordinal, chunk_hash, chunk_text, token_count, start_offset, end_offset, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const chunk of chunks) {
+      insertStatement.run(
+        nodeId,
+        chunk.ordinal,
+        chunk.chunkHash,
+        chunk.chunkText,
+        chunk.tokenCount,
+        chunk.startOffset,
+        chunk.endOffset,
+        updatedAt
+      );
+    }
+  }
+
+  private replaceSemanticEmbeddings(
+    nodeId: string,
+    chunks: SemanticChunkRecord[],
+    params: {
+      provider: string;
+      model: string;
+      version: string | null;
+      contentHash: string;
+      vectors: number[][];
+      updatedAt: string;
+    }
+  ): void {
+    this.db.prepare(`DELETE FROM node_embeddings WHERE owner_type = 'node' AND owner_id = ?`).run(nodeId);
+    if (!chunks.length || !params.vectors.length) {
+      return;
+    }
+
+    const insertStatement = this.db.prepare(
+      `INSERT INTO node_embeddings (
+         owner_type, owner_id, chunk_ordinal, vector_ref, vector_blob, embedding_provider, embedding_model, embedding_version,
+         content_hash, status, created_at, updated_at
+       ) VALUES ('node', ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`
+    );
+
+    for (const chunk of chunks) {
+      const vector = params.vectors[chunk.ordinal];
+      if (!vector) {
+        continue;
+      }
+      const vectorBlob = new Uint8Array(new Float32Array(vector).buffer);
+      insertStatement.run(
+        nodeId,
+        chunk.ordinal,
+        null,
+        vectorBlob,
+        params.provider,
+        params.model,
+        params.version,
+        params.contentHash,
+        params.updatedAt,
+        params.updatedAt
+      );
+    }
+  }
+
+  async processPendingSemanticIndex(limit = 25) {
+    const settings = this.readSemanticIndexSettings();
+    const provider = resolveSemanticEmbeddingProvider({
+      provider: settings.provider,
+      model: settings.model
+    });
+    const pendingRows = this.listPendingSemanticIndexRows(limit);
+    const processedNodeIds: string[] = [];
+    const readyNodeIds: string[] = [];
+    const failedNodeIds: string[] = [];
+
+    for (const row of pendingRows) {
+      const startedAt = nowIso();
+      this.upsertSemanticIndexState({
+        nodeId: row.nodeId,
+        status: "processing",
+        staleReason: row.staleReason,
+        contentHash: row.contentHash,
+        embeddingProvider: settings.provider,
+        embeddingModel: settings.model,
+        updatedAt: startedAt
+      });
+
+      try {
+        const node = this.getNode(row.nodeId);
+        const contentHash = buildSemanticContentHash({
+          title: node.title,
+          body: node.body,
+          summary: node.summary,
+          tags: node.tags
+        });
+        const chunkText = buildSemanticDocumentText({
+          title: node.title,
+          summary: node.summary,
+          body: node.body,
+          tags: node.tags
+        });
+        const chunks = buildSemanticChunks(chunkText, settings.chunkEnabled);
+        const embeddingResults =
+          provider && chunks.length
+            ? await provider.embedBatch(
+                chunks.map((chunk) => ({
+                  nodeId: node.id,
+                  chunkOrdinal: chunk.ordinal,
+                  contentHash,
+                  text: chunk.chunkText
+                }))
+              )
+            : [];
+        const finishedAt = nowIso();
+
+        this.runInTransaction(() => {
+          if (node.status === "archived") {
+            this.db.prepare(`DELETE FROM node_chunks WHERE node_id = ?`).run(node.id);
+            this.db.prepare(`DELETE FROM node_embeddings WHERE owner_type = 'node' AND owner_id = ?`).run(node.id);
+            this.upsertSemanticIndexState({
+              nodeId: node.id,
+              status: "ready",
+              staleReason: null,
+              contentHash,
+              embeddingProvider: settings.provider,
+              embeddingModel: settings.model,
+              updatedAt: finishedAt
+            });
+            readyNodeIds.push(node.id);
+            return;
+          }
+
+          this.replaceSemanticChunks(node.id, chunks, finishedAt);
+
+          if (!settings.enabled || settings.provider === "disabled" || settings.model === "none" || !settings.provider || !settings.model) {
+            this.db.prepare(`DELETE FROM node_embeddings WHERE owner_type = 'node' AND owner_id = ?`).run(node.id);
+            this.upsertSemanticIndexState({
+              nodeId: node.id,
+              status: "ready",
+              staleReason: null,
+              contentHash,
+              embeddingProvider: settings.provider,
+              embeddingModel: settings.model,
+              updatedAt: finishedAt
+            });
+            readyNodeIds.push(node.id);
+            return;
+          }
+
+          if (provider && embeddingResults.length === chunks.length) {
+            this.replaceSemanticEmbeddings(node.id, chunks, {
+              provider: provider.provider,
+              model: provider.model ?? settings.model,
+              version: provider.version,
+              contentHash,
+              vectors: embeddingResults.map((item) => item.vector),
+              updatedAt: finishedAt
+            });
+            this.upsertSemanticIndexState({
+              nodeId: node.id,
+              status: "ready",
+              staleReason: null,
+              contentHash,
+              embeddingProvider: provider.provider,
+              embeddingModel: provider.model ?? settings.model,
+              embeddingVersion: provider.version,
+              updatedAt: finishedAt
+            });
+            readyNodeIds.push(node.id);
+            return;
+          }
+
+          this.db.prepare(`DELETE FROM node_embeddings WHERE owner_type = 'node' AND owner_id = ?`).run(node.id);
+          this.upsertSemanticIndexState({
+            nodeId: node.id,
+            status: "failed",
+            staleReason: `embedding.provider_not_implemented:${settings.provider}`,
+            contentHash,
+            embeddingProvider: settings.provider,
+            embeddingModel: settings.model,
+            updatedAt: finishedAt
+          });
+          failedNodeIds.push(node.id);
+        });
+      } catch {
+        this.upsertSemanticIndexState({
+          nodeId: row.nodeId,
+          status: "failed",
+          staleReason: "embedding.node_not_found",
+          contentHash: row.contentHash,
+          embeddingProvider: settings.provider,
+          embeddingModel: settings.model
+        });
+        failedNodeIds.push(row.nodeId);
+      }
+
+      processedNodeIds.push(row.nodeId);
+    }
+
+    return {
+      processedNodeIds,
+      processedCount: processedNodeIds.length,
+      readyCount: readyNodeIds.length,
+      failedCount: failedNodeIds.length,
+      remainingCount: this.listPendingSemanticIndexRows(limit).length,
+      mode: !settings.enabled || settings.provider === "disabled" || settings.model === "none" ? "chunk-only" : "provider-required"
+    };
+  }
+
+  ensureSearchTagIndex(): void {
+    const settings = this.getSettings(["search.tagIndex.version"]);
+    if (Number(settings["search.tagIndex.version"] ?? 0) >= SEARCH_TAG_INDEX_VERSION) {
+      return;
+    }
+
+    this.runInTransaction(() => {
+      this.db.prepare(`DELETE FROM node_tags`).run();
+      const rows = this.db
+        .prepare(`SELECT id, tags_json FROM nodes`)
+        .all() as Array<Record<string, unknown>>;
+      const insertStatement = this.db.prepare(`INSERT INTO node_tags (node_id, tag) VALUES (?, ?)`);
+
+      for (const row of rows) {
+        const nodeId = String(row.id);
+        const tags = normalizeTagList(parseJson<string[]>(row.tags_json as string | null, []));
+        for (const tag of tags) {
+          insertStatement.run(nodeId, tag);
+        }
+      }
+
+      this.setSetting("search.tagIndex.version", SEARCH_TAG_INDEX_VERSION);
+    });
+  }
+
+  listSemanticIndexTargetNodeIds(limit = 250): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id
+         FROM nodes
+         WHERE status IN ('active', 'draft', 'review')
+         ORDER BY updated_at DESC
+         LIMIT ?`
+      )
+      .all(limit) as Array<Record<string, unknown>>;
+
+    return rows.map((row) => String(row.id));
+  }
+
+  queueSemanticReindexForNode(nodeId: string, reason = "manual.reindex"): NodeRecord {
+    const node = this.getNode(nodeId);
+    const contentHash = buildSemanticContentHash({
+      title: node.title,
+      body: node.body,
+      summary: node.summary,
+      tags: node.tags
+    });
+    this.markNodeSemanticIndexState(node.id, reason, {
+      status: "pending",
+      contentHash
+    });
+    return node;
+  }
+
+  queueSemanticReindex(limit = 250, reason = "manual.reindex") {
+    const nodeIds = this.listSemanticIndexTargetNodeIds(limit);
+    for (const nodeId of nodeIds) {
+      this.queueSemanticReindexForNode(nodeId, reason);
+    }
+    this.setSetting("search.semantic.last_backfill_at", nowIso());
+    return {
+      queuedNodeIds: nodeIds,
+      queuedCount: nodeIds.length
+    };
+  }
+
+  getSemanticStatus(): SemanticStatusSummary {
+    const settings = this.getSettings([
+      "search.semantic.enabled",
+      "search.semantic.provider",
+      "search.semantic.model",
+      "search.semantic.chunk.enabled",
+      "search.semantic.last_backfill_at"
+    ]);
+    const normalizedProvider = normalizeSemanticProviderConfig({
+      provider: typeof settings["search.semantic.provider"] === "string" ? String(settings["search.semantic.provider"]) : null,
+      model: typeof settings["search.semantic.model"] === "string" ? String(settings["search.semantic.model"]) : null,
+    });
+    const counts = Object.fromEntries(
+      SEMANTIC_INDEX_STATUS_VALUES.map((status) => [status, 0])
+    ) as Record<SemanticIndexStatus, number>;
+    const rows = this.db
+      .prepare(
+        `SELECT embedding_status, COUNT(*) AS total
+         FROM node_index_state
+         GROUP BY embedding_status`
+      )
+      .all() as Array<Record<string, unknown>>;
+
+    for (const row of rows) {
+      const status = String(row.embedding_status) as SemanticIndexStatus;
+      if (SEMANTIC_INDEX_STATUS_VALUES.includes(status)) {
+        counts[status] = Number(row.total ?? 0);
+      }
+    }
+
+    return {
+      enabled: typeof settings["search.semantic.enabled"] === "boolean" ? Boolean(settings["search.semantic.enabled"]) : false,
+      provider: normalizedProvider.provider,
+      model: normalizedProvider.model,
+      chunkEnabled:
+        typeof settings["search.semantic.chunk.enabled"] === "boolean"
+          ? Boolean(settings["search.semantic.chunk.enabled"])
+          : false,
+      lastBackfillAt:
+        typeof settings["search.semantic.last_backfill_at"] === "string"
+          ? String(settings["search.semantic.last_backfill_at"])
+          : null,
+      counts
+    };
+  }
+
+  listSemanticIssues(input: {
+    limit?: number;
+    statuses?: SemanticIssueStatus[];
+    cursor?: string | null;
+  } = {}): SemanticIssuePage {
+    const limit = Math.min(Math.max(input.limit ?? 5, 1), 25);
+    const normalizedStatuses = (input.statuses?.length ? input.statuses : [...SEMANTIC_ISSUE_STATUS_VALUES]).filter(
+      (status, index, values) => SEMANTIC_ISSUE_STATUS_VALUES.includes(status) && values.indexOf(status) === index
+    );
+    const statuses = normalizedStatuses.length ? normalizedStatuses : [...SEMANTIC_ISSUE_STATUS_VALUES];
+    const cursor = decodeSemanticIssueCursor(input.cursor);
+    const statusRankExpression = `CASE nis.embedding_status
+             WHEN 'failed' THEN 0
+             WHEN 'stale' THEN 1
+             ELSE 2
+           END`;
+    const whereClauses = [`nis.embedding_status IN (${statuses.map(() => "?").join(", ")})`];
+    const values: SqlValue[] = [...statuses];
+
+    if (cursor) {
+      whereClauses.push(
+        `(
+          ${statusRankExpression} > ?
+          OR (${statusRankExpression} = ? AND nis.updated_at < ?)
+          OR (${statusRankExpression} = ? AND nis.updated_at = ? AND nis.node_id < ?)
+        )`
+      );
+      values.push(cursor.statusRank, cursor.statusRank, cursor.updatedAt, cursor.statusRank, cursor.updatedAt, cursor.nodeId);
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT nis.node_id, n.title, nis.embedding_status, nis.stale_reason, nis.updated_at,
+                ${statusRankExpression} AS status_rank
+         FROM node_index_state nis
+         JOIN nodes n ON n.id = nis.node_id
+         WHERE ${whereClauses.join(" AND ")}
+         ORDER BY
+           status_rank ASC,
+           nis.updated_at DESC,
+           nis.node_id DESC
+         LIMIT ?`
+      )
+      .all(...values, limit + 1) as Array<Record<string, unknown>>;
+
+    const items = rows.slice(0, limit).map((row) => ({
+      nodeId: String(row.node_id),
+      title: row.title ? String(row.title) : null,
+      embeddingStatus: String(row.embedding_status) as SemanticIndexStatus,
+      staleReason: row.stale_reason ? String(row.stale_reason) : null,
+      updatedAt: String(row.updated_at)
+    }));
+    const hasMore = rows.length > limit;
+    const lastItem = items.at(-1);
+
+    return {
+      items,
+      nextCursor:
+        hasMore && lastItem
+          ? encodeSemanticIssueCursor({
+              statusRank: semanticIssueStatusRank(lastItem.embeddingStatus),
+              updatedAt: lastItem.updatedAt,
+              nodeId: lastItem.nodeId
+            })
+          : null
+    };
+  }
+
+  async rankSemanticCandidates(
+    query: string,
+    candidateNodeIds: string[]
+  ): Promise<Map<string, SemanticCandidateSimilarity>> {
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery || !candidateNodeIds.length) {
+      return new Map();
+    }
+
+    const settings = this.readSemanticIndexSettings();
+    if (!settings.enabled || !settings.provider || !settings.model) {
+      return new Map();
+    }
+
+    const queryEmbedding = await embedSemanticQueryText({
+      provider: settings.provider,
+      model: settings.model,
+      text: normalizedQuery,
+    });
+    if (!queryEmbedding?.vector.length) {
+      return new Map();
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT owner_id, vector_blob
+         FROM node_embeddings
+         WHERE owner_type = 'node'
+           AND status = 'ready'
+           AND embedding_provider = ?
+           AND embedding_model = ?
+           AND owner_id IN (${candidateNodeIds.map(() => "?").join(", ")})`
+      )
+      .all(settings.provider, settings.model, ...candidateNodeIds) as Array<Record<string, unknown>>;
+
+    const similarityByNode = new Map<string, number[]>();
+    for (const row of rows) {
+      if (!(row.vector_blob instanceof Uint8Array)) {
+        continue;
+      }
+      const nodeId = String(row.owner_id);
+      const similarity = computeCosineSimilarity(queryEmbedding.vector, decodeVectorBlob(row.vector_blob));
+      if (!Number.isFinite(similarity)) {
+        continue;
+      }
+      const similarities = similarityByNode.get(nodeId) ?? [];
+      similarities.push(similarity);
+      similarityByNode.set(nodeId, similarities);
+    }
+
+    const matches = new Map<string, SemanticCandidateSimilarity>();
+    for (const [nodeId, similarities] of similarityByNode.entries()) {
+      matches.set(nodeId, {
+        similarity: aggregateChunkSimilarities(similarities, settings.chunkAggregation),
+        matchedChunks: similarities.length
+      });
+    }
+
+    return matches;
   }
 
   listNodes(limit = 20): SearchResultItem[] {
@@ -434,9 +1276,9 @@ export class MemforgeRepository {
     }
 
     if (filters.tags?.length) {
-      for (const tag of filters.tags) {
-        where.push("n.tags_json LIKE ?");
-        whereValues.push(`%${tag}%`);
+      for (const tag of normalizeTagList(filters.tags)) {
+        where.push("EXISTS (SELECT 1 FROM node_tags nt WHERE nt.node_id = n.id AND nt.tag = ?)");
+        whereValues.push(tag);
       }
     }
 
@@ -483,29 +1325,42 @@ export class MemforgeRepository {
     const id = createId("node");
     const nextSummary = input.summary ?? stableSummary(input.title, input.body);
     const nextMetadata = withSummaryMetadata(input.metadata, now, input.summary !== undefined ? "explicit" : "derived");
-    this.db
-      .prepare(
-        `INSERT INTO nodes (
-          id, type, status, canonicality, visibility, title, body, summary,
-          created_by, source_type, source_label, created_at, updated_at, tags_json, metadata_json
-        ) VALUES (?, ?, ?, ?, 'normal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        id,
-        input.type,
-        input.resolvedStatus,
-        input.resolvedCanonicality,
-        input.title,
-        input.body,
-        nextSummary,
-        input.source.actorLabel,
-        input.source.actorType,
-        input.source.actorLabel,
-        now,
-        now,
-        JSON.stringify(input.tags),
-        JSON.stringify(nextMetadata)
-      );
+    this.runInTransaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO nodes (
+            id, type, status, canonicality, visibility, title, body, summary,
+            created_by, source_type, source_label, created_at, updated_at, tags_json, metadata_json
+          ) VALUES (?, ?, ?, ?, 'normal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          id,
+          input.type,
+          input.resolvedStatus,
+          input.resolvedCanonicality,
+          input.title,
+          input.body,
+          nextSummary,
+          input.source.actorLabel,
+          input.source.actorType,
+          input.source.actorLabel,
+          now,
+          now,
+          JSON.stringify(input.tags),
+          JSON.stringify(nextMetadata)
+        );
+      this.syncNodeTags(id, input.tags);
+      this.markNodeSemanticIndexState(id, "node.created", {
+        status: "pending",
+        contentHash: buildSemanticContentHash({
+          title: input.title,
+          body: input.body,
+          summary: nextSummary,
+          tags: input.tags
+        }),
+        updatedAt: now
+      });
+    });
 
     return this.getNode(id);
   }
@@ -538,22 +1393,35 @@ export class MemforgeRepository {
           : mergedMetadata;
     const nextStatus = input.status ?? existing.status;
 
-    this.db
-      .prepare(
-        `UPDATE nodes
-         SET title = ?, body = ?, summary = ?, tags_json = ?, metadata_json = ?, status = ?, updated_at = ?
-         WHERE id = ?`
-      )
-      .run(
-        nextTitle,
-        nextBody,
-        nextSummary,
-        JSON.stringify(nextTags),
-        JSON.stringify(nextMetadata),
-        nextStatus,
-        updatedAt,
-        id
-      );
+    this.runInTransaction(() => {
+      this.db
+        .prepare(
+          `UPDATE nodes
+           SET title = ?, body = ?, summary = ?, tags_json = ?, metadata_json = ?, status = ?, updated_at = ?
+           WHERE id = ?`
+        )
+        .run(
+          nextTitle,
+          nextBody,
+          nextSummary,
+          JSON.stringify(nextTags),
+          JSON.stringify(nextMetadata),
+          nextStatus,
+          updatedAt,
+          id
+        );
+      this.syncNodeTags(id, nextTags);
+      this.markNodeSemanticIndexState(id, "node.updated", {
+        status: "pending",
+        contentHash: buildSemanticContentHash({
+          title: nextTitle,
+          body: nextBody,
+          summary: nextSummary,
+          tags: nextTags
+        }),
+        updatedAt
+      });
+    });
 
     return this.getNode(id);
   }
@@ -571,12 +1439,27 @@ export class MemforgeRepository {
          WHERE id = ?`
       )
       .run(nextSummary, JSON.stringify(nextMetadata), updatedAt, id);
+    this.markNodeSemanticIndexState(id, "summary.refreshed", {
+      status: "pending",
+      contentHash: buildSemanticContentHash({
+        title: existing.title,
+        body: existing.body,
+        summary: nextSummary,
+        tags: existing.tags
+      }),
+      updatedAt
+    });
 
     return this.getNode(id);
   }
 
   archiveNode(id: string): NodeRecord {
-    this.db.prepare(`UPDATE nodes SET status = 'archived', updated_at = ? WHERE id = ?`).run(nowIso(), id);
+    const updatedAt = nowIso();
+    this.db.prepare(`UPDATE nodes SET status = 'archived', updated_at = ? WHERE id = ?`).run(updatedAt, id);
+    this.markNodeSemanticIndexState(id, "node.archived", {
+      status: "stale",
+      updatedAt
+    });
     return this.getNode(id);
   }
 
@@ -750,27 +1633,63 @@ export class MemforgeRepository {
   appendRelationUsageEvent(input: AppendRelationUsageEventInput): RelationUsageEventRecord {
     const id = createId("rue");
     const now = nowIso();
-    this.db
-      .prepare(
-        `INSERT INTO relation_usage_events (
-          id, relation_id, relation_source, event_type, session_id, run_id, actor_type, actor_label,
-          tool_name, delta, created_at, metadata_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        id,
-        input.relationId,
-        input.relationSource,
-        input.eventType,
-        input.sessionId ?? null,
-        input.runId ?? null,
-        input.source?.actorType ?? null,
-        input.source?.actorLabel ?? null,
-        input.source?.toolName ?? null,
-        input.delta,
-        now,
-        JSON.stringify(input.metadata)
-      );
+    this.runInTransaction(() => {
+      const result = this.db
+        .prepare(
+          `INSERT INTO relation_usage_events (
+            id, relation_id, relation_source, event_type, session_id, run_id, actor_type, actor_label,
+            tool_name, delta, created_at, metadata_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          id,
+          input.relationId,
+          input.relationSource,
+          input.eventType,
+          input.sessionId ?? null,
+          input.runId ?? null,
+          input.source?.actorType ?? null,
+          input.source?.actorLabel ?? null,
+          input.source?.toolName ?? null,
+          input.delta,
+          now,
+          JSON.stringify(input.metadata)
+        );
+      const rowid = Number(result.lastInsertRowid ?? 0);
+
+      this.db
+        .prepare(
+          `INSERT INTO relation_usage_rollups (
+             relation_id, total_delta, event_count, last_event_at, last_event_rowid, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(relation_id) DO UPDATE SET
+             total_delta = total_delta + excluded.total_delta,
+             event_count = event_count + excluded.event_count,
+             last_event_at = CASE
+               WHEN excluded.last_event_at > last_event_at THEN excluded.last_event_at
+               ELSE last_event_at
+             END,
+             last_event_rowid = CASE
+               WHEN excluded.last_event_rowid > last_event_rowid THEN excluded.last_event_rowid
+               ELSE last_event_rowid
+             END,
+             updated_at = excluded.updated_at`
+        )
+        .run(input.relationId, input.delta, 1, now, rowid, now);
+
+      this.ensureRelationUsageRollupState(now);
+      this.db
+        .prepare(
+          `UPDATE relation_usage_rollup_state
+           SET last_event_rowid = CASE
+             WHEN ? > last_event_rowid THEN ?
+             ELSE last_event_rowid
+           END,
+               updated_at = ?
+           WHERE id = ?`
+        )
+        .run(rowid, rowid, now, RELATION_USAGE_ROLLUP_STATE_ID);
+    });
     return this.getRelationUsageEvent(id);
   }
 
@@ -798,16 +1717,17 @@ export class MemforgeRepository {
       return new Map();
     }
 
+    this.syncRelationUsageRollups();
     const rows = this.db
       .prepare(
         `SELECT
            relation_id,
-           COALESCE(SUM(delta), 0) AS total_delta,
-           COUNT(*) AS event_count,
-           MAX(created_at) AS last_event_at
-         FROM relation_usage_events
+           total_delta,
+           event_count,
+           last_event_at
+         FROM relation_usage_rollups
          WHERE relation_id IN (${relationIds.map(() => "?").join(", ")})
-         GROUP BY relation_id`
+         ORDER BY relation_id`
       )
       .all(...relationIds) as Array<Record<string, unknown>>;
 
@@ -957,6 +1877,10 @@ export class MemforgeRepository {
         JSON.stringify(input.metadata)
       );
     this.touchNode(input.targetNodeId);
+    this.markNodeSemanticIndexState(input.targetNodeId, "activity.appended", {
+      status: "pending",
+      updatedAt: now
+    });
     return this.getActivity(id);
   }
 
@@ -997,6 +1921,10 @@ export class MemforgeRepository {
         now,
         JSON.stringify(input.metadata)
       );
+    this.markNodeSemanticIndexState(input.nodeId, "artifact.attached", {
+      status: "pending",
+      updatedAt: now
+    });
     return this.getArtifact(id);
   }
 

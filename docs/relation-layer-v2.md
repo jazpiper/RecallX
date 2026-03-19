@@ -20,10 +20,11 @@ The current codebase already implements part of this design:
 - inferred links can be upserted manually or by external generators
 - usage events can trigger explicit or debounced score recompute
 - retrieval already uses relation-type specificity and usage-aware boosts when ranking neighborhood and bundle items
+- deterministic inferred refresh is already queued from node, summary, activity, and artifact writes
+- semantic index-state and reindex APIs now exist as a separate sidecar surface
 
 What is still not implemented:
 
-- automatic inferred-relation generation on node create/update
 - co-access aggregation tables such as `node_coaccess_stats`
 - semantic candidate generation or embedding-backed relation discovery
 - dedicated human UI controls for muting/hiding inferred links at scale
@@ -210,6 +211,7 @@ Suggested `event_type` values:
 - `manual_hide`
 
 The current server stores these events today and aggregates them back into inferred-link maintenance.
+The desktop renderer now emits `bundle_clicked` only from explicit context-bundle preview item clicks and deduplicates repeated clicks per session-scoped target/relation pair before posting the event.
 
 ## 5.4 Optional `node_coaccess_stats`
 

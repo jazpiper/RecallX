@@ -18,6 +18,8 @@ The core goal is simple:
 
 The retrieval layer exists to make the workspace feel fast, compact, and useful even as it grows.
 
+For the broader long-term scaling design, including DB shape and relation-layer review, see `docs/scalable-retrieval-architecture.md`.
+
 ---
 
 ## 2. Core philosophy
@@ -109,6 +111,12 @@ The scout is optimized for:
 - fetch open questions / decisions / linked notes as compact items
 - rank and prune candidates
 - return a compact handoff
+
+### Current semantic fallback
+- deterministic retrieval remains first
+- local semantic augmentation is currently bounded and local-only via `local-ngram` / `chargram-v1`
+- request-time tuning is limited to `search.semantic.augmentation.minSimilarity`, `search.semantic.augmentation.maxBonus`, and `search.semantic.chunk.aggregation`
+- semantic bonuses are skipped when there is already a strong lexical exact match
 
 ### Scout non-goals
 The scout should not:
@@ -664,6 +672,12 @@ Inferred-layer signals:
 - recent usage bonus
 - decay penalty for stale weak links
 
+Request-time signals:
+- `retrievalRank` for neighborhood, bundle inclusion, and candidate ranking
+- request-time rank may read persisted inferred `final_score`, but it is a separate public surface value
+- persisted `final_score` should be treated as maintenance output, not the user-facing retrieval contract
+- public retrieval APIs should prefer additive fields over redefining persisted maintenance scores
+
 Usage-derived signals:
 - relation included in bundle
 - relation clicked or inspected in graph
@@ -675,12 +689,18 @@ Usage-derived signals:
 ```text
 relation_rank_score =
   canonical_bonus +
-  inferred_final_score +
+  bounded(inferred_final_score) +
   relation_type_specificity_bonus +
   recent_usage_bonus -
   age_decay -
   noise_penalty
 ```
+
+Interpretation:
+
+- `inferred_final_score` is the stored maintenance score on `inferred_relations`
+- `retrievalRank` is the request-time value exposed by retrieval APIs
+- semantic retrieval, when added, should augment candidate recall and request-time rank only
 
 Rule:
 - weak inferred links must never outrank strong canonical links by default

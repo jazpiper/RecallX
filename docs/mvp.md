@@ -139,20 +139,22 @@ The workspace should be optimized so external tools can retrieve useful context 
 #### 1) Workspace home
 - recent nodes
 - recent activity
-- quick search
+- quick search entry
 - pinned projects or notes
+- local integration and semantic status surface
 
 #### 2) Node detail
 - node content
 - metadata
 - related nodes
 - activity history
-- provenance history
+- artifacts
+- context bundle preview
 
 #### 3) Search
 - keyword search
 - semantic search later if feasible
-- filters by type/tag/source
+- filters by type/tag/source later if the simple query-only flow proves insufficient
 
 #### 4) Graph view
 - limited graph visualization
@@ -161,7 +163,8 @@ The workspace should be optimized so external tools can retrieve useful context 
 
 #### 5) Review queue
 - incoming agent-created notes or suggested links
-- accept / dismiss / edit flow for higher-trust governance
+- approve / reject flow first
+- edit / dismiss later if the lightweight queue becomes a bottleneck
 
 ---
 

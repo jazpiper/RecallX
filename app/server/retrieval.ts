@@ -3,6 +3,65 @@ import type { ContextBundle, NeighborhoodItem, RelationUsageSummary, SearchResul
 import type { MemforgeRepository } from "./repositories.js";
 import { computeUsageBonus, relationTypeSpecificityBonus } from "./relation-scoring.js";
 
+export type RetrievalRankWeights = {
+  canonicalBase: number;
+  canonicalSpecificityMultiplier: number;
+  canonicalUsageMultiplier: number;
+  inferredBaseMultiplier: number;
+  inferredSpecificityMultiplier: number;
+  inferredUsageMultiplier: number;
+};
+
+const neighborhoodRetrievalRankWeights: RetrievalRankWeights = {
+  canonicalBase: 2,
+  canonicalSpecificityMultiplier: 1,
+  canonicalUsageMultiplier: 1,
+  inferredBaseMultiplier: 1,
+  inferredSpecificityMultiplier: 1,
+  inferredUsageMultiplier: 1
+};
+
+const candidateRelationBonusWeights: RetrievalRankWeights = {
+  canonicalBase: 70,
+  canonicalSpecificityMultiplier: 100,
+  canonicalUsageMultiplier: 60,
+  inferredBaseMultiplier: 35,
+  inferredSpecificityMultiplier: 35,
+  inferredUsageMultiplier: 35
+};
+
+const semanticCandidateMinSimilarity = 0.2;
+const semanticCandidateMaxBonus = 18;
+
+type SemanticAugmentationSettings = {
+  minSimilarity?: number;
+  maxBonus?: number;
+};
+
+export type SemanticCandidateMatch = {
+  similarity: number;
+  matchedChunks: number;
+};
+
+export type SemanticCandidateBonus = {
+  retrievalRank: number;
+  semanticSimilarity: number;
+  reason: string;
+};
+
+function resolveSemanticAugmentationSettings(settings?: SemanticAugmentationSettings): Required<SemanticAugmentationSettings> {
+  return {
+    minSimilarity:
+      typeof settings?.minSimilarity === "number" && Number.isFinite(settings.minSimilarity)
+        ? Math.min(Math.max(settings.minSimilarity, 0), 1)
+        : semanticCandidateMinSimilarity,
+    maxBonus:
+      typeof settings?.maxBonus === "number" && Number.isFinite(settings.maxBonus)
+        ? Math.max(settings.maxBonus, 0)
+        : semanticCandidateMaxBonus
+  };
+}
+
 function prioritizeItems(
   items: SearchResultItem[],
   preset: BuildContextBundleInput["preset"],
@@ -44,21 +103,101 @@ function scoreItem(item: SearchResultItem, preset: BuildContextBundleInput["pres
   return score;
 }
 
-function computeNeighborhoodRank(item: NeighborhoodItem, summary?: RelationUsageSummary): number {
+export function computeRelationRetrievalRank(
+  edge: Pick<NeighborhoodItem["edge"], "relationSource" | "relationType" | "relationScore">,
+  summary?: RelationUsageSummary,
+  weights: RetrievalRankWeights = neighborhoodRetrievalRankWeights
+): number {
   const usageBonus = computeUsageBonus(summary);
-  const specificityBonus = relationTypeSpecificityBonus(item.edge.relationType);
-  if (item.edge.relationSource === "canonical") {
-    return 2 + specificityBonus + usageBonus;
+  const specificityBonus = relationTypeSpecificityBonus(edge.relationType);
+  if (edge.relationSource === "canonical") {
+    return weights.canonicalBase + specificityBonus * weights.canonicalSpecificityMultiplier + usageBonus * weights.canonicalUsageMultiplier;
   }
-  return (item.edge.relationScore ?? 0) + specificityBonus + usageBonus;
+  return (
+    (edge.relationScore ?? 0) * weights.inferredBaseMultiplier +
+    specificityBonus * weights.inferredSpecificityMultiplier +
+    usageBonus * weights.inferredUsageMultiplier
+  );
+}
+
+export function computeRankCandidateScore(
+  node: Pick<SearchResultItem, "title" | "summary" | "type" | "canonicality">,
+  query: string,
+  preset: BuildContextBundleInput["preset"],
+  relationRetrievalRank = 0
+): number {
+  const normalizedQuery = query.toLowerCase();
+
+  return (
+    (node.title?.toLowerCase().includes(normalizedQuery) ? 50 : 0) +
+    (node.summary?.toLowerCase().includes(normalizedQuery) ? 20 : 0) +
+    (preset === "for-coding" && node.type === "decision" ? 15 : 0) +
+    (node.canonicality === "canonical" ? 10 : 0) +
+    relationRetrievalRank
+  );
+}
+
+export function shouldUseSemanticCandidateAugmentation(
+  query: string,
+  candidates: Array<Pick<SearchResultItem, "title" | "summary">>
+): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (normalizedQuery.length < 6) {
+    return false;
+  }
+
+  return !candidates.some((candidate) => {
+    const title = candidate.title?.toLowerCase() ?? "";
+    const summary = candidate.summary?.toLowerCase() ?? "";
+    return title.includes(normalizedQuery) || summary.includes(normalizedQuery);
+  });
+}
+
+export function buildSemanticCandidateBonusMap(
+  semanticMatches: Map<string, SemanticCandidateMatch>,
+  settings?: SemanticAugmentationSettings
+): Map<string, SemanticCandidateBonus> {
+  const resolved = resolveSemanticAugmentationSettings(settings);
+  return new Map(
+    [...semanticMatches.entries()]
+      .filter(([, match]) => Number.isFinite(match.similarity) && match.similarity >= resolved.minSimilarity)
+      .map(([nodeId, match]) => {
+        const normalizedSimilarity =
+          resolved.minSimilarity >= 1
+            ? 0
+            : Math.min(1, Math.max(0, match.similarity - resolved.minSimilarity) / (1 - resolved.minSimilarity));
+        const retrievalRank = Number((normalizedSimilarity * resolved.maxBonus).toFixed(4));
+        return [
+          nodeId,
+          {
+            retrievalRank,
+            semanticSimilarity: Number(match.similarity.toFixed(4)),
+            reason: `Semantic similarity ${match.similarity.toFixed(2)} via local-ngram across ${match.matchedChunks} chunk${match.matchedChunks === 1 ? "" : "s"}`
+          }
+        ] as const;
+      })
+  );
 }
 
 function computeBundleRelationBoost(item: NeighborhoodItem, summary?: RelationUsageSummary): number {
-  const usageBonus = computeUsageBonus(summary);
   if (item.edge.relationSource === "canonical") {
-    return 120 + relationTypeSpecificityBonus(item.edge.relationType) * 100 + usageBonus * 80;
+    return computeRelationRetrievalRank(item.edge, summary, {
+      canonicalBase: 120,
+      canonicalSpecificityMultiplier: 100,
+      canonicalUsageMultiplier: 80,
+      inferredBaseMultiplier: 40,
+      inferredSpecificityMultiplier: 40,
+      inferredUsageMultiplier: 40
+    });
   }
-  return ((item.edge.relationScore ?? 0) + relationTypeSpecificityBonus(item.edge.relationType) + usageBonus) * 40;
+  return computeRelationRetrievalRank(item.edge, summary, {
+    canonicalBase: 120,
+    canonicalSpecificityMultiplier: 100,
+    canonicalUsageMultiplier: 80,
+    inferredBaseMultiplier: 40,
+    inferredSpecificityMultiplier: 40,
+    inferredUsageMultiplier: 40
+  });
 }
 
 function formatRelationReason(baseReason: string, summary?: RelationUsageSummary): string {
@@ -87,6 +226,7 @@ export function buildNeighborhoodItems(
       relationSource: "canonical" as const,
       relationStatus: relation.status,
       relationScore: null,
+      retrievalRank: null,
       generator: null,
       reason: `Related via ${relation.relationType}`,
       direction: relation.fromNodeId === nodeId ? ("outgoing" as const) : ("incoming" as const),
@@ -110,6 +250,7 @@ export function buildNeighborhoodItems(
                 relationSource: "inferred" as const,
                 relationStatus: relation.status,
                 relationScore: relation.finalScore,
+                retrievalRank: relation.finalScore,
                 generator: relation.generator,
                 reason: `Inferred via ${relation.relationType} (score ${relation.finalScore.toFixed(2)})`,
                 direction: relation.fromNodeId === nodeId ? ("outgoing" as const) : ("incoming" as const),
@@ -139,10 +280,16 @@ export function buildNeighborhoodItems(
           reason: formatRelationReason(item.edge.reason, usageSummaries.get(item.edge.relationId))
         }
       },
-      rank: computeNeighborhoodRank(item, usageSummaries.get(item.edge.relationId))
+      rank: computeRelationRetrievalRank(item.edge, usageSummaries.get(item.edge.relationId))
     }))
     .sort((left, right) => right.rank - left.rank)
-    .map((entry) => entry.item);
+    .map((entry) => ({
+      ...entry.item,
+      edge: {
+        ...entry.item.edge,
+        retrievalRank: entry.rank
+      }
+    }));
 
   const rankedInferred = inferredItems
     .map((item) => ({
@@ -153,19 +300,56 @@ export function buildNeighborhoodItems(
           reason: formatRelationReason(item.edge.reason, usageSummaries.get(item.edge.relationId))
         }
       },
-      rank: computeNeighborhoodRank(item, usageSummaries.get(item.edge.relationId))
+      rank: computeRelationRetrievalRank(item.edge, usageSummaries.get(item.edge.relationId))
     }))
     .sort((left, right) => right.rank - left.rank)
     .slice(0, options?.maxInferred ?? 0)
-    .map((entry) => entry.item);
+    .map((entry) => ({
+      ...entry.item,
+      edge: {
+        ...entry.item.edge,
+        retrievalRank: entry.rank
+      }
+    }));
 
   return [...rankedCanonical, ...rankedInferred];
 }
 
-export function buildContextBundle(
+export function buildCandidateRelationBonusMap(
+  repository: MemforgeRepository,
+  targetNodeId: string,
+  candidateNodeIds: string[]
+) {
+  const neighborhood = buildNeighborhoodItems(repository, targetNodeId, {
+    includeInferred: true,
+    maxInferred: Math.max(4, Math.min(candidateNodeIds.length, 10))
+  });
+  const usageSummaries = repository.getRelationUsageSummaries(neighborhood.map((item) => item.edge.relationId));
+
+  return new Map(
+    neighborhood
+      .filter((item) => candidateNodeIds.includes(item.node.id))
+      .map((item) => [
+        item.node.id,
+        {
+          retrievalRank: computeRelationRetrievalRank(
+            item.edge,
+            usageSummaries.get(item.edge.relationId),
+            candidateRelationBonusWeights
+          ),
+          relationSource: item.edge.relationSource,
+          relationType: item.edge.relationType,
+          relationScore: item.edge.relationScore,
+          reason: item.edge.reason
+        }
+      ] as const)
+  );
+}
+
+export async function buildContextBundle(
   repository: MemforgeRepository,
   input: BuildContextBundleInput
-): ContextBundle {
+): Promise<ContextBundle> {
   const target = repository.getNode(input.target.id);
   const neighborhood = input.options.includeRelated
     ? buildNeighborhoodItems(repository, target.id, {
@@ -179,10 +363,12 @@ export function buildContextBundle(
     title: item.node.title,
     summary: item.node.summary,
     reason: item.edge.reason,
+    relationId: item.edge.relationId,
     relationType: item.edge.relationType,
     relationSource: item.edge.relationSource,
     relationStatus: item.edge.relationStatus,
     relationScore: item.edge.relationScore ?? undefined,
+    retrievalRank: item.edge.retrievalRank ?? undefined,
     generator: item.edge.generator
   }));
 
@@ -239,12 +425,31 @@ export function buildContextBundle(
       computeBundleRelationBoost(item, bundleUsageSummaries.get(item.edge.relationId))
     ])
   );
+  const candidateItems = [targetItem, ...relatedItems, ...decisions, ...openQuestions];
+  const dedupedItems = Array.from(new Map(candidateItems.map((item) => [item.id, item])).values());
+  const semanticQuery = [target.title, target.summary ?? target.body].filter(Boolean).join("\n");
+  const semanticBonuses = shouldUseSemanticCandidateAugmentation(
+    semanticQuery,
+    dedupedItems.filter((item) => item.id !== target.id)
+  )
+    ? buildSemanticCandidateBonusMap(
+        await repository.rankSemanticCandidates(
+          semanticQuery,
+          dedupedItems.filter((item) => item.id !== target.id).map((item) => item.id)
+        ),
+        repository.getSemanticAugmentationSettings()
+      )
+    : new Map();
+  const combinedBonuses = new Map<string, number>();
+  for (const item of dedupedItems) {
+    combinedBonuses.set(item.id, (relationBonuses.get(item.id) ?? 0) + (semanticBonuses.get(item.id)?.retrievalRank ?? 0));
+  }
 
   const baseItems = prioritizeItems(
-    [targetItem, ...relatedItems, ...decisions, ...openQuestions],
+    dedupedItems,
     input.preset,
     input.mode === "micro" ? Math.min(input.options.maxItems, 5) : input.options.maxItems,
-    relationBonuses
+    combinedBonuses
   );
 
   const itemById = new Map(related.map((item) => [item.nodeId, item]));
@@ -263,11 +468,20 @@ export function buildContextBundle(
       type: item.type,
       title: item.title,
       summary: item.summary,
-      reason: itemById.get(item.id)?.reason ?? (item.id === target.id ? "Primary target" : `Included for ${input.preset}`),
+      reason:
+        [
+          itemById.get(item.id)?.reason ?? (item.id === target.id ? "Primary target" : `Included for ${input.preset}`),
+          semanticBonuses.get(item.id)?.reason ?? null
+        ]
+          .filter(Boolean)
+          .join("; "),
+      relationId: itemById.get(item.id)?.relationId,
       relationType: itemById.get(item.id)?.relationType,
       relationSource: itemById.get(item.id)?.relationSource,
       relationStatus: itemById.get(item.id)?.relationStatus,
       relationScore: itemById.get(item.id)?.relationScore,
+      retrievalRank: (itemById.get(item.id)?.retrievalRank ?? 0) + (semanticBonuses.get(item.id)?.retrievalRank ?? 0) || undefined,
+      semanticSimilarity: semanticBonuses.get(item.id)?.semanticSimilarity,
       generator: itemById.get(item.id)?.generator ?? null
     })),
     activityDigest: input.options.includeRecentActivities
