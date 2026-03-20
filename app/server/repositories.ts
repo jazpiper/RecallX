@@ -204,10 +204,6 @@ function mergeMatchReasons(
   };
 }
 
-function computeWorkspaceRecencyBonus(timestamp: string, resultType: "node" | "activity") {
-  return computeWorkspaceRecencyBonusFromAge(Date.now() - new Date(timestamp).getTime(), resultType);
-}
-
 function computeWorkspaceRankBonus(index: number, total: number) {
   if (total <= 0) {
     return 0;

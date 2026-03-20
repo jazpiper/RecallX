@@ -26,6 +26,7 @@ export interface GovernanceRecomputeResult {
   promotedCount: number;
   contestedCount: number;
   items: GovernanceStateRecord[];
+  updatedNodes?: Map<string, NodeRecord>;
 }
 
 const relaxedShortFormNodeTypes = new Set<CreateNodeInput["type"]>(["reference", "question", "conversation"]);
@@ -479,6 +480,7 @@ export function recomputeAutomaticGovernance(
   const items: GovernanceStateRecord[] = [];
   let promotedCount = 0;
   let contestedCount = 0;
+  const updatedNodes = new Map<string, NodeRecord>();
   const nodes = targets.nodeIds.map((nodeId) => repository.getNode(nodeId));
   const nodeFeedback = repository.getSearchFeedbackSummaries("node", nodes.map((node) => node.id));
   const nodeStates = new Map(nodes.map((node) => [node.id, repository.getGovernanceStateNullable("node", node.id)] as const));
@@ -508,6 +510,11 @@ export function recomputeAutomaticGovernance(
         beforeNode: node
       })
     );
+    updatedNodes.set(node.id, {
+      ...node,
+      status: evaluation.nextNodeStatus ?? node.status,
+      canonicality: evaluation.nextCanonicality ?? node.canonicality
+    });
   }
 
   for (const relation of relations) {
@@ -533,7 +540,8 @@ export function recomputeAutomaticGovernance(
     updatedCount: items.length,
     promotedCount,
     contestedCount,
-    items
+    items,
+    updatedNodes
   };
 }
 

@@ -258,6 +258,17 @@ function searchResultFromNode(node: Pick<SearchResultItem, "id" | "type" | "titl
   };
 }
 
+function buildRetrievalCandidates(
+  target: Pick<SearchResultItem, "id" | "type" | "title" | "summary" | "status" | "canonicality" | "sourceLabel" | "updatedAt" | "tags">,
+  neighborhood: NeighborhoodItem[]
+): SearchResultItem[] {
+  const candidates = new Map<string, SearchResultItem>([[target.id, searchResultFromNode(target)]]);
+  for (const item of neighborhood) {
+    candidates.set(item.node.id, searchResultFromNode(item.node));
+  }
+  return Array.from(candidates.values());
+}
+
 export function buildNeighborhoodItems(
   repository: MemforgeRepository,
   nodeId: string,
@@ -345,6 +356,7 @@ export function buildCandidateRelationBonusMap(
   targetNodeId: string,
   candidateNodeIds: string[]
 ) {
+  const candidateNodeIdSet = new Set(candidateNodeIds);
   const neighborhood = buildNeighborhoodItems(repository, targetNodeId, {
     includeInferred: true,
     maxInferred: Math.max(4, Math.min(candidateNodeIds.length, 10))
@@ -353,7 +365,7 @@ export function buildCandidateRelationBonusMap(
 
   return new Map(
     neighborhood
-      .filter((item) => candidateNodeIds.includes(item.node.id))
+      .filter((item) => candidateNodeIdSet.has(item.node.id))
       .map((item) => [
         item.node.id,
         {
@@ -377,15 +389,18 @@ export function buildTargetRelatedRetrievalItems(
   filters: {
     types?: string[];
     status?: string[];
-  }
+  },
+  cachedItems?: SearchResultItem[]
 ): SearchResultItem[] {
-  const target = repository.getNode(targetId);
-  const candidateItems = new Map<string, SearchResultItem>([[target.id, searchResultFromNode(target)]]);
-  for (const item of buildNeighborhoodItems(repository, target.id, { includeInferred: true, maxInferred: 4 })) {
-    candidateItems.set(item.node.id, searchResultFromNode(item.node));
-  }
+  const candidates = cachedItems ?? (() => {
+    const target = repository.getNode(targetId);
+    return buildRetrievalCandidates(
+      target,
+      buildNeighborhoodItems(repository, target.id, { includeInferred: true, maxInferred: 4 })
+    );
+  })();
 
-  return Array.from(candidateItems.values()).filter((item) => matchesSearchResultFilters(item, filters));
+  return candidates.filter((item) => matchesSearchResultFilters(item, filters));
 }
 
 async function buildWorkspaceContextBundle(
@@ -458,12 +473,14 @@ export async function buildContextBundle(
   }
 
   const target = repository.getNode(input.target.id);
-  const neighborhood = input.options.includeRelated
-    ? buildNeighborhoodItems(repository, target.id, {
-        includeInferred: input.options.includeInferred,
-        maxInferred: input.options.maxInferred
-      })
-    : [];
+  const sharedNeighborhood =
+    input.options.includeRelated || input.options.includeDecisions || input.options.includeOpenQuestions
+      ? buildNeighborhoodItems(repository, target.id, {
+          includeInferred: input.options.includeInferred,
+          maxInferred: input.options.maxInferred
+        })
+      : [];
+  const neighborhood = input.options.includeRelated ? sharedNeighborhood : [];
   const related = neighborhood.map((item) => ({
     nodeId: item.node.id,
     type: item.node.type,
@@ -478,19 +495,20 @@ export async function buildContextBundle(
     retrievalRank: item.edge.retrievalRank ?? undefined,
     generator: item.edge.generator
   }));
+  const retrievalCandidates = buildRetrievalCandidates(target, sharedNeighborhood);
 
   const decisions = input.options.includeDecisions
     ? buildTargetRelatedRetrievalItems(repository, target.id, {
         types: ["decision"],
         status: ["active", "contested"]
-      })
+      }, retrievalCandidates)
     : [];
 
   const openQuestions = input.options.includeOpenQuestions
     ? buildTargetRelatedRetrievalItems(repository, target.id, {
         types: ["question"],
         status: ["active", "draft", "contested"]
-      })
+      }, retrievalCandidates)
     : [];
 
   const targetItem: SearchResultItem = {

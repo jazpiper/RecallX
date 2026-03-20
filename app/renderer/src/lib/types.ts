@@ -96,19 +96,6 @@ export interface GovernancePayload {
   events: GovernanceEventRecord[];
 }
 
-export interface SearchMatchReason {
-  strategy: 'fts' | 'like' | 'fallback_token' | 'semantic' | 'browse';
-  matchedFields: string[];
-}
-
-export interface LandingInfo {
-  storedAs: 'node' | 'relation' | 'activity';
-  canonicality?: string;
-  status: string;
-  governanceState: 'healthy' | 'low_confidence' | 'contested' | null;
-  reason: string;
-}
-
 export interface Node {
   id: string;
   type: NodeType;

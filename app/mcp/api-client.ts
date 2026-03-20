@@ -1,4 +1,5 @@
 import type { ApiEnvelope, ApiErrorEnvelope } from "../shared/types.js";
+import { buildApiRequestInit, buildApiUrl, parseApiJsonBody } from "../shared/request-runtime.js";
 import { currentTelemetryContext } from "../server/observability.js";
 
 export class MemforgeApiError extends Error {
@@ -15,10 +16,6 @@ export class MemforgeApiError extends Error {
   }
 }
 
-function normalizeBaseUrl(baseUrl: string) {
-  return baseUrl.replace(/\/+$/, "");
-}
-
 function isApiErrorEnvelope(payload: unknown): payload is ApiErrorEnvelope {
   return Boolean(
     payload &&
@@ -31,29 +28,12 @@ function isApiErrorEnvelope(payload: unknown): payload is ApiErrorEnvelope {
   );
 }
 
-async function parseJsonBody(response: Response) {
-  const text = await response.text();
-  if (!text) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(text) as ApiEnvelope<unknown> | ApiErrorEnvelope | Record<string, unknown>;
-  } catch (error) {
-    throw new MemforgeApiError("Memforge API returned non-JSON output.", {
-      status: response.status,
-      code: "INVALID_RESPONSE",
-      details: error
-    });
-  }
-}
-
 export class MemforgeApiClient {
   readonly baseUrl: string;
   readonly apiToken: string | null;
 
   constructor(baseUrl: string, apiToken?: string | null) {
-    this.baseUrl = normalizeBaseUrl(baseUrl);
+    this.baseUrl = baseUrl;
     this.apiToken = apiToken ?? null;
   }
 
@@ -70,18 +50,7 @@ export class MemforgeApiClient {
   }
 
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const url = new URL(`${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`);
-    const headers = new Headers({
-      accept: "application/json"
-    });
-
-    if (body !== undefined) {
-      headers.set("content-type", "application/json");
-    }
-
-    if (this.apiToken) {
-      headers.set("authorization", `Bearer ${this.apiToken}`);
-    }
+    const headers = new Headers();
 
     const telemetryContext = currentTelemetryContext();
     if (telemetryContext?.traceId) {
@@ -93,11 +62,15 @@ export class MemforgeApiClient {
 
     let response: Response;
     try {
-      response = await fetch(url, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body)
-      });
+      response = await fetch(
+        buildApiUrl(this.baseUrl, path),
+        buildApiRequestInit({
+          method,
+          token: this.apiToken,
+          body,
+          headers
+        })
+      );
     } catch (error) {
       throw new MemforgeApiError("Failed to reach the local Memforge API.", {
         status: 503,
@@ -106,7 +79,16 @@ export class MemforgeApiClient {
       });
     }
 
-    const payload = await parseJsonBody(response);
+    let payload: ApiEnvelope<unknown> | ApiErrorEnvelope | Record<string, unknown> | null;
+    try {
+      payload = await parseApiJsonBody(response) as ApiEnvelope<unknown> | ApiErrorEnvelope | Record<string, unknown> | null;
+    } catch (error) {
+      throw new MemforgeApiError("Memforge API returned non-JSON output.", {
+        status: response.status,
+        code: "INVALID_RESPONSE",
+        details: error
+      });
+    }
     if (!payload || typeof payload !== "object") {
       throw new MemforgeApiError("Memforge API returned an empty response.", {
         status: response.status,

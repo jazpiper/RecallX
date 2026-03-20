@@ -3,9 +3,10 @@
   "compilerOptions": {
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "allowJs": true,
     "outDir": "dist/server",
     "rootDir": ".",
     "types": ["node"]
   },
-  "include": ["app/shared/**/*.ts", "app/server/**/*.ts", "app/mcp/**/*.ts", "app/cli/**/*.ts", "app/desktop/**/*.ts", "app/desktop/**/*.cts", "tests/**/*.ts"]
+  "include": ["app/shared/**/*.ts", "app/shared/request-runtime.js", "app/server/**/*.ts", "app/mcp/**/*.ts", "app/cli/**/*.ts", "app/desktop/**/*.ts", "app/desktop/**/*.cts", "tests/**/*.ts"]
 }

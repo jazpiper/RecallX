@@ -1383,7 +1383,7 @@ export function createMemforgeApp(params: {
       entityType: "node",
       entityId: node.id
     });
-    const storedNode = repository.getNode(node.id);
+    const storedNode = governanceResult.updatedNodes?.get(node.id) ?? node;
     const governancePayload = buildGovernancePayload(
       repository,
       "node",
@@ -1819,7 +1819,7 @@ export function createMemforgeApp(params: {
       });
       response.status(201).json(
         envelope(response.locals.requestId, (() => {
-          const storedNode = repository.getNode(node.id);
+          const storedNode = governanceResult.updatedNodes?.get(node.id) ?? node;
           const governancePayload = buildGovernancePayload(
             repository,
             "node",
@@ -1876,7 +1876,7 @@ export function createMemforgeApp(params: {
       envelope(response.locals.requestId, {
         storedAs: "activity",
         activity,
-        targetNode: repository.getNode(targetNode.id),
+        targetNode,
         governance: null,
         landing: buildLandingPayload({
           storedAs: "activity",
@@ -1915,7 +1915,7 @@ export function createMemforgeApp(params: {
     });
     response.json(
       envelope(response.locals.requestId, {
-        node: repository.getNode(node.id),
+        node: governanceResult.updatedNodes?.get(node.id) ?? node,
         governance: buildGovernancePayload(
           repository,
           "node",
@@ -1950,7 +1950,7 @@ export function createMemforgeApp(params: {
     });
     response.json(
       envelope(response.locals.requestId, {
-        node: repository.getNode(node.id),
+        node: governanceResult.updatedNodes?.get(node.id) ?? node,
         governance: buildGovernancePayload(
           repository,
           "node",
@@ -1981,7 +1981,7 @@ export function createMemforgeApp(params: {
     });
     response.json(
       envelope(response.locals.requestId, {
-        node: repository.getNode(node.id),
+        node: governanceResult.updatedNodes?.get(node.id) ?? node,
         governance: buildGovernancePayload(
           repository,
           "node",
@@ -2303,7 +2303,14 @@ export function createMemforgeApp(params: {
   app.post("/api/v1/retrieval/node-summaries", (request, response) => {
     const nodeIds = Array.isArray(request.body?.nodeIds) ? request.body.nodeIds : [];
     const repository = currentRepository();
-    const nodes: NodeRecord[] = nodeIds.map((nodeId: string) => repository.getNode(nodeId));
+    const nodeMap = repository.getNodesByIds(nodeIds);
+    const nodes: NodeRecord[] = nodeIds.map((nodeId: string) => {
+      const node = nodeMap.get(nodeId);
+      if (!node) {
+        throw new AppError(404, "NOT_FOUND", `Node ${nodeId} not found`);
+      }
+      return node;
+    });
     const items = nodes.map((node) => ({
       id: node.id,
       title: node.title,
@@ -2353,7 +2360,14 @@ export function createMemforgeApp(params: {
         const preset = typeof request.body?.preset === "string" ? request.body.preset : "for-assistant";
         const targetNodeId = typeof request.body?.targetNodeId === "string" ? request.body.targetNodeId : null;
         const relationBonuses = targetNodeId ? buildCandidateRelationBonusMap(repository, targetNodeId, candidateNodeIds) : new Map();
-        const candidates = candidateNodeIds.map((id: string) => repository.getNode(id));
+        const candidateNodeMap = repository.getNodesByIds(candidateNodeIds);
+        const candidates = candidateNodeIds.map((id: string) => {
+          const node = candidateNodeMap.get(id);
+          if (!node) {
+            throw new AppError(404, "NOT_FOUND", `Node ${id} not found`);
+          }
+          return node;
+        });
         const semanticAugmentation = repository.getSemanticAugmentationSettings();
         const semanticEnabled = shouldUseSemanticCandidateAugmentation(query, candidates);
         const semanticBonuses = semanticEnabled
@@ -2472,7 +2486,8 @@ export function createMemforgeApp(params: {
       reason: "governance.recomputed",
       entityType: input.entityType ?? "settings"
     });
-    response.json(envelope(response.locals.requestId, result));
+    const { updatedNodes: _updatedNodes, ...payload } = result;
+    response.json(envelope(response.locals.requestId, payload));
   });
 
   app.get("/api/v1/integrations", (_request, response) => {

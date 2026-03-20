@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderRelated } from "../app/cli/src/format.js";
-// The CLI entry is plain JS in this repo, so the test imports it without TS declarations.
-// @ts-expect-error No TypeScript declaration file is emitted for the CLI module.
 import { runCli } from "../app/cli/src/cli.js";
 
 afterEach(() => {

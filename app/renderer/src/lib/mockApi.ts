@@ -8,7 +8,6 @@ import type {
   GovernanceStateRecord,
   GraphConnection,
   Integration,
-  LandingInfo,
   NodeDetail,
   Node,
   Relation,
@@ -17,6 +16,14 @@ import type {
   WorkspaceCatalogItem,
   WorkspaceSeed,
 } from './types';
+
+type LandingInfo = {
+  storedAs: 'node' | 'relation' | 'activity';
+  canonicality?: string;
+  status: string;
+  governanceState: 'healthy' | 'low_confidence' | 'contested' | null;
+  reason: string;
+};
 
 const API_BASE =
   (window as Window & { __MEMFORGE_API_BASE__?: string }).__MEMFORGE_API_BASE__ ?? '/api/v1';
@@ -591,7 +598,7 @@ export async function getNodeDetail(id: string): Promise<NodeDetail | undefined>
   );
 }
 
-export async function getRelatedConnections(id: string): Promise<GraphConnection[]> {
+async function getRelatedConnections(id: string): Promise<GraphConnection[]> {
   return withFallback(
     async () => {
       const payload = await requestJson(`/nodes/${encodeURIComponent(id)}/neighborhood?include_inferred=1&max_inferred=4`);

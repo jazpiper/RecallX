@@ -245,17 +245,23 @@ export default function App() {
     globalThis.crypto?.randomUUID?.() ?? `memforge-renderer-${Date.now()}`
   );
 
+  async function refreshSnapshotState() {
+    const snapshotResult = await getSnapshot();
+    setSnapshot(snapshotResult);
+    setLoadError(null);
+    return snapshotResult;
+  }
+
   async function refreshWorkspaceState(options?: {
     workspaceOverride?: WorkspaceSeed['workspace'];
     catalogOverride?: { current: WorkspaceSeed['workspace']; items: WorkspaceCatalogItem[] };
   }) {
     const [workspaceResult, snapshotResult, catalog] = await Promise.all([
       options?.workspaceOverride ? Promise.resolve(options.workspaceOverride) : getWorkspace(),
-      getSnapshot(),
+      refreshSnapshotState(),
       options?.catalogOverride ? Promise.resolve(options.catalogOverride) : getWorkspaceCatalog(),
     ]);
     setWorkspace(options?.catalogOverride?.current ?? workspaceResult);
-    setSnapshot(snapshotResult);
     setWorkspaceCatalog(catalog.items);
     setWorkspaceRootInput(catalog.current.rootPath);
     setLoadError(null);
@@ -289,7 +295,7 @@ export default function App() {
           return;
         }
 
-        await refreshWorkspaceState();
+        await refreshWorkspaceState({ workspaceOverride: bootstrap.workspace });
         if (!mounted) return;
         setAuthRequired(false);
         setAuthError(null);
@@ -369,7 +375,7 @@ export default function App() {
       refreshInFlight = true;
 
       try {
-        await refreshWorkspaceState();
+        await refreshSnapshotState();
         setLoadError(null);
       } catch (error) {
         if (!cancelled) {
@@ -597,19 +603,12 @@ export default function App() {
 
   const workspaceName = workspace?.name ?? 'Memforge';
   const apiBase = desktopInfo?.apiBase ?? `http://${workspace?.apiBind ?? '127.0.0.1:8787'}/api/v1`;
-  const workspaceHome = desktopInfo?.workspaceHome ?? '';
   const workspaceRoot = workspace?.rootPath ?? desktopInfo?.workspaceRoot ?? '';
   const workspaceDbPath = desktopInfo?.workspaceDbPath ?? (workspaceRoot ? `${workspaceRoot}/workspace.db` : '');
   const artifactsPath = desktopInfo?.artifactsPath ?? (workspaceRoot ? `${workspaceRoot}/artifacts` : '');
-  const commandShimPath = desktopInfo?.commandShimPath ?? '';
   const mcpLauncherPath = desktopInfo?.mcpLauncherPath ?? '';
   const defaultMcpCommand = `node dist/server/app/mcp/index.js --api ${apiBase}`;
   const mcpCommand = desktopInfo?.mcpCommand ?? defaultMcpCommand;
-  const executablePath = desktopInfo?.executablePath ?? '';
-  const executableLabel = desktopInfo?.isPackaged ? 'App bundle' : 'Executable';
-  const executableDisplay = desktopInfo?.isPackaged
-    ? 'Current Memforge.app installation'
-    : executablePath || 'Unavailable';
   const genericMcpConfig = mcpLauncherPath
     ? `{
   "mcpServers": {
@@ -729,7 +728,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
     },
   ];
   const activeApiGuideSection =
-    apiGuideSections.find((section) => section.id === apiGuideSectionId) ?? apiGuideSections[0];
+    apiGuideSections.find((section) => section.id === apiGuideSectionId) ?? apiGuideSections[0]!;
   const mcpGuideSections: GuideSection[] = [
     {
       id: 'overview',
@@ -828,7 +827,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
     },
   ];
   const activeMcpGuideSection =
-    mcpGuideSections.find((section) => section.id === mcpGuideSectionId) ?? mcpGuideSections[0];
+    mcpGuideSections.find((section) => section.id === mcpGuideSectionId) ?? mcpGuideSections[0]!;
   const graphDistinctNodes = useMemo(
     () => Array.from(new Map(graphConnections.map((item) => [item.node.id, item.node])).values()),
     [graphConnections],
@@ -936,7 +935,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
         body: captureBody.trim(),
       });
       const node = result.node;
-      await refreshWorkspaceState();
+      await refreshSnapshotState();
       focusNode(node.id);
       setIsNotePreviewOpen(false);
       setView(node.type === 'project' ? 'projects' : 'recent');
@@ -977,7 +976,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
         ...current,
         node: refreshedNode,
       }));
-      await refreshWorkspaceState();
+      await refreshSnapshotState();
       setLoadError(null);
     } catch (error) {
       handleRequestFailure(error, 'Failed to refresh summary.');
@@ -1023,9 +1022,10 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
     setWorkspaceActionError(null);
     setIsSwitchingWorkspace(true);
     try {
+      const workspaceName = workspaceNameInput.trim();
       const catalog = await createWorkspaceSession({
         rootPath,
-        workspaceName: workspaceNameInput.trim() || undefined,
+        ...(workspaceName ? { workspaceName } : {}),
       });
       const nextSnapshot = await refreshWorkspaceState({
         workspaceOverride: catalog.current,

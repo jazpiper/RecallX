@@ -1,3 +1,5 @@
+import { buildApiRequestInit, buildApiUrl } from "../../shared/request-runtime.js";
+
 const DEFAULT_API_BASE = "http://127.0.0.1:8787/api/v1";
 
 export function getApiBase(argvOptions = {}, env = process.env) {
@@ -14,33 +16,22 @@ export function getAuthToken(argvOptions = {}, env = process.env) {
 }
 
 export async function requestJson(apiBase, path, { method = "GET", token, body } = {}) {
-  const url = new URL(path.replace(/^\/+/, ""), ensureTrailingSlash(apiBase));
-  const headers = {
-    Accept: "application/json",
-  };
+  const response = await fetch(
+    buildApiUrl(apiBase, path),
+    buildApiRequestInit({ method, token, body }),
+  );
 
-  if (body !== undefined) {
-    headers["Content-Type"] = "application/json";
-  }
-
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
-  const response = await fetch(url, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-
-  const text = await response.text();
-  const payload = text ? safeParseJson(text) : null;
+  const { payload, parseError } = await readApiJsonPayload(response);
 
   if (!response.ok) {
     const error = payload?.error;
     const code = error?.code || `HTTP_${response.status}`;
-    const message = error?.message || text || response.statusText || "Request failed";
+    const message = error?.message || response.statusText || "Request failed";
     throw new Error(`${code}: ${message}`);
+  }
+
+  if (parseError) {
+    throw new Error("INVALID_RESPONSE: Memforge API returned non-JSON output.");
   }
 
   if (payload && payload.ok === false) {
@@ -51,14 +42,15 @@ export async function requestJson(apiBase, path, { method = "GET", token, body }
   return payload ?? {};
 }
 
-function safeParseJson(text) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
+async function readApiJsonPayload(response) {
+  const text = await response.text();
+  if (!text) {
+    return { payload: null, parseError: null };
   }
-}
 
-function ensureTrailingSlash(value) {
-  return value.endsWith("/") ? value : `${value}/`;
+  try {
+    return { payload: JSON.parse(text), parseError: null };
+  } catch (error) {
+    return { payload: null, parseError: error };
+  }
 }
