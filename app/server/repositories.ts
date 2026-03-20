@@ -1428,38 +1428,148 @@ export class MemforgeRepository {
     return rows.map(mapNode);
   }
 
-  listSharedProjectMemberNodeIds(targetNodeId: string, limit = 200): string[] {
-    const target = this.getNode(targetNodeId);
-    const projectIds = new Set<string>();
-
-    if (target.type === "project" && target.status === "active") {
-      projectIds.add(target.id);
+  listProjectMembershipIdsByNodeIds(nodeIds: string[]): Map<string, string[]> {
+    if (!nodeIds.length) {
+      return new Map();
     }
 
-    for (const item of this.listRelatedNodes(targetNodeId)) {
-      if (item.relation.status === "active" && item.node.status === "active" && item.node.type === "project") {
-        projectIds.add(item.node.id);
+    const uniqueIds = Array.from(new Set(nodeIds));
+    const memberships = new Map(uniqueIds.map((nodeId) => [nodeId, new Set<string>()] as const));
+    const placeholders = uniqueIds.map(() => "?").join(", ");
+    const projectRows = this.db
+      .prepare(
+        `SELECT id
+         FROM nodes
+         WHERE id IN (${placeholders})
+           AND type = 'project'`
+      )
+      .all(...uniqueIds) as Array<Record<string, unknown>>;
+
+    for (const row of projectRows) {
+      const nodeId = String(row.id);
+      memberships.get(nodeId)?.add(nodeId);
+    }
+
+    const relationRows = this.db
+      .prepare(
+        `SELECT r.from_node_id AS node_id, r.to_node_id AS project_id
+         FROM relations r
+         JOIN nodes p ON p.id = r.to_node_id
+         WHERE r.status = 'active'
+           AND r.from_node_id IN (${placeholders})
+           AND p.type = 'project'
+           AND p.status = 'active'
+         UNION
+         SELECT r.to_node_id AS node_id, r.from_node_id AS project_id
+         FROM relations r
+         JOIN nodes p ON p.id = r.from_node_id
+         WHERE r.status = 'active'
+           AND r.to_node_id IN (${placeholders})
+           AND p.type = 'project'
+           AND p.status = 'active'`
+      )
+      .all(...uniqueIds, ...uniqueIds) as Array<Record<string, unknown>>;
+
+    for (const row of relationRows) {
+      const nodeId = String(row.node_id);
+      memberships.get(nodeId)?.add(String(row.project_id));
+    }
+
+    return new Map(
+      [...memberships.entries()].map(([nodeId, projectIds]) => [nodeId, Array.from(projectIds)] as const)
+    );
+  }
+
+  listArtifactKeysByNodeIds(nodeIds: string[]): Map<string, { exactPaths: string[]; baseNames: string[] }> {
+    if (!nodeIds.length) {
+      return new Map();
+    }
+
+    const uniqueIds = Array.from(new Set(nodeIds));
+    const artifactsByNode = new Map(
+      uniqueIds.map((nodeId) => [nodeId, { exactPaths: new Set<string>(), baseNames: new Set<string>() }] as const)
+    );
+    const rows = this.db
+      .prepare(
+        `SELECT node_id, path
+         FROM artifacts
+         WHERE node_id IN (${uniqueIds.map(() => "?").join(", ")})
+         ORDER BY created_at DESC`
+      )
+      .all(...uniqueIds) as Array<Record<string, unknown>>;
+
+    for (const row of rows) {
+      const nodeId = String(row.node_id);
+      const pathValue = normalizeSearchText(row.path ? String(row.path) : null);
+      if (!pathValue) {
+        continue;
       }
+
+      const bucket = artifactsByNode.get(nodeId);
+      if (!bucket) {
+        continue;
+      }
+
+      bucket.exactPaths.add(pathValue);
+      bucket.baseNames.add(normalizeSearchText(path.basename(pathValue)));
     }
 
-    if (!projectIds.size) {
+    return new Map(
+      [...artifactsByNode.entries()].map(([nodeId, values]) => [
+        nodeId,
+        {
+          exactPaths: Array.from(values.exactPaths),
+          baseNames: Array.from(values.baseNames)
+        }
+      ])
+    );
+  }
+
+  listSharedProjectMemberNodeIds(targetNodeId: string, limit = 200): string[] {
+    const projectIds = this.listProjectMembershipIdsByNodeIds([targetNodeId]).get(targetNodeId) ?? [];
+    if (!projectIds.length) {
       return [];
     }
 
-    const candidateIds = new Set<string>();
-    for (const projectId of projectIds) {
-      for (const item of this.listRelatedNodes(projectId)) {
-        if (item.relation.status !== "active" || item.node.status !== "active" || item.node.id === targetNodeId) {
-          continue;
-        }
-        candidateIds.add(item.node.id);
-        if (candidateIds.size >= limit) {
-          return Array.from(candidateIds);
-        }
-      }
-    }
+    const placeholders = projectIds.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT node_id
+         FROM (
+           SELECT
+             CASE
+               WHEN r.from_node_id IN (${placeholders}) THEN r.to_node_id
+               ELSE r.from_node_id
+             END AS node_id,
+             MAX(r.created_at) AS last_related_at
+           FROM relations r
+           JOIN nodes n
+             ON n.id = CASE
+               WHEN r.from_node_id IN (${placeholders}) THEN r.to_node_id
+               ELSE r.from_node_id
+             END
+           WHERE r.status = 'active'
+             AND (
+               r.from_node_id IN (${placeholders})
+               OR r.to_node_id IN (${placeholders})
+             )
+             AND n.status = 'active'
+             AND n.id != ?
+           GROUP BY node_id
+         )
+         ORDER BY last_related_at DESC
+         LIMIT ?`
+      )
+      .all(
+        ...projectIds,
+        ...projectIds,
+        ...projectIds,
+        ...projectIds,
+        targetNodeId,
+        limit
+      ) as Array<Record<string, unknown>>;
 
-    return Array.from(candidateIds);
+    return rows.map((row) => String(row.node_id));
   }
 
   listNodesSharingArtifactPaths(targetNodeId: string, limit = 200): string[] {

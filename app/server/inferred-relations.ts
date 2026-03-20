@@ -1,4 +1,3 @@
-import path from "node:path";
 import type { JsonMap, NodeRecord } from "../shared/types.js";
 import type { RelationType } from "../shared/contracts.js";
 import type { MemforgeRepository } from "./repositories.js";
@@ -30,6 +29,11 @@ type TargetInferenceContext = {
   normalizedTags: string[];
   projectIds: Set<string>;
   artifactKeys: { exactPaths: string[]; baseNames: string[] };
+};
+
+type ArtifactKeySet = {
+  exactPaths: string[];
+  baseNames: string[];
 };
 
 function normalizeText(value: string | null | undefined): string {
@@ -66,41 +70,6 @@ function mentionsNode(haystacks: string[], candidate: NodeRecord): { idMention: 
 
 function sortPair(left: string, right: string): [string, string] {
   return left.localeCompare(right) <= 0 ? [left, right] : [right, left];
-}
-
-function activeProjectMembershipIds(repository: MemforgeRepository, node: NodeRecord): string[] {
-  const memberships = new Set<string>();
-
-  if (node.type === "project") {
-    memberships.add(node.id);
-  }
-
-  for (const item of repository.listRelatedNodes(node.id)) {
-    if (item.relation.status !== "active" || item.node.status !== "active" || item.node.type !== "project") {
-      continue;
-    }
-    memberships.add(item.node.id);
-  }
-
-  return Array.from(memberships);
-}
-
-function attachedArtifactKeys(repository: MemforgeRepository, nodeId: string): { exactPaths: string[]; baseNames: string[] } {
-  const exactPaths = new Set<string>();
-  const baseNames = new Set<string>();
-
-  for (const artifact of repository.listArtifacts(nodeId)) {
-    const normalizedPath = normalizeText(artifact.path);
-    if (normalizedPath) {
-      exactPaths.add(normalizedPath);
-      baseNames.add(normalizeText(path.basename(normalizedPath)));
-    }
-  }
-
-  return {
-    exactPaths: Array.from(exactPaths),
-    baseNames: Array.from(baseNames)
-  };
 }
 
 function buildTagOverlapCandidate(target: NodeRecord, candidate: NodeRecord, targetTags: string[]): GeneratedCandidate | null {
@@ -170,13 +139,12 @@ function buildActivityReferenceCandidate(target: NodeRecord, candidate: NodeReco
 }
 
 function buildProjectMembershipCandidate(
-  repository: MemforgeRepository,
   target: NodeRecord,
   candidate: NodeRecord,
+  candidateProjectIds: string[],
   targetProjects: Set<string>
 ): GeneratedCandidate | null {
-  const candidateProjects = activeProjectMembershipIds(repository, candidate);
-  const sharedProjectIds = candidateProjects.filter((projectId) => targetProjects.has(projectId));
+  const sharedProjectIds = candidateProjectIds.filter((projectId) => targetProjects.has(projectId));
 
   if (!sharedProjectIds.length) {
     return null;
@@ -196,12 +164,11 @@ function buildProjectMembershipCandidate(
 }
 
 function buildSharedArtifactCandidate(
-  repository: MemforgeRepository,
   target: NodeRecord,
   candidate: NodeRecord,
+  candidateArtifacts: ArtifactKeySet,
   targetArtifacts: { exactPaths: string[]; baseNames: string[] }
 ): GeneratedCandidate | null {
-  const candidateArtifacts = attachedArtifactKeys(repository, candidate.id);
   const candidateExact = new Set(candidateArtifacts.exactPaths);
   const candidateBase = new Set(candidateArtifacts.baseNames);
   const sharedExactPaths = targetArtifacts.exactPaths.filter((artifactPath) => candidateExact.has(artifactPath));
@@ -231,11 +198,6 @@ function collectGeneratedCandidates(
   trigger: "node-write" | "activity-append" | "reindex"
 ): GeneratedCandidate[] {
   const candidateMap = new Map<string, NodeRecord>();
-  const targetContext: TargetInferenceContext = {
-    normalizedTags: normalizeTags(target.tags),
-    projectIds: new Set(activeProjectMembershipIds(repository, target)),
-    artifactKeys: attachedArtifactKeys(repository, target.id)
-  };
   for (const candidate of repository.listInferenceCandidateNodes(target.id, MAX_CANDIDATES)) {
     candidateMap.set(candidate.id, candidate);
   }
@@ -249,6 +211,13 @@ function collectGeneratedCandidates(
     }
   }
   const candidates = Array.from(candidateMap.values());
+  const projectMembershipsByNodeId = repository.listProjectMembershipIdsByNodeIds([target.id, ...candidates.map((candidate) => candidate.id)]);
+  const artifactKeysByNodeId = repository.listArtifactKeysByNodeIds([target.id, ...candidates.map((candidate) => candidate.id)]);
+  const targetContext: TargetInferenceContext = {
+    normalizedTags: normalizeTags(target.tags),
+    projectIds: new Set(projectMembershipsByNodeId.get(target.id) ?? []),
+    artifactKeys: artifactKeysByNodeId.get(target.id) ?? { exactPaths: [], baseNames: [] }
+  };
   const activityBodies =
     trigger === "activity-append" || trigger === "reindex"
       ? repository
@@ -274,18 +243,18 @@ function collectGeneratedCandidates(
       }
     }
     const projectMembershipCandidate = buildProjectMembershipCandidate(
-      repository,
       target,
       candidate,
+      projectMembershipsByNodeId.get(candidate.id) ?? [],
       targetContext.projectIds
     );
     if (projectMembershipCandidate) {
       generated.push(projectMembershipCandidate);
     }
     const sharedArtifactCandidate = buildSharedArtifactCandidate(
-      repository,
       target,
       candidate,
+      artifactKeysByNodeId.get(candidate.id) ?? { exactPaths: [], baseNames: [] },
       targetContext.artifactKeys
     );
     if (sharedArtifactCandidate) {
