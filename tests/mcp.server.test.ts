@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { MemforgeApiError } from "../app/mcp/api-client.js";
 import { createMemforgeMcpServer } from "../app/mcp/server.js";
 
 describe("Memforge MCP server", () => {
@@ -54,6 +55,7 @@ describe("Memforge MCP server", () => {
     expect(toolNames).toContain("memforge_search_nodes");
     expect(toolNames).toContain("memforge_search_activities");
     expect(toolNames).toContain("memforge_search_workspace");
+    expect(toolNames).toContain("memforge_capture_memory");
     expect(toolNames).toContain("memforge_append_activity");
     expect(toolNames).toContain("memforge_create_node");
     expect(toolNames).toContain("memforge_upsert_inferred_relation");
@@ -100,6 +102,62 @@ describe("Memforge MCP server", () => {
     expect("structuredContent" in result && result.structuredContent).toMatchObject({
       total: 1
     });
+  });
+
+  it("normalizes node search aliases before calling the HTTP API", async () => {
+    const searchPost = vi.fn().mockResolvedValue({
+      items: [],
+      total: 0
+    });
+    const { client } = await connectTestClient({
+      post: searchPost
+    });
+
+    await client.callTool({
+      name: "memforge_search_nodes",
+      arguments: {
+        query: "agent memory",
+        type: "note",
+        status: "active",
+        tag: "graph",
+        limit: "5",
+        offset: "2"
+      }
+    });
+
+    expect(searchPost).toHaveBeenCalledWith(
+      "/nodes/search",
+      expect.objectContaining({
+        filters: {
+          types: ["note"],
+          status: ["active"],
+          sourceLabels: undefined,
+          tags: ["graph"]
+        },
+        limit: 5,
+        offset: 2
+      })
+    );
+  });
+
+  it("rejects malformed integer-like strings in search numeric arguments", async () => {
+    const searchPost = vi.fn().mockResolvedValue({
+      items: [],
+      total: 0
+    });
+    const { client } = await connectTestClient({
+      post: searchPost
+    });
+
+    const result = await client.callTool({
+      name: "memforge_search_nodes",
+      arguments: {
+        limit: "1e3"
+      }
+    });
+
+    expect("isError" in result && result.isError).toBe(true);
+    expect(searchPost).not.toHaveBeenCalled();
   });
 
   it("maps activity and workspace search tools onto the Memforge HTTP API contract", async () => {
@@ -159,6 +217,81 @@ describe("Memforge MCP server", () => {
         sort: "relevance"
       })
     );
+  });
+
+  it("normalizes activity and workspace search aliases before calling the HTTP API", async () => {
+    const searchPost = vi
+      .fn()
+      .mockResolvedValueOnce({
+        items: [],
+        total: 0
+      })
+      .mockResolvedValueOnce({
+        items: [],
+        total: 0
+      });
+    const { client } = await connectTestClient({
+      post: searchPost
+    });
+
+    await client.callTool({
+      name: "memforge_search_activities",
+      arguments: {
+        query: "what changed",
+        activityType: "agent_run_summary",
+        targetNodeId: "node_1",
+        limit: "3"
+      }
+    });
+
+    await client.callTool({
+      name: "memforge_search_workspace",
+      arguments: {
+        query: "cleanup",
+        scope: "activities",
+        limit: "4"
+      }
+    });
+
+    expect(searchPost).toHaveBeenNthCalledWith(
+      1,
+      "/activities/search",
+      expect.objectContaining({
+        filters: expect.objectContaining({
+          targetNodeIds: ["node_1"],
+          activityTypes: ["agent_run_summary"]
+        }),
+        limit: 3
+      })
+    );
+    expect(searchPost).toHaveBeenNthCalledWith(
+      2,
+      "/search",
+      expect.objectContaining({
+        scopes: ["activities"],
+        limit: 4
+      })
+    );
+  });
+
+  it("returns a targeted validation hint when node search receives activity as a type", async () => {
+    const { client } = await connectTestClient({
+      post: vi.fn()
+    });
+
+    const result = await client.callTool({
+      name: "memforge_search_nodes",
+      arguments: {
+        type: "activity"
+      }
+    });
+    const resultContent = Array.isArray((result as { content?: unknown }).content)
+      ? ((result as { content: Array<{ type?: string; text?: string }> }).content)
+      : [];
+
+    expect("isError" in result && result.isError).toBe(true);
+    expect(resultContent[0]?.type).toBe("text");
+    expect(resultContent[0]?.text ?? "").toContain("memforge_search_activities");
   });
 
   it("fills default provenance when create_node omits source", async () => {
@@ -231,6 +364,68 @@ describe("Memforge MCP server", () => {
         })
       })
     );
+  });
+
+  it("maps capture_memory onto the Memforge HTTP API contract", async () => {
+    const capturePost = vi.fn().mockResolvedValue({
+      storedAs: "activity",
+      activity: {
+        id: "activity_1"
+      }
+    });
+    const { client } = await connectTestClient({
+      post: capturePost
+    });
+
+    await client.callTool({
+      name: "memforge_capture_memory",
+      arguments: {
+        body: "Finished wiring the MCP validation recovery path."
+      }
+    });
+
+    expect(capturePost).toHaveBeenCalledWith(
+      "/capture",
+      expect.objectContaining({
+        mode: "auto",
+        body: "Finished wiring the MCP validation recovery path.",
+        nodeType: "note",
+        tags: [],
+        metadata: {},
+        source: expect.objectContaining({
+          actorType: "agent",
+          actorLabel: "Memforge MCP",
+          toolName: "memforge-mcp"
+        })
+      })
+    );
+  });
+
+  it("adds a capture hint when create_node is rejected as short log-like content", async () => {
+    const { client } = await connectTestClient({
+      post: vi.fn().mockRejectedValue(
+        new MemforgeApiError("Short log-like agent output must be appended as activity, not stored as a durable node.", {
+          status: 403,
+          code: "FORBIDDEN"
+        })
+      )
+    });
+
+    const result = await client.callTool({
+      name: "memforge_create_node",
+      arguments: {
+        type: "note",
+        title: "Short update",
+        body: "done"
+      }
+    });
+    const resultContent = Array.isArray((result as { content?: unknown }).content)
+      ? ((result as { content: Array<{ type?: string; text?: string }> }).content)
+      : [];
+
+    expect("isError" in result && result.isError).toBe(true);
+    expect(resultContent[0]?.type).toBe("text");
+    expect(resultContent[0]?.text ?? "").toContain("memforge_capture_memory");
   });
 
   it("fills default provenance when append_search_feedback omits source", async () => {

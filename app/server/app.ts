@@ -10,6 +10,7 @@ import {
   appendSearchFeedbackSchema,
   attachArtifactSchema,
   buildContextBundleSchema,
+  captureMemorySchema,
   createWorkspaceSchema,
   createNodeSchema,
   createRelationSchema,
@@ -32,6 +33,7 @@ import {
 import type { ApiEnvelope, ApiErrorEnvelope, InferredRelationRecord, NodeRecord } from "../shared/types.js";
 import { AppError } from "./errors.js";
 import {
+  isShortLogLikeAgentNodeInput,
   maybeCreatePromotionCandidate,
   recomputeAutomaticGovernance,
   resolveGovernancePolicy,
@@ -58,6 +60,11 @@ const allowedLoopbackHostnames = new Set(["127.0.0.1", "localhost", "::1", "[::1
 const updateNodeRequestSchema = updateNodeSchema.extend({
   source: sourceSchema
 });
+const defaultCaptureSource = {
+  actorType: "system" as const,
+  actorLabel: "Memforge API",
+  toolName: "memforge-api"
+};
 
 function parseRelationTypesQuery(value: unknown) {
   const items = parseCommaSeparatedValues(value)?.filter((item): item is (typeof relationTypes)[number] => relationTypeSet.has(item));
@@ -116,6 +123,33 @@ function readRequestParam(value: string | string[] | undefined): string {
   }
 
   return "";
+}
+
+function normalizeArtifactRelativePath(value: string): string {
+  const withForwardSlashes = value
+    .replace(/^\//, "")
+    .replace(/[\\/]+/g, "/");
+  const normalized = path.posix.normalize(withForwardSlashes);
+  return normalized === "." ? "" : normalized;
+}
+
+function readBearerToken(request: Request): string | null {
+  const header = request.header("authorization");
+  return header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : null;
+}
+
+function deriveCaptureTitle(body: string): string {
+  const normalized = body.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "Captured note";
+  }
+
+  const firstSentence = normalized.match(/^(.{1,80}?[.!?])(?:\s|$)/)?.[1]?.trim();
+  if (firstSentence) {
+    return firstSentence;
+  }
+
+  return normalized.length > 80 ? `${normalized.slice(0, 77).trimEnd()}...` : normalized;
 }
 
 type AutoRecomputeConfig = {
@@ -278,7 +312,7 @@ function buildServiceIndex(workspaceInfo: {
     capabilities: [
       "search nodes by keyword and structured filters",
       "read node detail, related nodes, activities, artifacts, and governance summaries",
-      "create nodes, relations, activities, and artifacts with provenance",
+      "create nodes, relations, activities, capture entries, and artifacts with provenance",
       "upsert inferred relations and append relation usage signals for retrieval feedback",
       "append search-result usefulness feedback for future ranking and governance",
       "recompute automatic governance and inspect contested or low-confidence items",
@@ -336,6 +370,21 @@ function buildServiceIndex(workspaceInfo: {
             toolName: "claude-code"
           },
           metadata: {}
+        }
+      },
+      {
+        method: "POST",
+        path: "/api/v1/capture",
+        purpose: "Safely capture agent or system memory and let the server route it to activity or durable storage.",
+        requestExample: {
+          mode: "auto",
+          body: "Finished the MCP validation fix and updated the tests.",
+          metadata: {},
+          source: {
+            actorType: "agent",
+            actorLabel: "Claude Code",
+            toolName: "claude-code"
+          }
         }
       },
       {
@@ -1131,9 +1180,7 @@ export function createMemforgeApp(params: {
       return;
     }
 
-    const header = request.header("authorization");
-    const tokenFromQuery = typeof request.query.token === "string" ? request.query.token : null;
-    const providedToken = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : tokenFromQuery;
+    const providedToken = readBearerToken(request);
     if (providedToken !== params.apiToken) {
       next(new AppError(401, "UNAUTHORIZED", "Missing or invalid bearer token."));
       return;
@@ -1337,6 +1384,112 @@ export function createMemforgeApp(params: {
           node.id,
           governanceResult.items[0] ?? repository.getGovernanceStateNullable("node", node.id)
         )
+      })
+    );
+  });
+
+  app.post("/api/v1/capture", (request, response) => {
+    const repository = currentRepository();
+    const input = captureMemorySchema.parse(request.body ?? {});
+    const source = input.source ?? defaultCaptureSource;
+    const title = input.title ?? deriveCaptureTitle(input.body);
+    const baseNodeInput = {
+      type: input.mode === "decision" ? "decision" : input.nodeType,
+      title,
+      body: input.body,
+      summary: undefined,
+      canonicality: undefined,
+      status: undefined,
+      tags: input.tags,
+      source,
+      metadata: input.metadata
+    };
+    const storedAsNode =
+      input.mode === "node" ||
+      input.mode === "decision" ||
+      (input.mode === "auto" &&
+        (baseNodeInput.type === "decision" ||
+          Boolean(input.metadata.reusable || input.metadata.durable || input.metadata.promoteCandidate) ||
+          !isShortLogLikeAgentNodeInput(baseNodeInput)));
+
+    if (storedAsNode) {
+      const governance = resolveNodeGovernance(
+        baseNodeInput,
+        resolveGovernancePolicy(repository.getSettings(["review.autoApproveLowRisk", "review.trustedSourceToolNames"]))
+      );
+      const node = repository.createNode({
+        ...baseNodeInput,
+        resolvedCanonicality: governance.canonicality,
+        resolvedStatus: governance.status
+      });
+      repository.recordProvenance({
+        entityType: "node",
+        entityId: node.id,
+        operationType: "create",
+        source,
+        metadata: {
+          reason: governance.reason,
+          captureMode: input.mode
+        }
+      });
+      const governanceResult = recomputeGovernanceForEntities("node", [node.id]);
+      queueInferredRefresh(node.id, "node-write");
+      scheduleAutoSemanticIndex();
+      broadcastWorkspaceEvent({
+        reason: "node.created",
+        entityType: "node",
+        entityId: node.id
+      });
+      response.status(201).json(
+        envelope(response.locals.requestId, {
+          storedAs: "node",
+          node: repository.getNode(node.id),
+          governance: buildGovernancePayload(
+            repository,
+            "node",
+            node.id,
+            governanceResult.items[0] ?? repository.getGovernanceStateNullable("node", node.id)
+          )
+        })
+      );
+      return;
+    }
+
+    const targetNode = input.targetNodeId ? repository.getNode(input.targetNodeId) : repository.ensureWorkspaceInboxNode();
+    const activity = repository.appendActivity({
+      targetNodeId: targetNode.id,
+      activityType: "agent_run_summary",
+      body: input.body,
+      source,
+      metadata: {
+        ...input.metadata,
+        captureMode: input.mode,
+        capturedTitle: title
+      }
+    });
+    repository.recordProvenance({
+      entityType: "activity",
+      entityId: activity.id,
+      operationType: "append",
+      source,
+      metadata: {
+        captureMode: input.mode,
+        targetNodeId: targetNode.id
+      }
+    });
+    queueInferredRefresh(activity.targetNodeId, "activity-append");
+    scheduleAutoSemanticIndex();
+    broadcastWorkspaceEvent({
+      reason: "activity.appended",
+      entityType: "activity",
+      entityId: activity.id
+    });
+    response.status(201).json(
+      envelope(response.locals.requestId, {
+        storedAs: "activity",
+        activity,
+        targetNode: repository.getNode(targetNode.id),
+        governance: null
       })
     );
   });
@@ -1915,10 +2068,21 @@ export function createMemforgeApp(params: {
   });
 
   app.use("/artifacts", (request, response, next) => {
-    const workspaceRoot = currentWorkspaceRoot();
-    const artifactPath = path.resolve(workspaceRoot, request.path.replace(/^\//, ""));
-    if (!isPathWithinRoot(workspaceRoot, artifactPath)) {
+    if (params.apiToken && readBearerToken(request) !== params.apiToken) {
+      next(new AppError(401, "UNAUTHORIZED", "Missing or invalid bearer token."));
+      return;
+    }
+
+    const session = currentSession();
+    const workspaceRoot = session.workspaceRoot;
+    const artifactRelativePath = normalizeArtifactRelativePath(request.path);
+    const artifactPath = path.resolve(workspaceRoot, artifactRelativePath);
+    if (!isPathWithinRoot(session.paths.artifactsDir, artifactPath)) {
       next(new AppError(403, "FORBIDDEN", "Artifact path escapes workspace root."));
+      return;
+    }
+    if (!currentRepository().hasArtifactAtPath(artifactRelativePath)) {
+      next(new AppError(404, "NOT_FOUND", "Artifact not found."));
       return;
     }
     if (!existsSync(artifactPath)) {

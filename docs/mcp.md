@@ -75,6 +75,7 @@ Rules:
 | `memforge_workspace_open` | Switch to existing workspace | `POST /workspaces/open` |
 | `memforge_semantic_status` | Read semantic index status and queue counts | `GET /semantic/status` |
 | `memforge_semantic_issues` | Read semantic issue details with optional status filters and cursor pagination | `GET /semantic/issues` |
+| `memforge_capture_memory` | Safely capture memory without choosing node vs activity first | `POST /capture` |
 | `memforge_search_nodes` | Search durable nodes with filters | `POST /nodes/search` |
 | `memforge_search_activities` | Search activity timeline events | `POST /activities/search` |
 | `memforge_search_workspace` | Search nodes and activities together | `POST /search` |
@@ -100,10 +101,12 @@ Rules:
 - Read tools are marked read-only/idempotent where possible.
 - Durable write tools accept an optional `source` object.
 - If `source` is omitted, the MCP bridge fills in its own default agent provenance.
+- `memforge_capture_memory` is the preferred first write for LLMs because it can auto-route short work logs into activities and durable knowledge into nodes.
 - We do not expose low-level retrieval fragments or settings mutation in the first pass.
 - `memforge_get_related` defaults to including inferred relations because that is the most useful shape for downstream LLMs; agents can disable inferred items when they specifically need only canonical links.
 - Usage feedback is intentionally a separate write. Do not append a relation usage event for every read; reserve it for cases where a canonical or inferred relation actually helped retrieval or final output.
 - Score recomputation is also explicit. Use `memforge_recompute_inferred_relations` in maintenance flows or automations, not in the latency-sensitive request path.
+- The search tools normalize common alias mistakes such as `type`, `activityType`, `targetNodeId`, `scope`, and single-string arrays before forwarding to HTTP.
 
 ---
 
@@ -123,6 +126,19 @@ Rules:
 ```
 
 The `source` block is optional at the MCP layer but always present by the time the request reaches the Memforge API.
+
+### Capture writes
+
+Use `memforge_capture_memory` when you want the server to choose between activity and durable storage:
+
+```json
+{
+  "mode": "auto",
+  "body": "Finished the MCP validation fix and updated the tests."
+}
+```
+
+The server routes short log-like agent updates to the workspace inbox activity timeline and keeps reusable or decision-shaped content as durable nodes.
 
 ### Context bundle target
 

@@ -5,6 +5,7 @@ import {
   bundleModes,
   bundlePresets,
   canonicalities,
+  captureModes,
   governanceStates,
   inferredRelationStatuses,
   nodeStatuses,
@@ -18,9 +19,54 @@ import {
   sourceTypes
 } from "../shared/contracts.js";
 import type { Source } from "../shared/contracts.js";
-import { MemforgeApiClient } from "./api-client.js";
+import { MemforgeApiClient, MemforgeApiError } from "./api-client.js";
 
 const jsonRecordSchema = z.record(z.string(), z.any()).default({});
+const stringOrStringArraySchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
+
+function parseIntegerLike(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const trimmed = value.trim();
+  if (!/^[+-]?\d+$/.test(trimmed)) {
+    return value;
+  }
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : value;
+}
+
+function coerceIntegerSchema(defaultValue: number, min: number, max: number) {
+  return z.preprocess((value) => {
+    if (value === undefined || value === null || value === "") {
+      return undefined;
+    }
+    if (typeof value === "number") {
+      return value;
+    }
+    const parsed = parseIntegerLike(value);
+    if (typeof parsed !== "string") {
+      return parsed;
+    }
+    return value;
+  }, z.number().int().min(min).max(max).default(defaultValue));
+}
+
+function coerceBooleanSchema(defaultValue: boolean) {
+  return z.preprocess((value) => {
+    if (value === undefined || value === null || value === "") {
+      return undefined;
+    }
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "string") {
+      if (value === "true") return true;
+      if (value === "false") return false;
+    }
+    return value;
+  }, z.boolean().default(defaultValue));
+}
 
 function formatStructuredContent(content: unknown) {
   return JSON.stringify(content, null, 2);
@@ -82,6 +128,14 @@ function createPostToolHandler(apiClient: Pick<MemforgeApiClient, "post">, path:
   return async (input: Record<string, unknown>) => toolResult(await apiClient.post<Record<string, unknown>>(path, input));
 }
 
+function createNormalizedPostToolHandler<TInput extends Record<string, unknown>>(
+  apiClient: Pick<MemforgeApiClient, "post">,
+  path: string,
+  normalize: (input: TInput) => Record<string, unknown>
+) {
+  return async (input: TInput) => toolResult(await apiClient.post<Record<string, unknown>>(path, normalize(input)));
+}
+
 function withReadOnlyAnnotations(config: any) {
   return {
     ...config,
@@ -99,6 +153,151 @@ function registerReadOnlyTool(
   handler: (...args: any[]) => any
 ) {
   server.registerTool(name, withReadOnlyAnnotations(config), handler);
+}
+
+function normalizeStringList(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const items = value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return items.length ? items : undefined;
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    return [value.trim()];
+  }
+
+  return undefined;
+}
+
+function mergeStringLists(...values: unknown[]): string[] | undefined {
+  const merged = values.flatMap((value) => normalizeStringList(value) ?? []);
+  return merged.length ? Array.from(new Set(merged)) : undefined;
+}
+
+function assertSupportedEnumValues<T extends string>(
+  toolName: string,
+  fieldName: string,
+  values: string[] | undefined,
+  supportedValues: readonly T[],
+  hints: Partial<Record<string, string>> = {}
+): T[] | undefined {
+  if (!values?.length) {
+    return undefined;
+  }
+
+  const supported = new Set<string>(supportedValues);
+  const invalid = values.find((value) => !supported.has(value));
+  if (invalid) {
+    const hint = hints[invalid];
+    if (hint) {
+      throw new Error(`Invalid arguments for tool ${toolName}: ${hint}`);
+    }
+    throw new Error(
+      `Invalid arguments for tool ${toolName}: unsupported ${fieldName} '${invalid}'. Expected one of ${supportedValues.join(", ")}.`
+    );
+  }
+
+  return values as T[];
+}
+
+function normalizeNodeSearchInput(input: Record<string, unknown>) {
+  const rawFilters = (typeof input.filters === "object" && input.filters ? input.filters : {}) as Record<string, unknown>;
+  return {
+    query: typeof input.query === "string" ? input.query : "",
+    filters: {
+      types: assertSupportedEnumValues(
+        "memforge_search_nodes",
+        "node type",
+        mergeStringLists(input.type, input.types, rawFilters.types),
+        nodeTypes,
+        {
+          activity: "`activity` is not a node type. Use `memforge_search_activities` for operational logs."
+        }
+      ),
+      status: assertSupportedEnumValues(
+        "memforge_search_nodes",
+        "node status",
+        mergeStringLists(input.status, rawFilters.status),
+        nodeStatuses
+      ),
+      sourceLabels: mergeStringLists(rawFilters.sourceLabels),
+      tags: mergeStringLists(input.tag, rawFilters.tags)
+    },
+    limit: Number(input.limit ?? 10),
+    offset: Number(input.offset ?? 0),
+    sort: input.sort === "updated_at" ? "updated_at" : "relevance"
+  };
+}
+
+function normalizeActivitySearchInput(input: Record<string, unknown>) {
+  const rawFilters = (typeof input.filters === "object" && input.filters ? input.filters : {}) as Record<string, unknown>;
+  return {
+    query: typeof input.query === "string" ? input.query : "",
+    filters: {
+      targetNodeIds: mergeStringLists(input.targetNodeId, rawFilters.targetNodeIds),
+      activityTypes: assertSupportedEnumValues(
+        "memforge_search_activities",
+        "activity type",
+        mergeStringLists(input.activityType, rawFilters.activityTypes),
+        activityTypes
+      ),
+      sourceLabels: mergeStringLists(rawFilters.sourceLabels),
+      createdAfter: typeof rawFilters.createdAfter === "string" ? rawFilters.createdAfter : undefined,
+      createdBefore: typeof rawFilters.createdBefore === "string" ? rawFilters.createdBefore : undefined
+    },
+    limit: Number(input.limit ?? 10),
+    offset: Number(input.offset ?? 0),
+    sort: input.sort === "updated_at" ? "updated_at" : "relevance"
+  };
+}
+
+function normalizeWorkspaceSearchInput(input: Record<string, unknown>) {
+  const rawNodeFilters = (typeof input.nodeFilters === "object" && input.nodeFilters ? input.nodeFilters : {}) as Record<string, unknown>;
+  const rawActivityFilters =
+    typeof input.activityFilters === "object" && input.activityFilters ? (input.activityFilters as Record<string, unknown>) : {};
+  return {
+    query: typeof input.query === "string" ? input.query : "",
+    scopes:
+      assertSupportedEnumValues(
+        "memforge_search_workspace",
+        "scope",
+        mergeStringLists(input.scope, input.scopes),
+        ["nodes", "activities"] as const
+      ) ?? ["nodes", "activities"],
+    nodeFilters: {
+      types: assertSupportedEnumValues(
+        "memforge_search_workspace",
+        "node type",
+        mergeStringLists(rawNodeFilters.types),
+        nodeTypes
+      ),
+      status: assertSupportedEnumValues(
+        "memforge_search_workspace",
+        "node status",
+        mergeStringLists(rawNodeFilters.status),
+        nodeStatuses
+      ),
+      sourceLabels: mergeStringLists(rawNodeFilters.sourceLabels),
+      tags: mergeStringLists(rawNodeFilters.tags)
+    },
+    activityFilters: {
+      targetNodeIds: mergeStringLists(rawActivityFilters.targetNodeIds),
+      activityTypes: assertSupportedEnumValues(
+        "memforge_search_workspace",
+        "activity type",
+        mergeStringLists(rawActivityFilters.activityTypes),
+        activityTypes
+      ),
+      sourceLabels: mergeStringLists(rawActivityFilters.sourceLabels),
+      createdAfter: typeof rawActivityFilters.createdAfter === "string" ? rawActivityFilters.createdAfter : undefined,
+      createdBefore: typeof rawActivityFilters.createdBefore === "string" ? rawActivityFilters.createdBefore : undefined
+    },
+    limit: Number(input.limit ?? 10),
+    offset: Number(input.offset ?? 0),
+    sort: input.sort === "updated_at" ? "updated_at" : "relevance"
+  };
 }
 
 export function createMemforgeMcpServer(params?: {
@@ -228,7 +427,7 @@ export function createMemforgeMcpServer(params?: {
       title: "Semantic Index Issues",
       description: "Read semantic indexing issues with optional status filters and cursor pagination.",
       inputSchema: {
-        limit: z.number().int().min(1).max(25).default(5).describe("Maximum number of semantic issue items to return."),
+        limit: coerceIntegerSchema(5, 1, 25).describe("Maximum number of semantic issue items to return."),
         cursor: z.string().min(1).optional().describe("Opaque cursor from a previous semantic issues call."),
         statuses: z.array(z.enum(["pending", "stale", "failed"])).max(3).optional().describe("Optional issue statuses to include.")
       },
@@ -263,23 +462,28 @@ export function createMemforgeMcpServer(params?: {
     "memforge_search_nodes",
     {
       title: "Search Nodes",
-      description: "Search Memforge nodes by keyword and optional structured filters.",
+      description:
+        "Search durable Memforge nodes by keyword and optional filters. Valid node types include note, project, idea, question, decision, reference, artifact_ref, and conversation. `activity` is not a node type.",
       inputSchema: {
         query: z.string().default("").describe("Keyword or phrase query."),
+        type: stringOrStringArraySchema.optional().describe("Alias for filters.types. Example: `note`."),
+        types: stringOrStringArraySchema.optional().describe("Node type filter. Accepts a string or array."),
+        status: stringOrStringArraySchema.optional().describe("Alias for filters.status."),
+        tag: stringOrStringArraySchema.optional().describe("Alias for filters.tags."),
         filters: z
           .object({
-            types: z.array(z.enum(nodeTypes)).optional(),
-            status: z.array(z.enum(nodeStatuses)).optional(),
-            sourceLabels: z.array(z.string()).optional(),
-            tags: z.array(z.string()).optional()
+            types: stringOrStringArraySchema.optional(),
+            status: stringOrStringArraySchema.optional(),
+            sourceLabels: stringOrStringArraySchema.optional(),
+            tags: stringOrStringArraySchema.optional()
           })
           .default({}),
-        limit: z.number().int().min(1).max(100).default(10),
-        offset: z.number().int().min(0).default(0),
+        limit: coerceIntegerSchema(10, 1, 100),
+        offset: coerceIntegerSchema(0, 0, 10_000),
         sort: z.enum(["relevance", "updated_at"]).default("relevance")
       }
     },
-    createPostToolHandler(apiClient, "/nodes/search")
+    createNormalizedPostToolHandler(apiClient, "/nodes/search", normalizeNodeSearchInput)
   );
 
   registerReadOnlyTool(
@@ -287,24 +491,27 @@ export function createMemforgeMcpServer(params?: {
     "memforge_search_activities",
     {
       title: "Search Activities",
-      description: "Search Memforge activity timelines by keyword and optional structured filters.",
+      description:
+        "Search operational activity timelines by keyword and optional filters. Accepts `activityType` and `targetNodeId` aliases and normalizes single strings into arrays.",
       inputSchema: {
         query: z.string().default("").describe("Keyword or phrase query."),
+        activityType: stringOrStringArraySchema.optional().describe("Alias for filters.activityTypes."),
+        targetNodeId: stringOrStringArraySchema.optional().describe("Alias for filters.targetNodeIds."),
         filters: z
           .object({
-            targetNodeIds: z.array(z.string()).optional(),
-            activityTypes: z.array(z.enum(activityTypes)).optional(),
-            sourceLabels: z.array(z.string()).optional(),
+            targetNodeIds: stringOrStringArraySchema.optional(),
+            activityTypes: stringOrStringArraySchema.optional(),
+            sourceLabels: stringOrStringArraySchema.optional(),
             createdAfter: z.string().optional(),
             createdBefore: z.string().optional()
           })
           .default({}),
-        limit: z.number().int().min(1).max(100).default(10),
-        offset: z.number().int().min(0).default(0),
+        limit: coerceIntegerSchema(10, 1, 100),
+        offset: coerceIntegerSchema(0, 0, 10_000),
         sort: z.enum(["relevance", "updated_at"]).default("relevance")
       }
     },
-    createPostToolHandler(apiClient, "/activities/search")
+    createNormalizedPostToolHandler(apiClient, "/activities/search", normalizeActivitySearchInput)
   );
 
   registerReadOnlyTool(
@@ -312,33 +519,35 @@ export function createMemforgeMcpServer(params?: {
     "memforge_search_workspace",
     {
       title: "Search Workspace",
-      description: "Search nodes, activities, or both through a single workspace-wide endpoint.",
+      description:
+        "Search nodes, activities, or both through one workspace-wide endpoint. Accepts `scope` or `scopes`, for example `activities`.",
       inputSchema: {
         query: z.string().default("").describe("Keyword or phrase query."),
-        scopes: z.array(z.enum(["nodes", "activities"])).min(1).default(["nodes", "activities"]),
+        scope: stringOrStringArraySchema.optional().describe("Alias for scopes."),
+        scopes: stringOrStringArraySchema.optional(),
         nodeFilters: z
           .object({
-            types: z.array(z.enum(nodeTypes)).optional(),
-            status: z.array(z.enum(nodeStatuses)).optional(),
-            sourceLabels: z.array(z.string()).optional(),
-            tags: z.array(z.string()).optional()
+            types: stringOrStringArraySchema.optional(),
+            status: stringOrStringArraySchema.optional(),
+            sourceLabels: stringOrStringArraySchema.optional(),
+            tags: stringOrStringArraySchema.optional()
           })
           .optional(),
         activityFilters: z
           .object({
-            targetNodeIds: z.array(z.string()).optional(),
-            activityTypes: z.array(z.enum(activityTypes)).optional(),
-            sourceLabels: z.array(z.string()).optional(),
+            targetNodeIds: stringOrStringArraySchema.optional(),
+            activityTypes: stringOrStringArraySchema.optional(),
+            sourceLabels: stringOrStringArraySchema.optional(),
             createdAfter: z.string().optional(),
             createdBefore: z.string().optional()
           })
           .optional(),
-        limit: z.number().int().min(1).max(100).default(10),
-        offset: z.number().int().min(0).default(0),
+        limit: coerceIntegerSchema(10, 1, 100),
+        offset: coerceIntegerSchema(0, 0, 10_000),
         sort: z.enum(["relevance", "updated_at"]).default("relevance")
       }
     },
-    createPostToolHandler(apiClient, "/search")
+    createNormalizedPostToolHandler(apiClient, "/search", normalizeWorkspaceSearchInput)
   );
 
   registerReadOnlyTool(
@@ -362,10 +571,10 @@ export function createMemforgeMcpServer(params?: {
       description: "Fetch the canonical Memforge node neighborhood with optional inferred relations.",
       inputSchema: {
         nodeId: z.string().min(1).describe("Target node id."),
-        depth: z.number().int().min(1).max(1).default(1),
+        depth: coerceIntegerSchema(1, 1, 1),
         relationTypes: z.array(z.enum(relationTypes)).default([]),
-        includeInferred: z.boolean().default(true),
-        maxInferred: z.number().int().min(0).max(10).default(4)
+        includeInferred: coerceBooleanSchema(true),
+        maxInferred: coerceIntegerSchema(4, 0, 10)
       }
     },
     async ({ nodeId, depth, relationTypes: relationTypeFilter, includeInferred, maxInferred }) => {
@@ -473,10 +682,31 @@ export function createMemforgeMcpServer(params?: {
   );
 
   server.registerTool(
+    "memforge_capture_memory",
+    {
+      title: "Capture Memory",
+      description:
+        "Safely capture a memory item without choosing low-level storage first. Prefer this tool for short work logs or when you are unsure whether the content should become an activity or a durable node.",
+      inputSchema: {
+        mode: z.enum(captureModes).default("auto"),
+        body: z.string().min(1),
+        title: z.string().min(1).optional(),
+        targetNodeId: z.string().min(1).optional().describe("Optional target node for activity capture."),
+        nodeType: z.enum(nodeTypes).default("note"),
+        tags: z.array(z.string()).default([]),
+        source: sourceSchema,
+        metadata: jsonRecordSchema
+      }
+    },
+    createPostToolHandler(apiClient, "/capture")
+  );
+
+  server.registerTool(
     "memforge_create_node",
     {
       title: "Create Node",
-      description: "Create a durable Memforge node with provenance.",
+      description:
+        "Create a durable Memforge node with provenance. Short work-log updates are usually better captured with `memforge_capture_memory` or `memforge_append_activity`.",
       inputSchema: {
         type: z.enum(nodeTypes),
         title: z.string().min(1),
@@ -489,7 +719,20 @@ export function createMemforgeMcpServer(params?: {
         metadata: jsonRecordSchema
       }
     },
-    createPostToolHandler(apiClient, "/nodes")
+    async (input: Record<string, unknown>) => {
+      try {
+        return toolResult(await apiClient.post<Record<string, unknown>>("/nodes", input));
+      } catch (error) {
+        if (
+          error instanceof MemforgeApiError &&
+          error.code === "FORBIDDEN" &&
+          error.message.includes("Short log-like agent output")
+        ) {
+          throw new Error(`${error.message} Hint: use memforge_capture_memory with mode=auto or mode=activity instead.`);
+        }
+        throw error;
+      }
+    }
   );
 
   server.registerTool(
@@ -570,13 +813,13 @@ export function createMemforgeMcpServer(params?: {
         preset: z.enum(bundlePresets).default("for-assistant"),
         options: z
           .object({
-            includeRelated: z.boolean().default(true),
-            includeInferred: z.boolean().default(true),
-            includeRecentActivities: z.boolean().default(true),
-            includeDecisions: z.boolean().default(true),
-            includeOpenQuestions: z.boolean().default(true),
-            maxInferred: z.number().int().min(0).max(10).default(4),
-            maxItems: z.number().int().min(1).max(30).default(10)
+            includeRelated: coerceBooleanSchema(true),
+            includeInferred: coerceBooleanSchema(true),
+            includeRecentActivities: coerceBooleanSchema(true),
+            includeDecisions: coerceBooleanSchema(true),
+            includeOpenQuestions: coerceBooleanSchema(true),
+            maxInferred: coerceIntegerSchema(4, 0, 10),
+            maxItems: coerceIntegerSchema(10, 1, 30)
           })
           .default({
             includeRelated: true,
@@ -606,7 +849,7 @@ export function createMemforgeMcpServer(params?: {
       title: "Queue Semantic Reindex",
       description: "Queue semantic reindexing for a bounded set of recent active workspace nodes.",
       inputSchema: {
-        limit: z.number().int().min(1).max(1000).default(250)
+        limit: coerceIntegerSchema(250, 1, 1000)
       }
     },
     createPostToolHandler(apiClient, "/semantic/reindex")

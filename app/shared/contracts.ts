@@ -62,6 +62,7 @@ export const activityTypes = [
   "context_bundle_generated"
 ] as const;
 export const sourceTypes = ["human", "agent", "import", "system", "integration"] as const;
+export const captureModes = ["auto", "activity", "node", "decision"] as const;
 export const bundleModes = ["micro", "compact", "standard", "deep"] as const;
 export const bundlePresets = [
   "for-coding",
@@ -172,6 +173,17 @@ export const appendActivitySchema = z.object({
   activityType: z.enum(activityTypes),
   body: z.string().default(""),
   source: sourceSchema,
+  metadata: z.record(z.any()).default({})
+});
+
+export const captureMemorySchema = z.object({
+  mode: z.enum(captureModes).default("auto"),
+  body: z.string().min(1),
+  title: z.string().min(1).optional(),
+  targetNodeId: z.string().min(1).optional(),
+  nodeType: z.enum(nodeTypes).default("note"),
+  tags: z.array(z.string()).default([]),
+  source: sourceSchema.optional(),
   metadata: z.record(z.any()).default({})
 });
 
@@ -290,6 +302,7 @@ export type GovernanceEntityType = (typeof governanceEntityTypes)[number];
 export type GovernanceState = (typeof governanceStates)[number];
 export type GovernanceEventType = (typeof governanceEventTypes)[number];
 export type ActivityType = (typeof activityTypes)[number];
+export type CaptureMode = (typeof captureModes)[number];
 export type BundleMode = (typeof bundleModes)[number];
 export type BundlePreset = (typeof bundlePresets)[number];
 export type Source = z.infer<typeof sourceSchema>;
@@ -302,6 +315,7 @@ export type UpdateNodeInput = z.infer<typeof updateNodeSchema>;
 export type CreateRelationInput = z.infer<typeof createRelationSchema>;
 export type UpdateRelationInput = z.infer<typeof updateRelationSchema>;
 export type AppendActivityInput = z.infer<typeof appendActivitySchema>;
+export type CaptureMemoryInput = z.infer<typeof captureMemorySchema>;
 export type UpsertInferredRelationInput = z.infer<typeof upsertInferredRelationSchema>;
 export type AppendRelationUsageEventInput = z.infer<typeof appendRelationUsageEventSchema>;
 export type AppendSearchFeedbackInput = z.infer<typeof appendSearchFeedbackSchema>;

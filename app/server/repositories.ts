@@ -48,6 +48,12 @@ import { embedSemanticQueryText, normalizeSemanticProviderConfig, resolveSemanti
 import type { SemanticChunkRecord } from "./semantic/types.js";
 import { checksumText, createId, isPathWithinRoot, nowIso, parseJson, stableSummary } from "./utils.js";
 
+function normalizeArtifactPath(value: string): string {
+  const withForwardSlashes = value.replace(/[\\/]+/g, "/");
+  const normalized = path.posix.normalize(withForwardSlashes);
+  return normalized === "." ? "" : normalized;
+}
+
 type SqlValue = string | number | bigint | Uint8Array | null;
 
 const SUMMARY_UPDATED_AT_KEY = "summaryUpdatedAt";
@@ -61,6 +67,12 @@ const SEMANTIC_TOP_K_CHUNK_COUNT = 2;
 const SEARCH_FEEDBACK_WINDOW_PADDING = 20;
 const SEARCH_FEEDBACK_MAX_WINDOW = 100;
 const ACTIVITY_RESULT_CAP_PER_TARGET = 2;
+const WORKSPACE_CAPTURE_INBOX_KEY = "workspace.capture.inboxNodeId";
+const workspaceInboxSource: Source = {
+  actorType: "system",
+  actorLabel: "Memforge",
+  toolName: "memforge-system"
+};
 
 type SemanticIndexStatus = (typeof SEMANTIC_INDEX_STATUS_VALUES)[number];
 type SemanticIssueStatus = (typeof SEMANTIC_ISSUE_STATUS_VALUES)[number];
@@ -1692,6 +1704,40 @@ export class MemforgeRepository {
     return mapNode(assertPresent(row, `Node ${id} not found`));
   }
 
+  ensureWorkspaceInboxNode(): NodeRecord {
+    const settings = this.getSettings([WORKSPACE_CAPTURE_INBOX_KEY]);
+    const inboxNodeId =
+      typeof settings[WORKSPACE_CAPTURE_INBOX_KEY] === "string" ? String(settings[WORKSPACE_CAPTURE_INBOX_KEY]) : null;
+
+    if (inboxNodeId) {
+      try {
+        const existing = this.getNode(inboxNodeId);
+        if (existing.type === "conversation" && existing.status !== "archived") {
+          return existing;
+        }
+      } catch {
+        // fall through and recreate the system inbox node
+      }
+    }
+
+    const inboxNode = this.createNode({
+      type: "conversation",
+      title: "Workspace Inbox",
+      body: "Default timeline for captured agent updates when no target node is specified.",
+      summary: "System-managed conversation node for untargeted capture activity.",
+      tags: ["inbox"],
+      source: workspaceInboxSource,
+      metadata: {
+        workspaceInbox: true,
+        systemManaged: true
+      },
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    this.setSetting(WORKSPACE_CAPTURE_INBOX_KEY, inboxNode.id);
+    return inboxNode;
+  }
+
   createNode(input: CreateNodeInput & { resolvedCanonicality: string; resolvedStatus: string }): NodeRecord {
     const now = nowIso();
     const id = createId("node");
@@ -2702,6 +2748,10 @@ export class MemforgeRepository {
     if (!isPathWithinRoot(this.workspaceRoot, absolutePath)) {
       throw new AppError(403, "FORBIDDEN", "Artifact path escapes workspace root.");
     }
+    const artifactRoot = path.join(this.workspaceRoot, "artifacts");
+    if (!isPathWithinRoot(artifactRoot, absolutePath)) {
+      throw new AppError(403, "FORBIDDEN", "Artifact path must stay inside the workspace artifacts directory.");
+    }
     const stats = statSync(absolutePath);
     this.db
       .prepare(
@@ -2712,7 +2762,7 @@ export class MemforgeRepository {
       .run(
         id,
         input.nodeId,
-        path.relative(this.workspaceRoot, absolutePath),
+        normalizeArtifactPath(path.relative(this.workspaceRoot, absolutePath)),
         input.mimeType ?? null,
         stats.size,
         checksumText(`${absolutePath}:${stats.size}:${stats.mtimeMs}`),
@@ -2738,6 +2788,14 @@ export class MemforgeRepository {
   getArtifact(id: string): ArtifactRecord {
     const row = this.db.prepare(`SELECT * FROM artifacts WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
     return mapArtifact(assertPresent(row, `Artifact ${id} not found`));
+  }
+
+  hasArtifactAtPath(relativePath: string): boolean {
+    const normalizedPath = normalizeArtifactPath(relativePath);
+    const row = this.db
+      .prepare(`SELECT 1 AS present FROM artifacts WHERE path = ? LIMIT 1`)
+      .get(normalizedPath) as { present?: number } | undefined;
+    return Boolean(row?.present);
   }
 
   recordProvenance(params: {

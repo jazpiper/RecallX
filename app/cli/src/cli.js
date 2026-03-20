@@ -64,7 +64,7 @@ export async function runCli(argv) {
 
 async function runHealth(apiBase, token, format) {
   const data = await requestJson(apiBase, "/health", { token });
-  outputData({ ok: true, data }, format, "health");
+  outputData(data, format, "health");
 }
 
 async function runSearch(apiBase, token, format, args, positionals) {

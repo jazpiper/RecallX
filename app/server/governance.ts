@@ -28,6 +28,8 @@ export interface GovernanceRecomputeResult {
   items: GovernanceStateRecord[];
 }
 
+const relaxedShortFormNodeTypes = new Set<CreateNodeInput["type"]>(["reference", "question", "conversation"]);
+
 type GovernanceEvaluation = {
   entityType: GovernanceEntityType;
   entityId: string;
@@ -155,6 +157,32 @@ export function resolveGovernancePolicy(settings?: Record<string, unknown>): Gov
   };
 }
 
+function computeNodeTokenCount(input: Pick<CreateNodeInput, "title" | "summary" | "body">): number {
+  const combined = [input.title, input.summary, input.body]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n\n");
+  return countTokensApprox(combined);
+}
+
+function hasDurableNodeSignals(input: Pick<CreateNodeInput, "summary" | "metadata">): boolean {
+  return Boolean(
+    input.metadata.reusable ||
+      input.metadata.durable ||
+      input.metadata.promoteCandidate ||
+      (typeof input.summary === "string" && input.summary.trim().length > 0)
+  );
+}
+
+export function isShortLogLikeAgentNodeInput(input: CreateNodeInput): boolean {
+  return (
+    input.source.actorType === "agent" &&
+    input.type !== "decision" &&
+    !hasDurableNodeSignals(input) &&
+    !relaxedShortFormNodeTypes.has(input.type) &&
+    computeNodeTokenCount(input) <= 300
+  );
+}
+
 export function resolveNodeGovernance(input: CreateNodeInput, policy: GovernancePolicy = resolveGovernancePolicy()): GovernanceDecision {
   if (input.source.actorType === "human") {
     return {
@@ -172,17 +200,22 @@ export function resolveNodeGovernance(input: CreateNodeInput, policy: Governance
     };
   }
 
-  const tokenCount = countTokensApprox(input.body);
-  const reusable = Boolean(input.metadata.reusable || input.metadata.durable || input.metadata.promoteCandidate);
+  const tokenCount = computeNodeTokenCount(input);
+  const reusable = hasDurableNodeSignals(input);
   const trustedAgentSource =
     input.source.actorType === "agent" ? isTrustedAgentSource(input.source.toolName, policy) : false;
 
-  if (input.source.actorType === "agent" && input.type !== "decision" && tokenCount <= 300 && !reusable) {
+  if (isShortLogLikeAgentNodeInput(input)) {
     throw new AppError(
       403,
       "FORBIDDEN",
       "Short log-like agent output must be appended as activity, not stored as a durable node.",
-      { tokenCount, recommendation: "Use POST /api/v1/activities instead." }
+      {
+        tokenCount,
+        recommendation: "Use POST /api/v1/capture with mode=auto or mode=activity.",
+        suggestedMode: "activity",
+        suggestedTarget: "workspace-inbox"
+      }
     );
   }
 

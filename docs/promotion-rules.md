@@ -19,6 +19,7 @@ Define the append-first path from activity to durable memory under fully automat
 ## Core principles
 
 - Finished-work summaries should usually be stored as activities, not durable notes.
+- The capture path should prefer activities for short log-like agent updates and only create durable nodes when the content is reusable, decision-shaped, or explicitly requested as a node.
 - Low-risk agent-authored notes should default to `appended active`, not `canonical`.
 - Reusable or durable agent-authored knowledge should start as `suggested active`.
 - Decision nodes are allowed for agents, but they start as `suggested active` and rely on automatic confidence promotion.

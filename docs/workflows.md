@@ -33,6 +33,7 @@ A non-agent client can bootstrap from the service index and then use the API dir
 - `GET /api/v1/health`
 - `GET /api/v1/workspace`
 - `GET /api/v1/bootstrap`
+- `POST /api/v1/capture`
 - `POST /api/v1/nodes/search`
 - `POST /api/v1/activities/search`
 - `POST /api/v1/search`
@@ -64,6 +65,7 @@ For agent tooling that prefers structured tool calls, the MCP bridge is availabl
 Representative tools:
 
 - `memforge_get_related`
+- `memforge_capture_memory`
 - `memforge_append_activity`
 - `memforge_search_workspace`
 - `memforge_list_governance_issues`

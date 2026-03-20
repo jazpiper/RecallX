@@ -226,6 +226,219 @@ describe("search punctuation handling", () => {
   });
 });
 
+describe("capture workflow behavior", () => {
+  it("routes short auto-capture writes into the workspace inbox activity timeline", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/capture`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "auto",
+          body: "Fixed the MCP alias normalization path.",
+          source: {
+            actorType: "agent",
+            actorLabel: "Codex",
+            toolName: "codex"
+          },
+          metadata: {}
+        })
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(201);
+      expect(payload.data.storedAs).toBe("activity");
+      expect(payload.data.targetNode.type).toBe("conversation");
+      expect(payload.data.targetNode.title).toBe("Workspace Inbox");
+      expect(payload.data.activity.targetNodeId).toBe(payload.data.targetNode.id);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("stores reusable auto-capture writes as durable nodes", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/capture`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "auto",
+          body: "Use `scope` as an alias for workspace search and normalize it into scopes.",
+          source: {
+            actorType: "agent",
+            actorLabel: "Codex",
+            toolName: "codex"
+          },
+          metadata: {
+            reusable: true
+          }
+        })
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(201);
+      expect(payload.data.storedAs).toBe("node");
+      expect(payload.data.node.type).toBe("note");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("stores decision capture writes as decision nodes", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/capture`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "decision",
+          body: "Default short log-like captures should land in the workspace inbox.",
+          source: {
+            actorType: "agent",
+            actorLabel: "Codex",
+            toolName: "codex"
+          },
+          metadata: {}
+        })
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(201);
+      expect(payload.data.storedAs).toBe("node");
+      expect(payload.data.node.type).toBe("decision");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("adds capture recovery hints when explicit create_node stays short-form", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "note",
+          title: "Short update",
+          body: "done",
+          source: {
+            actorType: "agent",
+            actorLabel: "Codex",
+            toolName: "codex"
+          },
+          metadata: {}
+        })
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(403);
+      expect(payload.error.details.recommendation).toContain("/api/v1/capture");
+      expect(payload.error.details.suggestedMode).toBe("activity");
+      expect(payload.error.details.suggestedTarget).toBe("workspace-inbox");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("allows short explicit question nodes through the durable path", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "question",
+          title: "Follow-up question",
+          body: "Should capture use the inbox by default?",
+          source: {
+            actorType: "agent",
+            actorLabel: "Codex",
+            toolName: "codex"
+          },
+          metadata: {}
+        })
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(201);
+      expect(payload.data.node.type).toBe("question");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+});
+
 describe("node update behavior", () => {
   it("preserves curated summaries on unrelated PATCH updates and records provenance", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
@@ -3705,6 +3918,44 @@ describe("browser origin hardening", () => {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
   });
+
+  it("rejects query-string bearer tokens on protected API routes", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root, "bearer");
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: "secret-token"
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/nodes/search?token=secret-token`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          query: "",
+          filters: {},
+          limit: 10,
+          offset: 0,
+          sort: "updated_at"
+        })
+      });
+
+      expect(response.status).toBe(401);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
 });
 
 describe("artifact path hardening", () => {
@@ -3762,6 +4013,133 @@ describe("artifact path hardening", () => {
       });
 
       expect(response.status).toBe(403);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("rejects artifact registration outside the artifacts directory even when still inside the workspace", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const node = repository.createNode({
+      type: "note",
+      title: "Artifact target",
+      body: "Testing artifact root boundaries",
+      tags: [],
+      source: {
+        actorType: "human",
+        actorLabel: "juhwan",
+        toolName: "memforge-test"
+      },
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    const workspaceLocalPath = path.join(root, "workspace-local.txt");
+    writeFileSync(workspaceLocalPath, "local-but-not-artifact");
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/artifacts`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          nodeId: node.id,
+          path: workspaceLocalPath,
+          source: {
+            actorType: "human",
+            actorLabel: "juhwan",
+            toolName: "memforge-test"
+          },
+          metadata: {}
+        })
+      });
+
+      expect(response.status).toBe(403);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("requires bearer auth and a registered artifact path for raw artifact downloads", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root, "bearer");
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const node = repository.createNode({
+      type: "note",
+      title: "Artifact target",
+      body: "Testing raw artifact downloads",
+      tags: [],
+      source: {
+        actorType: "human",
+        actorLabel: "juhwan",
+        toolName: "memforge-test"
+      },
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    const registeredPath = path.join(root, "artifacts", "registered.txt");
+    const unregisteredPath = path.join(root, "artifacts", "unregistered.txt");
+    writeFileSync(registeredPath, "registered");
+    writeFileSync(unregisteredPath, "unregistered");
+    repository.attachArtifact({
+      nodeId: node.id,
+      path: registeredPath,
+      source: {
+        actorType: "human",
+        actorLabel: "juhwan",
+        toolName: "memforge-test"
+      },
+      metadata: {}
+    });
+    expect(repository.hasArtifactAtPath("artifacts/registered.txt")).toBe(true);
+    expect(repository.hasArtifactAtPath("artifacts\\registered.txt")).toBe(true);
+
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: "secret-token"
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+
+      const unauthenticated = await fetch(`http://127.0.0.1:${address.port}/artifacts/artifacts/registered.txt`);
+      const unregistered = await fetch(`http://127.0.0.1:${address.port}/artifacts/artifacts/unregistered.txt`, {
+        headers: {
+          authorization: "Bearer secret-token"
+        }
+      });
+      const registered = await fetch(`http://127.0.0.1:${address.port}/artifacts/artifacts/registered.txt`, {
+        headers: {
+          authorization: "Bearer secret-token"
+        }
+      });
+
+      expect(unauthenticated.status).toBe(401);
+      expect(unregistered.status).toBe(404);
+      expect(registered.status).toBe(200);
+      expect(await registered.text()).toBe("registered");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
