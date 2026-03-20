@@ -132,6 +132,9 @@ npm run build
 - The renderer prefers the local API and falls back to mock data if the API is unavailable.
 - In bearer mode, the renderer token is session-only today, so a page refresh or restart may require entering it again.
 - The repo now includes an Electron desktop shell. Use `npm run desktop` for a local packaged-shell run or `npm run package:desktop` to produce a distributable build under `release/`.
+- The standalone server still defaults to `127.0.0.1:8787`, while the desktop shell now defaults to `127.0.0.1:8788` so both can run side by side more predictably. Override the desktop default with `MEMFORGE_DESKTOP_PORT` when needed.
+- Renderer development is now split too: browser/local-service renderer stays on `127.0.0.1:5173`, while desktop dev renderer uses `127.0.0.1:5174` through `npm run dev:desktop`.
+- To launch both together after a build, use `npm run start:desktop`. That starts the standalone API on `127.0.0.1:8787` and the desktop shell on `127.0.0.1:8788`.
 - In packaged mode, closing the main window now hides Memforge to the background instead of quitting immediately. Use the menu bar item to reopen the app, copy API/MCP info, or restart the local service, and use `Quit Memforge` to fully stop the desktop shell.
 - The default workspace root is `~/.memforge/{workspaceName}`. Existing repo-local `.memforge-workspace` data is copied into the new home-directory root the first time the new default is used.
 

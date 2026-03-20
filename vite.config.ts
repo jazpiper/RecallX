@@ -1,6 +1,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const rendererPort = Number(process.env.MEMFORGE_RENDERER_PORT ?? 5173);
+const apiTarget = process.env.MEMFORGE_RENDERER_API_TARGET ?? "http://127.0.0.1:8787";
+
 export default defineConfig({
   base: "./",
   plugins: [react()],
@@ -11,10 +14,10 @@ export default defineConfig({
   },
   server: {
     host: "127.0.0.1",
-    port: 5173,
+    port: rendererPort,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8787",
+        target: apiTarget,
         changeOrigin: true
       }
     }

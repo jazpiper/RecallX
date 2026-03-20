@@ -1,4 +1,5 @@
 import type { ApiEnvelope, ApiErrorEnvelope } from "../shared/types.js";
+import { currentTelemetryContext } from "../server/observability.js";
 
 export class MemforgeApiError extends Error {
   readonly status: number;
@@ -80,6 +81,14 @@ export class MemforgeApiClient {
 
     if (this.apiToken) {
       headers.set("authorization", `Bearer ${this.apiToken}`);
+    }
+
+    const telemetryContext = currentTelemetryContext();
+    if (telemetryContext?.traceId) {
+      headers.set("x-memforge-trace-id", telemetryContext.traceId);
+    }
+    if (telemetryContext?.toolName) {
+      headers.set("x-memforge-mcp-tool", telemetryContext.toolName);
     }
 
     let response: Response;

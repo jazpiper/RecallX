@@ -124,13 +124,29 @@ export interface GovernancePayload {
   events: GovernanceEventRecord[];
 }
 
+export interface SearchMatchReason {
+  strategy: 'fts' | 'like' | 'fallback_token' | 'browse';
+  matchedFields: string[];
+}
+
+export interface LandingInfo {
+  storedAs: 'node' | 'relation' | 'activity';
+  canonicality?: string;
+  status: string;
+  governanceState: 'healthy' | 'low_confidence' | 'contested' | null;
+  reason: string;
+}
+
 export interface SearchResultItem {
   resultType: 'node' | 'activity';
-  node?: Node;
+  node?: Node & {
+    matchReason?: SearchMatchReason;
+  };
   activity?: Activity & {
     targetNodeTitle?: string;
     targetNodeType?: NodeType;
     targetNodeStatus?: NodeStatus;
+    matchReason?: SearchMatchReason;
   };
 }
 

@@ -282,6 +282,7 @@ export interface SearchResultItem {
   sourceLabel: string | null;
   updatedAt: string;
   tags: string[];
+  matchReason?: SearchMatchReason;
 }
 
 export interface ActivitySearchResultItem {
@@ -294,12 +295,18 @@ export interface ActivitySearchResultItem {
   body: string | null;
   sourceLabel: string | null;
   createdAt: string;
+  matchReason?: SearchMatchReason;
 }
 
 export interface WorkspaceSearchResultItem {
   resultType: "node" | "activity";
   node?: SearchResultItem;
   activity?: ActivitySearchResultItem;
+}
+
+export interface SearchMatchReason {
+  strategy: "fts" | "like" | "fallback_token" | "browse";
+  matchedFields: string[];
 }
 
 export interface ContextBundleItem {
@@ -336,7 +343,7 @@ export interface NeighborhoodItem {
 
 export interface ContextBundle {
   target: {
-    type: NodeType;
+    type: NodeType | "workspace";
     id: string;
     title: string | null;
   };
@@ -351,4 +358,88 @@ export interface ContextBundle {
     nodeId: string;
     sourceLabel: string | null;
   }>;
+}
+
+export interface LandingInfo {
+  storedAs: "node" | "relation" | "activity";
+  canonicality?: Canonicality;
+  status: string;
+  governanceState: GovernanceState | null;
+  reason: string;
+}
+
+export type TelemetrySurface = "api" | "mcp" | "desktop";
+export type TelemetryOutcome = "success" | "error";
+export type TelemetryErrorKind =
+  | "app_error"
+  | "validation_error"
+  | "normalization_error"
+  | "network_error"
+  | "http_error"
+  | "api_error"
+  | "invalid_response"
+  | "empty_response"
+  | "unexpected_error";
+
+export interface TelemetryEvent {
+  ts: string;
+  traceId: string;
+  requestId: string | null;
+  surface: TelemetrySurface;
+  operation: string;
+  outcome: TelemetryOutcome;
+  durationMs: number | null;
+  statusCode: number | null;
+  errorCode: string | null;
+  errorKind: TelemetryErrorKind | null;
+  workspaceName: string | null;
+  details: JsonMap;
+}
+
+export interface TelemetryOperationSummary {
+  surface: TelemetrySurface;
+  operation: string;
+  count: number;
+  errorCount: number;
+  errorRate: number;
+  avgDurationMs: number | null;
+  p50DurationMs: number | null;
+  p95DurationMs: number | null;
+  p99DurationMs: number | null;
+}
+
+export interface TelemetrySummaryResponse {
+  since: string;
+  generatedAt: string;
+  logsPath: string;
+  totalEvents: number;
+  operationSummaries: TelemetryOperationSummary[];
+  slowOperations: TelemetryOperationSummary[];
+  mcpToolFailures: Array<{
+    operation: string;
+    count: number;
+  }>;
+  ftsFallbackRate: {
+    fallbackCount: number;
+    sampleCount: number;
+    ratio: number | null;
+  };
+  semanticAugmentationRate: {
+    usedCount: number;
+    sampleCount: number;
+    ratio: number | null;
+  };
+  autoJobStats: Array<{
+    operation: string;
+    count: number;
+    avgDurationMs: number | null;
+  }>;
+}
+
+export interface TelemetryErrorsResponse {
+  since: string;
+  generatedAt: string;
+  surface: TelemetrySurface | "all";
+  logsPath: string;
+  items: TelemetryEvent[];
 }

@@ -8,6 +8,8 @@ import {
   renderNode,
   renderRelated,
   renderSearchResults,
+  renderTelemetryErrors,
+  renderTelemetrySummary,
   renderText,
   renderWorkspaceSearchResults,
   renderWorkspaces,
@@ -57,6 +59,8 @@ export async function runCli(argv) {
       return runGovernance(apiBase, token, format, args, positionals);
     case "workspace":
       return runWorkspace(apiBase, token, format, args, positionals);
+    case "observability":
+      return runObservability(apiBase, token, format, args, positionals);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -215,14 +219,7 @@ async function runRelated(apiBase, token, format, args, positionals) {
 
 async function runContext(apiBase, token, format, args, positionals) {
   const targetId = args.id || args.target || positionals[0];
-  if (!targetId) {
-    throw new Error("context requires a target id");
-  }
-
   const payload = {
-    target: {
-      id: targetId,
-    },
     mode: args.mode || "compact",
     preset: args.preset || "for-coding",
     options: {
@@ -233,6 +230,12 @@ async function runContext(apiBase, token, format, args, positionals) {
       maxItems: numberOption(args["max-items"], 12),
     },
   };
+
+  if (targetId) {
+    payload.target = {
+      id: targetId,
+    };
+  }
 
   const data = await requestJson(apiBase, "/context/bundles", {
     method: "POST",
@@ -440,6 +443,31 @@ async function runWorkspace(apiBase, token, format, args, positionals) {
   throw new Error(`Unknown workspace action: ${action}`);
 }
 
+async function runObservability(apiBase, token, format, args, positionals) {
+  const action = positionals[0] || args.action || "summary";
+
+  switch (action) {
+    case "summary": {
+      const query = new URLSearchParams();
+      query.set("since", args.since || "24h");
+      const data = await requestJson(apiBase, `/observability/summary?${query.toString()}`, { token });
+      outputData(data, format, "observability-summary");
+      return;
+    }
+    case "errors": {
+      const query = new URLSearchParams();
+      query.set("since", args.since || "24h");
+      if (args.surface) query.set("surface", args.surface);
+      if (args.limit) query.set("limit", String(numberOption(args.limit, 50)));
+      const data = await requestJson(apiBase, `/observability/errors?${query.toString()}`, { token });
+      outputData(data, format, "observability-errors");
+      return;
+    }
+  }
+
+  throw new Error(`Unknown observability action: ${action}`);
+}
+
 function buildSource(args) {
   return {
     actorType: args["actor-type"] || args.actorType || DEFAULT_SOURCE.actorType,
@@ -518,6 +546,12 @@ function outputData(data, format, command) {
     case "workspace-create":
     case "workspace-open":
       writeStdout(renderText(payload));
+      return;
+    case "observability-summary":
+      writeStdout(renderTelemetrySummary(payload));
+      return;
+    case "observability-errors":
+      writeStdout(renderTelemetryErrors(payload));
       return;
     case "context":
       writeStdout(renderBundleText(payload));
@@ -631,6 +665,8 @@ Usage:
   pnw workspace list
   pnw workspace create --root /path/to/workspace [--name "Personal"]
   pnw workspace open --root /path/to/workspace
+  pnw observability summary [--since 24h]
+  pnw observability errors [--since 24h] [--surface mcp] [--limit 50]
 
 Global flags:
   --api <url>        Override API base URL

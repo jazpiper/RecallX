@@ -1,5 +1,6 @@
 import type { BuildContextBundleInput, RelationType } from "../shared/contracts.js";
 import type { ContextBundle, NeighborhoodItem, RelationUsageSummary, SearchResultItem } from "../shared/types.js";
+import { appendCurrentTelemetryDetails } from "./observability.js";
 import type { MemforgeRepository } from "./repositories.js";
 import { computeUsageBonus, relationTypeSpecificityBonus } from "./relation-scoring.js";
 
@@ -378,10 +379,76 @@ export function buildTargetRelatedRetrievalItems(
   return Array.from(candidateItems.values()).filter((item) => matchesSearchResultFilters(item, filters));
 }
 
+async function buildWorkspaceContextBundle(
+  repository: MemforgeRepository,
+  input: BuildContextBundleInput
+): Promise<ContextBundle> {
+  const recentNodes = repository
+    .listNodes(Math.max(input.options.maxItems * 3, 18))
+    .filter((item) => item.status !== "archived");
+  const decisions = input.options.includeDecisions
+    ? recentNodes.filter((item) => item.type === "decision" && (item.status === "active" || item.status === "contested"))
+    : [];
+  const openQuestions = input.options.includeOpenQuestions
+    ? recentNodes.filter((item) => item.type === "question" && ["active", "draft", "contested"].includes(item.status))
+    : [];
+  const candidateItems = Array.from(new Map([...recentNodes, ...decisions, ...openQuestions].map((item) => [item.id, item])).values());
+  const baseItems = prioritizeItems(
+    candidateItems,
+    input.preset,
+    input.mode === "micro" ? Math.min(input.options.maxItems, 5) : input.options.maxItems
+  );
+  const activityDigest = input.options.includeRecentActivities
+    ? repository
+        .searchActivities({
+          query: "",
+          filters: {},
+          limit: input.mode === "micro" ? 3 : 6,
+          offset: 0,
+          sort: "updated_at"
+        })
+        .items.map(
+          (activity) =>
+            `${activity.targetNodeTitle ?? activity.targetNodeId} · ${activity.activityType}: ${activity.body ?? "No details"}`
+        )
+    : [];
+
+  return {
+    target: {
+      type: "workspace",
+      id: "workspace",
+      title: "Workspace context"
+    },
+    mode: input.mode,
+    preset: input.preset,
+    summary:
+      baseItems[0]?.summary ??
+      "Recent workspace context across active nodes, open questions, decisions, and recent activity trails.",
+    items: baseItems.map((item) => ({
+      nodeId: item.id,
+      type: item.type,
+      title: item.title,
+      summary: item.summary,
+      reason: item.type === "project" ? "Recent workspace project context" : `Recent workspace context for ${input.preset}`
+    })),
+    activityDigest,
+    decisions,
+    openQuestions,
+    sources: baseItems.map((item) => ({
+      nodeId: item.id,
+      sourceLabel: item.sourceLabel
+    }))
+  };
+}
+
 export async function buildContextBundle(
   repository: MemforgeRepository,
   input: BuildContextBundleInput
 ): Promise<ContextBundle> {
+  if (!input.target?.id) {
+    return buildWorkspaceContextBundle(repository, input);
+  }
+
   const target = repository.getNode(input.target.id);
   const neighborhood = input.options.includeRelated
     ? buildNeighborhoodItems(repository, target.id, {
@@ -462,6 +529,13 @@ export async function buildContextBundle(
         repository.getSemanticAugmentationSettings()
       )
     : new Map();
+  appendCurrentTelemetryDetails({
+    neighborhoodCount: neighborhood.length,
+    relatedCandidateCount: relatedItems.length,
+    decisionCount: decisions.length,
+    openQuestionCount: openQuestions.length,
+    semanticUsed: semanticBonuses.size > 0
+  });
   const combinedBonuses = new Map<string, number>();
   for (const item of dedupedItems) {
     combinedBonuses.set(item.id, (relationBonuses.get(item.id) ?? 0) + (semanticBonuses.get(item.id)?.retrievalRank ?? 0));
@@ -476,7 +550,7 @@ export async function buildContextBundle(
 
   const itemById = new Map(related.map((item) => [item.nodeId, item]));
 
-  return {
+  const bundle = {
     target: {
       type: target.type,
       id: target.id,
@@ -518,6 +592,11 @@ export async function buildContextBundle(
       sourceLabel: item.sourceLabel
     }))
   };
+  appendCurrentTelemetryDetails({
+    bundleItemCount: bundle.items.length,
+    bundleSourceCount: bundle.sources.length
+  });
+  return bundle;
 }
 
 export function bundleAsMarkdown(bundle: ContextBundle): string {

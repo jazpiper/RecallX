@@ -254,6 +254,44 @@ function getSearchResultEyebrow(item: SearchResultItem) {
   return item.resultType === 'node' ? 'Durable node' : 'Activity trail';
 }
 
+function formatMatchedFieldLabel(field: string) {
+  switch (field) {
+    case 'targetNodeTitle':
+      return 'target title';
+    case 'activityType':
+      return 'activity type';
+    case 'sourceLabel':
+      return 'source';
+    default:
+      return field;
+  }
+}
+
+function getSearchResultMatchReason(item: SearchResultItem) {
+  const matchReason = item.resultType === 'node' ? item.node?.matchReason : item.activity?.matchReason;
+  if (!matchReason) {
+    return null;
+  }
+
+  if (matchReason.strategy === 'browse') {
+    return 'Browse mode';
+  }
+
+  const fields = matchReason.matchedFields.map(formatMatchedFieldLabel);
+  const suffix = fields.length ? ` via ${fields.join(', ')}` : '';
+
+  switch (matchReason.strategy) {
+    case 'fts':
+      return `Lexical match${suffix}`;
+    case 'like':
+      return `String match${suffix}`;
+    case 'fallback_token':
+      return `Fallback token match${suffix}`;
+    default:
+      return null;
+  }
+}
+
 function getSearchResultSecondaryMeta(item: SearchResultItem) {
   if (item.resultType === 'node') {
     return [item.node?.type ?? 'node', item.node?.status ?? 'draft'].join(' · ');
@@ -396,6 +434,7 @@ export default function App() {
   const [captureTitle, setCaptureTitle] = useState('');
   const [captureBody, setCaptureBody] = useState('');
   const [captureError, setCaptureError] = useState<string | null>(null);
+  const [captureNotice, setCaptureNotice] = useState<string | null>(null);
   const [isSavingCapture, setIsSavingCapture] = useState(false);
   const [workspaceRootInput, setWorkspaceRootInput] = useState('');
   const [workspaceNameInput, setWorkspaceNameInput] = useState('');
@@ -949,20 +988,27 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
     }
 
     setCaptureError(null);
+    setCaptureNotice(null);
     setIsSavingCapture(true);
 
     try {
-      const node = await createNode({
+      const result = await createNode({
         type: captureType,
         title: captureTitle.trim(),
         body: captureBody.trim(),
       });
+      const node = result.node;
       await refreshWorkspaceState();
       focusNode(node.id);
       setView(node.type === 'project' ? 'projects' : 'recent');
       setCaptureTitle('');
       setCaptureBody('');
       setCaptureType('note');
+      setCaptureNotice(
+        result.landing
+          ? `Saved as ${result.landing.canonicality ? `${result.landing.canonicality} ` : ''}${result.landing.status}. ${result.landing.reason}`
+          : 'Node saved.'
+      );
       setLoadError(null);
     } catch (error) {
       if (isAuthError(error)) {
@@ -970,8 +1016,10 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
         setAuthRequired(true);
         setAuthError('Enter the Memforge API token to continue.');
         setCaptureError(null);
+        setCaptureNotice(null);
       } else {
         setCaptureError(error instanceof Error ? error.message : 'Failed to create node.');
+        setCaptureNotice(null);
       }
     } finally {
       setIsSavingCapture(false);
@@ -1193,6 +1241,11 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
                       <span>{item.resultType === 'node' ? 'durable retrieval' : 'activity recall'}</span>
                       <span>{formatTime(meta.updatedAt)}</span>
                     </div>
+                    {getSearchResultMatchReason(item) ? (
+                      <div className="chip-row">
+                        <span className="pill tone-info">{getSearchResultMatchReason(item)}</span>
+                      </div>
+                    ) : null}
                   </button>
                 );
               })}
@@ -1761,6 +1814,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
               />
             </label>
             {captureError ? <div className="empty-state">{captureError}</div> : null}
+            {captureNotice ? <p>{captureNotice}</p> : null}
             <div className="action-row">
               <button type="submit" disabled={isSavingCapture}>
                 {isSavingCapture ? 'Saving...' : 'Create node'}

@@ -186,6 +186,60 @@ export function renderBundleText(bundle) {
   return renderBundleMarkdown(bundle);
 }
 
+export function renderTelemetrySummary(data) {
+  const lines = [
+    `since: ${data?.since || ""}`,
+    `logs: ${data?.logsPath || ""}`,
+    `events: ${data?.totalEvents ?? 0}`,
+  ];
+
+  const slow = Array.isArray(data?.slowOperations) ? data.slowOperations : [];
+  if (slow.length > 0) {
+    lines.push("");
+    lines.push("Slow operations:");
+    for (const item of slow.slice(0, 5)) {
+      lines.push(`- [${item.surface}] ${item.operation} p95=${item.p95DurationMs ?? ""}ms errors=${item.errorCount}/${item.count}`);
+    }
+  }
+
+  const mcpFailures = Array.isArray(data?.mcpToolFailures) ? data.mcpToolFailures : [];
+  if (mcpFailures.length > 0) {
+    lines.push("");
+    lines.push("MCP failures:");
+    for (const item of mcpFailures.slice(0, 5)) {
+      lines.push(`- ${item.operation}: ${item.count}`);
+    }
+  }
+
+  if (data?.ftsFallbackRate) {
+    lines.push("");
+    lines.push(
+      `fts fallback: ${data.ftsFallbackRate.fallbackCount}/${data.ftsFallbackRate.sampleCount} (${data.ftsFallbackRate.ratio ?? "n/a"})`
+    );
+  }
+  if (data?.semanticAugmentationRate) {
+    lines.push(
+      `semantic augmentation: ${data.semanticAugmentationRate.usedCount}/${data.semanticAugmentationRate.sampleCount} (${data.semanticAugmentationRate.ratio ?? "n/a"})`
+    );
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+export function renderTelemetryErrors(data) {
+  const items = data?.items || [];
+  if (!items.length) {
+    return "No telemetry errors.\n";
+  }
+
+  return `${items
+    .map(
+      (item, index) =>
+        `${index + 1}. [${item.surface}] ${item.operation}\n  ts: ${item.ts}\n  trace: ${item.traceId}\n  error: ${item.errorKind || ""}/${item.errorCode || ""}\n  status: ${item.statusCode ?? ""}\n  durationMs: ${item.durationMs ?? ""}`
+    )
+    .join("\n\n")}\n`;
+}
+
 function renderInline(value) {
   if (value == null) {
     return "";

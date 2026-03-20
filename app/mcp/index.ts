@@ -3,6 +3,59 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createMemforgeMcpServer } from "./server.js";
 
+async function requestJson(path: string) {
+  const baseUrl = process.env.MEMFORGE_API_URL ?? "http://127.0.0.1:8787/api/v1";
+  const url = new URL(path.replace(/^\/+/, ""), `${baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`}`);
+  const headers = new Headers({
+    accept: "application/json"
+  });
+
+  if (process.env.MEMFORGE_API_TOKEN) {
+    headers.set("authorization", `Bearer ${process.env.MEMFORGE_API_TOKEN}`);
+  }
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to bootstrap MCP observability from ${url.toString()}: ${response.status}`);
+  }
+
+  return await response.json() as { data?: Record<string, any> };
+}
+
+async function resolveObservabilityState() {
+  try {
+    const [workspacePayload, settingsPayload] = await Promise.all([
+      requestJson("/workspace"),
+      requestJson(
+        "/settings?keys=observability.enabled,observability.retentionDays,observability.slowRequestMs,observability.capturePayloadShape"
+      )
+    ]);
+    const workspace = workspacePayload.data ?? {};
+    const values = (settingsPayload.data?.values ?? {}) as Record<string, unknown>;
+
+    return {
+      enabled: values["observability.enabled"] === true,
+      workspaceRoot: typeof workspace.rootPath === "string" ? workspace.rootPath : process.cwd(),
+      workspaceName: typeof workspace.workspaceName === "string" ? workspace.workspaceName : "Memforge MCP",
+      retentionDays: typeof values["observability.retentionDays"] === "number" ? values["observability.retentionDays"] : 14,
+      slowRequestMs: typeof values["observability.slowRequestMs"] === "number" ? values["observability.slowRequestMs"] : 250,
+      capturePayloadShape: values["observability.capturePayloadShape"] !== false
+    };
+  } catch {
+    return {
+      enabled: false,
+      workspaceRoot: process.cwd(),
+      workspaceName: "Memforge MCP",
+      retentionDays: 14,
+      slowRequestMs: 250,
+      capturePayloadShape: true
+    };
+  }
+}
+
 function printHelp() {
   console.error(`Memforge MCP server
 
@@ -58,7 +111,10 @@ async function main() {
     process.env.MEMFORGE_MCP_TOOL_NAME = args["tool-name"];
   }
 
-  const server = createMemforgeMcpServer();
+  const server = createMemforgeMcpServer({
+    observabilityState: await resolveObservabilityState(),
+    getObservabilityState: resolveObservabilityState
+  });
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`Memforge MCP connected over stdio -> ${process.env.MEMFORGE_API_URL ?? "http://127.0.0.1:8787/api/v1"}`);

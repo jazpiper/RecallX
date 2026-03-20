@@ -315,6 +315,7 @@ Fast search over nodes using keyword/FTS and structured filters.
 ### Notes
 - `query` may be empty when listing by filters only
 - `sort` should support at least `relevance` and `updated_at`
+- browse-style empty-query results include `matchReason: { strategy: "browse", matchedFields: [] }`
 
 ### Response
 ```json
@@ -329,7 +330,11 @@ Fast search over nodes using keyword/FTS and structured filters.
         "summary": "Shared memory layer for humans and agents.",
         "status": "active",
         "sourceLabel": "manual",
-        "updatedAt": "2026-03-17T14:00:00Z"
+        "updatedAt": "2026-03-17T14:00:00Z",
+        "matchReason": {
+          "strategy": "fts",
+          "matchedFields": ["title"]
+        }
       }
     ],
     "total": 1
@@ -380,6 +385,7 @@ Create a durable node.
 ### Rules
 - provenance event required
 - if write source is external tool, default canonicality should usually be `appended` or `suggested`
+- response includes `landing` with `storedAs`, `canonicality` when applicable, `status`, `governanceState`, and `reason`
 
 ## 9.4 Update node
 ### HTTP
@@ -402,6 +408,47 @@ High-trust or governed-write only for canonical changes.
 
 ### Request note
 The current implementation expects a `source` object on this durable write so the update is attributable in provenance.
+
+## 9.5 Create nodes in batch
+### HTTP
+`POST /api/v1/nodes/batch`
+
+### Purpose
+Create multiple durable nodes in one request while preserving per-item governance and landing details.
+
+### Request
+```json
+{
+  "nodes": [
+    {
+      "type": "note",
+      "title": "Batch memory one",
+      "body": "Use workspace search first when the target node is unknown.",
+      "summary": "Mixed search should be the default entry point.",
+      "tags": ["search"],
+      "source": {
+        "actorType": "agent",
+        "actorLabel": "OpenClaw",
+        "toolName": "openclaw"
+      },
+      "metadata": {}
+    }
+  ]
+}
+```
+
+### Behavior
+- accepts between 1 and 100 node inputs
+- applies the same automatic-governance policy used by `POST /api/v1/nodes`
+- allows partial success; one rejected item does not roll back successful siblings
+- returns HTTP `201` when every item succeeds
+- returns HTTP `207` when the batch contains a mix of successes and item-level errors
+
+### Response shape
+- `items[]` contains one entry per input in the original order
+- success entries include `ok: true`, `index`, `node`, `governance`, and `landing`
+- error entries include `ok: false`, `index`, and an `error` object with `code`, `message`, and optional `details`
+- `summary` includes `requestedCount`, `successCount`, and `errorCount`
 
 ## 9.5 Archive node
 ### HTTP
@@ -458,6 +505,9 @@ Return local graph neighborhood.
 
 ### Recommendation
 For external tools, default relation status to `suggested` unless explicitly trusted.
+
+### Response note
+- response includes `landing` with `storedAs`, `status`, `governanceState`, and `reason`
 
 ## 10.3 Update relation status
 ### HTTP
@@ -557,6 +607,7 @@ Search operational history without mixing it into durable-node retrieval.
 - uses activity FTS first when available
 - falls back to bounded `LIKE` matching for empty queries or compatibility cases
 - result payload includes target node summary fields for display and reranking
+- each result includes `matchReason` with `strategy` and `matchedFields`
 
 ## 11.4 Search workspace
 ### HTTP
@@ -572,14 +623,15 @@ Search nodes and activities together through one agent-friendly entry point.
   "scopes": ["nodes", "activities"],
   "limit": 10,
   "offset": 0,
-  "sort": "relevance"
+  "sort": "smart"
 }
 ```
 
 ### Notes
 - deterministic lexical quality still dominates ranking
-- nodes rank ahead of activities when confidence is similar
+- `smart` is the recommended mixed-search sort because it combines source-local ranking with recency and contested penalties
 - activity results are capped per target node to avoid timeline spam
+- if an initial multi-token mixed search returns zero results, the server may retry with bounded token fallback and mark those results with `matchReason.strategy = "fallback_token"`
 
 ---
 
@@ -725,9 +777,6 @@ Context bundles are a core primitive.
 ### Request
 ```json
 {
-  "target": {
-    "id": "node_project_1"
-  },
   "mode": "compact",
   "preset": "for-coding",
   "options": {
@@ -741,6 +790,8 @@ Context bundles are a core primitive.
   }
 }
 ```
+
+`target` is optional. When omitted, the server builds a workspace-entry bundle instead of a node-anchored bundle.
 
 ### Mode values
 - `micro`
@@ -768,9 +819,9 @@ Context bundles are a core primitive.
   "data": {
     "bundle": {
       "target": {
-        "type": "project",
-        "id": "node_project_1",
-        "title": "Memforge"
+        "type": "workspace",
+        "id": "workspace",
+        "title": "Workspace context"
       },
       "mode": "compact",
       "preset": "for-coding",
@@ -1107,6 +1158,8 @@ pnw search "agent memory" --type project --limit 5
 ```bash
 pnw context node_project_1 --mode compact --preset for-coding --format markdown
 ```
+
+`pnw context --mode compact --preset for-coding --format markdown` now builds a workspace-entry bundle when no target id is supplied.
 
 ### Append activity
 ```bash

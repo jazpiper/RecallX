@@ -249,11 +249,17 @@ export function resolveNodeGovernance(input: CreateNodeInput, policy: Governance
 export function resolveRelationStatus(
   input: CreateRelationInput,
   _policy: GovernancePolicy = resolveGovernancePolicy()
-): { status: string } {
+): { status: string; reason: string } {
   if (input.source.actorType === "agent") {
-    return { status: "suggested" };
+    return {
+      status: "suggested",
+      reason: "Agent-authored relations start suggested and rely on automatic governance promotion."
+    };
   }
-  return { status: input.status ?? "active" };
+  return {
+    status: input.status ?? "active",
+    reason: "Human or imported relations land active unless a status is explicitly provided."
+  };
 }
 
 export function shouldPromoteActivitySummary(input: AppendActivityInput): boolean {

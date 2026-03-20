@@ -13,6 +13,7 @@ import {
   captureMemorySchema,
   createWorkspaceSchema,
   createNodeSchema,
+  createNodesSchema,
   createRelationSchema,
   governanceIssuesQuerySchema,
   nodeSearchSchema,
@@ -42,6 +43,7 @@ import {
   shouldPromoteActivitySummary
 } from "./governance.js";
 import { refreshAutomaticInferredRelationsForNode, reindexAutomaticInferredRelations } from "./inferred-relations.js";
+import { createObservabilityWriter, summarizePayloadShape } from "./observability.js";
 import {
   buildSemanticCandidateBonusMap,
   buildCandidateRelationBonusMap,
@@ -57,6 +59,7 @@ import type { WorkspaceSessionManager } from "./workspace-session.js";
 
 const relationTypeSet = new Set<string>(relationTypes);
 const allowedLoopbackHostnames = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+const isDesktopManagedApi = process.env.ELECTRON_RUN_AS_NODE === "1";
 const updateNodeRequestSchema = updateNodeSchema.extend({
   source: sourceSchema
 });
@@ -113,13 +116,14 @@ function parseSemanticIssueStatuses(value: unknown): SemanticIssueStatus[] | und
   return statuses?.length ? statuses : undefined;
 }
 
-function readRequestParam(value: string | string[] | undefined): string {
+function readRequestParam(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
 
   if (Array.isArray(value)) {
-    return value[0] ?? "";
+    const first = value[0];
+    return typeof first === "string" ? first : "";
   }
 
   return "";
@@ -243,6 +247,17 @@ function parseNumberSetting(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function normalizeApiRequestPath(value: string): string {
+  return value
+    .replace(/^\/artifacts\/.+$/g, "/artifacts/:path")
+    .replace(/\/nodes\/[^/]+\/neighborhood/g, "/nodes/:id/neighborhood")
+    .replace(/\/nodes\/[^/]+\/activities/g, "/nodes/:id/activities")
+    .replace(/\/nodes\/[^/]+\/artifacts/g, "/nodes/:id/artifacts")
+    .replace(/\/nodes\/[^/]+/g, "/nodes/:id")
+    .replace(/\/semantic\/reindex\/[^/]+/g, "/semantic/reindex/:nodeId")
+    .replace(/\/governance\/state\/[^/]+\/[^/]+/g, "/governance/state/:entityType/:id");
+}
+
 function envelope<T>(requestId: string, data: T): ApiEnvelope<T> {
   return {
     ok: true,
@@ -251,6 +266,14 @@ function envelope<T>(requestId: string, data: T): ApiEnvelope<T> {
       requestId,
       apiVersion: "v1"
     }
+  };
+}
+
+function toBatchErrorPayload(error: AppError) {
+  return {
+    code: error.code,
+    message: error.message,
+    details: error.details
   };
 }
 
@@ -330,7 +353,8 @@ function buildServiceIndex(workspaceInfo: {
         "pnw create --api http://127.0.0.1:8787/api/v1 --type note --title \"Idea\" --body \"...\"",
         "pnw context --api http://127.0.0.1:8787/api/v1 <node-id> --mode compact --preset for-coding",
         "pnw governance issues --api http://127.0.0.1:8787/api/v1",
-        "pnw workspace list --api http://127.0.0.1:8787/api/v1"
+        "pnw workspace list --api http://127.0.0.1:8787/api/v1",
+        "pnw observability summary --api http://127.0.0.1:8787/api/v1 --since 24h"
       ]
     },
     mcp: {
@@ -370,6 +394,27 @@ function buildServiceIndex(workspaceInfo: {
             toolName: "claude-code"
           },
           metadata: {}
+        }
+      },
+      {
+        method: "POST",
+        path: "/api/v1/nodes/batch",
+        purpose: "Create multiple durable nodes with per-item landing or error details.",
+        requestExample: {
+          nodes: [
+            {
+              type: "note",
+              title: "Example note",
+              body: "Shared memory for agents.",
+              tags: [],
+              source: {
+                actorType: "agent",
+                actorLabel: "Claude Code",
+                toolName: "claude-code"
+              },
+              metadata: {}
+            }
+          ]
         }
       },
       {
@@ -478,6 +523,16 @@ function buildServiceIndex(workspaceInfo: {
         purpose: "Read the current automatic governance state for a node."
       },
       {
+        method: "GET",
+        path: "/api/v1/observability/summary?since=24h",
+        purpose: "Read latency, error rate, fallback, and auto-job summaries from local telemetry logs."
+      },
+      {
+        method: "GET",
+        path: "/api/v1/observability/errors?since=24h&surface=mcp",
+        purpose: "Inspect recent telemetry errors for the API, MCP bridge, or desktop shell."
+      },
+      {
         method: "POST",
         path: "/api/v1/governance/recompute",
         purpose: "Run a bounded automatic governance recompute pass."
@@ -557,12 +612,82 @@ export function createMemforgeApp(params: {
       }
     })
   );
-  app.use(express.json({ limit: "2mb" }));
-
   const currentSession = () => params.workspaceSessionManager.getCurrent();
   const currentRepository = () => currentSession().repository;
   const currentWorkspaceInfo = () => currentSession().workspaceInfo;
   const currentWorkspaceRoot = () => currentSession().workspaceRoot;
+  const currentObservabilityConfig = () => {
+    const settings = currentRepository().getSettings([
+      "observability.enabled",
+      "observability.retentionDays",
+      "observability.slowRequestMs",
+      "observability.capturePayloadShape"
+    ]);
+
+    return {
+      enabled: isDesktopManagedApi ? parseBooleanSetting(settings["observability.enabled"], false) : true,
+      workspaceRoot: currentWorkspaceRoot(),
+      workspaceName: currentWorkspaceInfo().workspaceName,
+      retentionDays: Math.max(1, parseNumberSetting(settings["observability.retentionDays"], 14)),
+      slowRequestMs: Math.max(1, parseNumberSetting(settings["observability.slowRequestMs"], 250)),
+      capturePayloadShape: parseBooleanSetting(settings["observability.capturePayloadShape"], true)
+    };
+  };
+  const observability = createObservabilityWriter({
+    getState: currentObservabilityConfig
+  });
+
+  async function runObservedSpan<T>(
+    operation: string,
+    details: Record<string, unknown> | undefined,
+    callback: (span: ReturnType<typeof observability.startSpan>) => Promise<T> | T
+  ): Promise<T> {
+    const span = observability.startSpan({
+      surface: "api",
+      operation,
+      details
+    });
+
+    try {
+      const result = await span.run(() => callback(span));
+      await span.finish({ outcome: "success" });
+      return result;
+    } catch (error) {
+      const appError =
+        error instanceof AppError
+          ? {
+              statusCode: error.statusCode,
+              errorCode: error.code,
+              errorKind: "app_error" as const
+            }
+          : error instanceof Error && "issues" in error
+            ? {
+                statusCode: 400,
+                errorCode: "INVALID_INPUT",
+                errorKind: "validation_error" as const
+              }
+            : {
+                statusCode: 500,
+                errorCode: "INTERNAL_ERROR",
+                errorKind: "unexpected_error" as const
+              };
+      await span.finish({
+        outcome: "error",
+        statusCode: appError.statusCode,
+        errorCode: appError.errorCode,
+        errorKind: appError.errorKind
+      });
+      throw error;
+    }
+  }
+
+  function handleAsyncRoute(
+    handler: (request: Request, response: Response, next: NextFunction) => Promise<void>
+  ) {
+    return (request: Request, response: Response, next: NextFunction) => {
+      void handler(request, response, next).catch(next);
+    };
+  }
   const eventSubscribers = new Set<Response>();
   const autoRecomputeState: AutoRecomputeState = {
     workspaceRoot: null,
@@ -910,63 +1035,92 @@ export function createMemforgeApp(params: {
     const startedAt = new Date().toISOString();
 
     try {
-      const pending = currentRepository().getPendingRelationUsageStats(config.lastRunAt);
-      const aggregate = {
-        updatedCount: 0,
-        expiredCount: 0,
-        items: [] as InferredRelationRecord[]
-      };
+      return await runObservedSpan(
+        "auto.recompute_inferred_relations",
+        {
+          trigger: reason,
+          batchLimit: config.batchLimit
+        },
+        (span) => {
+          const pending = currentRepository().getPendingRelationUsageStats(config.lastRunAt);
+          const aggregate = {
+            updatedCount: 0,
+            expiredCount: 0,
+            items: [] as InferredRelationRecord[]
+          };
 
-      const appendResult = (result: { updatedCount: number; expiredCount: number; items: typeof aggregate.items }) => {
-        aggregate.updatedCount += result.updatedCount;
-        aggregate.expiredCount += result.expiredCount;
-        aggregate.items.push(...result.items);
-      };
+          const appendResult = (result: { updatedCount: number; expiredCount: number; items: typeof aggregate.items }) => {
+            aggregate.updatedCount += result.updatedCount;
+            aggregate.expiredCount += result.expiredCount;
+            aggregate.items.push(...result.items);
+          };
 
-      if (reason === "manual" && pending.relationIds.length === 0) {
-        const totalRelations = currentRepository().countInferredRelations("active");
-        if (totalRelations === 0) {
+          if (reason === "manual" && pending.relationIds.length === 0) {
+            const totalRelations = currentRepository().countInferredRelations("active");
+            if (totalRelations === 0) {
+              currentRepository().setSetting("relations.autoRecompute.lastRunAt", startedAt);
+              span.addDetails({
+                pendingRelationCount: 0,
+                processedRelationCount: 0,
+                batchCount: 0
+              });
+              return aggregate;
+            }
+
+            const totalBatches = Math.ceil(totalRelations / config.batchLimit);
+            for (let batchIndex = 0; batchIndex < totalBatches; batchIndex += 1) {
+              appendResult(
+                currentRepository().recomputeInferredRelationScores({
+                  limit: config.batchLimit
+                })
+              );
+            }
+
+            currentRepository().setSetting("relations.autoRecompute.lastRunAt", startedAt);
+            broadcastWorkspaceEvent({
+              reason: "inferred-relation.recomputed",
+              entityType: "relation"
+            });
+            span.addDetails({
+              pendingRelationCount: totalRelations,
+              processedRelationCount: aggregate.items.length,
+              batchCount: totalBatches
+            });
+            return aggregate;
+          }
+
+          if (pending.relationIds.length === 0) {
+            currentRepository().setSetting("relations.autoRecompute.lastRunAt", startedAt);
+            span.addDetails({
+              pendingRelationCount: 0,
+              processedRelationCount: 0,
+              batchCount: 0
+            });
+            return aggregate;
+          }
+
+          for (let index = 0; index < pending.relationIds.length; index += config.batchLimit) {
+            appendResult(
+              currentRepository().recomputeInferredRelationScores({
+                relationIds: pending.relationIds.slice(index, index + config.batchLimit),
+                limit: config.batchLimit
+              })
+            );
+          }
+
           currentRepository().setSetting("relations.autoRecompute.lastRunAt", startedAt);
+          broadcastWorkspaceEvent({
+            reason: reason === "auto" ? "inferred-relation.auto-recomputed" : "inferred-relation.recomputed",
+            entityType: "relation"
+          });
+          span.addDetails({
+            pendingRelationCount: pending.relationIds.length,
+            processedRelationCount: aggregate.items.length,
+            batchCount: Math.ceil(pending.relationIds.length / config.batchLimit)
+          });
           return aggregate;
         }
-
-        const totalBatches = Math.ceil(totalRelations / config.batchLimit);
-        for (let batchIndex = 0; batchIndex < totalBatches; batchIndex += 1) {
-          appendResult(
-            currentRepository().recomputeInferredRelationScores({
-              limit: config.batchLimit
-            })
-          );
-        }
-
-        currentRepository().setSetting("relations.autoRecompute.lastRunAt", startedAt);
-        broadcastWorkspaceEvent({
-          reason: "inferred-relation.recomputed",
-          entityType: "relation"
-        });
-        return aggregate;
-      }
-
-      if (pending.relationIds.length === 0) {
-        currentRepository().setSetting("relations.autoRecompute.lastRunAt", startedAt);
-        return aggregate;
-      }
-
-      for (let index = 0; index < pending.relationIds.length; index += config.batchLimit) {
-        appendResult(
-          currentRepository().recomputeInferredRelationScores({
-            relationIds: pending.relationIds.slice(index, index + config.batchLimit),
-            limit: config.batchLimit
-          })
-        );
-      }
-
-      currentRepository().setSetting("relations.autoRecompute.lastRunAt", startedAt);
-      broadcastWorkspaceEvent({
-        reason: reason === "auto" ? "inferred-relation.auto-recomputed" : "inferred-relation.recomputed",
-        entityType: "relation"
-      });
-      return aggregate;
+      );
     } finally {
       autoRecomputeState.running = false;
       hydrateAutoRecomputeState();
@@ -987,42 +1141,56 @@ export function createMemforgeApp(params: {
     autoRefreshState.running = true;
 
     try {
-      const batch = Array.from(autoRefreshState.pendingNodeTriggers.entries()).slice(0, config.batchLimit);
-      for (const [nodeId] of batch) {
-        autoRefreshState.pendingNodeTriggers.delete(nodeId);
-      }
-
-      if (autoRefreshState.pendingNodeTriggers.size === 0) {
-        autoRefreshState.earliestPendingAt = null;
-        autoRefreshState.latestPendingAt = null;
-      }
-
-      const repository = currentRepository();
-      const touchedRelationIds = new Set<string>();
-      let processedNodes = 0;
-
-      for (const [nodeId, trigger] of batch) {
-        try {
-          const result = refreshAutomaticInferredRelationsForNode(repository, nodeId, trigger);
-          processedNodes += 1;
-          for (const relationId of result.relationIds) {
-            touchedRelationIds.add(relationId);
+      await runObservedSpan(
+        "auto.refresh_inferred_relations",
+        {
+          batchLimit: config.batchLimit
+        },
+        (span) => {
+          const batch = Array.from(autoRefreshState.pendingNodeTriggers.entries()).slice(0, config.batchLimit);
+          for (const [nodeId] of batch) {
+            autoRefreshState.pendingNodeTriggers.delete(nodeId);
           }
-        } catch (error) {
-          console.error(`Failed to refresh inferred relations for node ${nodeId}`, error);
+
+          if (autoRefreshState.pendingNodeTriggers.size === 0) {
+            autoRefreshState.earliestPendingAt = null;
+            autoRefreshState.latestPendingAt = null;
+          }
+
+          const repository = currentRepository();
+          const touchedRelationIds = new Set<string>();
+          let processedNodes = 0;
+
+          for (const [nodeId, trigger] of batch) {
+            try {
+              const result = refreshAutomaticInferredRelationsForNode(repository, nodeId, trigger);
+              processedNodes += 1;
+              for (const relationId of result.relationIds) {
+                touchedRelationIds.add(relationId);
+              }
+            } catch (error) {
+              console.error(`Failed to refresh inferred relations for node ${nodeId}`, error);
+            }
+          }
+
+          if (processedNodes > 0) {
+            broadcastWorkspaceEvent({
+              reason: "inferred-relation.auto-refreshed",
+              entityType: "relation"
+            });
+          }
+
+          if (touchedRelationIds.size > 0) {
+            scheduleAutoRecompute();
+          }
+
+          span.addDetails({
+            batchSize: batch.length,
+            processedNodes,
+            touchedRelationCount: touchedRelationIds.size
+          });
         }
-      }
-
-      if (processedNodes > 0) {
-        broadcastWorkspaceEvent({
-          reason: "inferred-relation.auto-refreshed",
-          entityType: "relation"
-        });
-      }
-
-      if (touchedRelationIds.size > 0) {
-        scheduleAutoRecompute();
-      }
+      );
     } finally {
       autoRefreshState.running = false;
       hydrateAutoRefreshState();
@@ -1046,18 +1214,31 @@ export function createMemforgeApp(params: {
 
     try {
       try {
-        const result = await currentRepository().processPendingSemanticIndex(config.batchLimit);
-        currentRepository().setSetting("search.semantic.autoIndex.lastRunAt", startedAt);
-        if (result.processedCount > 0) {
-          broadcastWorkspaceEvent({
-            reason: "semantic.auto-indexed",
-            entityType: "settings"
-          });
-        }
-        if (result.remainingCount > 0) {
-          scheduleAutoSemanticIndex();
-        }
-        return result;
+        return await runObservedSpan(
+          "auto.semantic_index",
+          {
+            batchLimit: config.batchLimit
+          },
+          async (span) => {
+            const result = await currentRepository().processPendingSemanticIndex(config.batchLimit);
+            currentRepository().setSetting("search.semantic.autoIndex.lastRunAt", startedAt);
+            if (result.processedCount > 0) {
+              broadcastWorkspaceEvent({
+                reason: "semantic.auto-indexed",
+                entityType: "settings"
+              });
+            }
+            if (result.remainingCount > 0) {
+              scheduleAutoSemanticIndex();
+            }
+            span.addDetails({
+              batchSize: config.batchLimit,
+              processedCount: result.processedCount,
+              remainingCount: result.remainingCount
+            });
+            return result;
+          }
+        );
       } catch (error) {
         shouldHydrate = false;
         console.error("Failed to process semantic index backlog", error);
@@ -1156,15 +1337,119 @@ export function createMemforgeApp(params: {
     };
   }
 
+  function buildLandingPayload(input: {
+    storedAs: "node" | "relation" | "activity";
+    canonicality?: string;
+    status: string;
+    governanceState: "healthy" | "low_confidence" | "contested" | null;
+    reason: string;
+  }) {
+    return {
+      storedAs: input.storedAs,
+      canonicality: input.canonicality,
+      status: input.status,
+      governanceState: input.governanceState,
+      reason: input.reason
+    };
+  }
+
+  function createDurableNodeResponse(
+    repository: ReturnType<typeof currentRepository>,
+    input: typeof createNodeSchema._type
+  ) {
+    const governance = resolveNodeGovernance(
+      input,
+      resolveGovernancePolicy(repository.getSettings(["review.autoApproveLowRisk", "review.trustedSourceToolNames"]))
+    );
+    const node = repository.createNode({
+      ...input,
+      resolvedCanonicality: governance.canonicality,
+      resolvedStatus: governance.status
+    });
+    repository.recordProvenance({
+      entityType: "node",
+      entityId: node.id,
+      operationType: "create",
+      source: input.source,
+      metadata: {
+        reason: governance.reason
+      }
+    });
+    const governanceResult = recomputeGovernanceForEntities("node", [node.id]);
+    queueInferredRefresh(node.id, "node-write");
+    scheduleAutoSemanticIndex();
+    broadcastWorkspaceEvent({
+      reason: "node.created",
+      entityType: "node",
+      entityId: node.id
+    });
+    const storedNode = repository.getNode(node.id);
+    const governancePayload = buildGovernancePayload(
+      repository,
+      "node",
+      node.id,
+      governanceResult.items[0] ?? repository.getGovernanceStateNullable("node", node.id)
+    );
+    return {
+      node: storedNode,
+      governance: governancePayload,
+      landing: buildLandingPayload({
+        storedAs: "node",
+        canonicality: storedNode.canonicality,
+        status: storedNode.status,
+        governanceState: governancePayload.state?.state ?? null,
+        reason: governance.reason
+      })
+    };
+  }
+
   hydrateAutoRecomputeState();
   hydrateAutoRefreshState();
   hydrateAutoSemanticIndexState();
 
   app.use((request, response, next) => {
     const requestId = createId("req");
+    const traceId = request.header("x-memforge-trace-id")?.trim() || createId("trace");
+    const operation = `${request.method.toUpperCase()} ${normalizeApiRequestPath(request.path)}`;
+    const observabilityState = currentObservabilityConfig();
+    const requestSpan = observability.startSpan({
+      surface: "api",
+      operation,
+      requestId,
+      traceId,
+      details: {
+        ...(observabilityState.capturePayloadShape ? summarizePayloadShape(request.body) : {}),
+        mcpTool: request.header("x-memforge-mcp-tool") ?? null
+      }
+    });
+
     response.locals.requestId = requestId;
-    next();
+    response.locals.traceId = traceId;
+    response.locals.telemetryRequestSpan = requestSpan;
+    response.setHeader("x-memforge-request-id", requestId);
+    response.setHeader("x-memforge-trace-id", traceId);
+    response.on("finish", () => {
+      void requestSpan.finish({
+        outcome: response.statusCode >= 400 ? "error" : "success",
+        statusCode: response.statusCode,
+        errorCode: response.locals.telemetryErrorCode ?? null,
+        errorKind: response.locals.telemetryErrorKind ?? null
+      });
+    });
+
+    observability.withContext(
+      {
+        traceId,
+        requestId,
+        workspaceRoot: currentWorkspaceRoot(),
+        workspaceName: currentWorkspaceInfo().workspaceName,
+        toolName: request.header("x-memforge-mcp-tool") ?? null,
+        surface: "api"
+      },
+      next
+    );
   });
+  app.use(express.json({ limit: "2mb" }));
 
   app.use("/api/v1", (request, response, next) => {
     if (!params.apiToken) {
@@ -1316,20 +1601,91 @@ export function createMemforgeApp(params: {
     commitWorkspaceMutation(response, workspace, "workspace.opened");
   });
 
-  app.post("/api/v1/nodes/search", (request, response) => {
+  app.get("/api/v1/observability/summary", handleAsyncRoute(async (request, response) => {
+    const summary = await observability.summarize({
+      since: readRequestParam(request.query.since),
+      surface: "all"
+    });
+    response.json(envelope(response.locals.requestId, summary));
+  }));
+
+  app.get("/api/v1/observability/errors", handleAsyncRoute(async (request, response) => {
+    const surface = readRequestParam(request.query.surface);
+    const normalizedSurface = surface === "api" || surface === "mcp" || surface === "desktop" ? surface : "all";
+    const errors = await observability.listErrors({
+      since: readRequestParam(request.query.since),
+      surface: normalizedSurface,
+      limit: parseClampedNumber(request.query.limit, 50, 1, 200)
+    });
+    response.json(envelope(response.locals.requestId, errors));
+  }));
+
+  app.post("/api/v1/nodes/search", handleAsyncRoute(async (request, response) => {
     const input = nodeSearchSchema.parse(request.body ?? {});
-    response.json(envelope(response.locals.requestId, currentRepository().searchNodes(input)));
-  });
+    const result = await runObservedSpan(
+      "nodes.search",
+      {
+        queryPresent: Boolean(input.query.trim()),
+        limit: input.limit,
+        offset: input.offset,
+        sort: input.sort
+      },
+      (span) => {
+        const searchResult = currentRepository().searchNodes(input);
+        span.addDetails({
+          resultCount: searchResult.items.length,
+          totalCount: searchResult.total
+        });
+        return searchResult;
+      }
+    );
+    response.json(envelope(response.locals.requestId, result));
+  }));
 
-  app.post("/api/v1/activities/search", (request, response) => {
+  app.post("/api/v1/activities/search", handleAsyncRoute(async (request, response) => {
     const input = activitySearchSchema.parse(request.body ?? {});
-    response.json(envelope(response.locals.requestId, currentRepository().searchActivities(input)));
-  });
+    const result = await runObservedSpan(
+      "activities.search",
+      {
+        queryPresent: Boolean(input.query.trim()),
+        limit: input.limit,
+        offset: input.offset,
+        sort: input.sort
+      },
+      (span) => {
+        const searchResult = currentRepository().searchActivities(input);
+        span.addDetails({
+          resultCount: searchResult.items.length,
+          totalCount: searchResult.total
+        });
+        return searchResult;
+      }
+    );
+    response.json(envelope(response.locals.requestId, result));
+  }));
 
-  app.post("/api/v1/search", (request, response) => {
+  app.post("/api/v1/search", handleAsyncRoute(async (request, response) => {
     const input = workspaceSearchSchema.parse(request.body ?? {});
-    response.json(envelope(response.locals.requestId, currentRepository().searchWorkspace(input)));
-  });
+    const result = await runObservedSpan(
+      "workspace.search",
+      {
+        queryPresent: Boolean(input.query.trim()),
+        limit: input.limit,
+        offset: input.offset,
+        sort: input.sort,
+        scopes: input.scopes
+      },
+      (span) => {
+        const searchResult = currentRepository().searchWorkspace(input);
+        span.addDetails({
+          resultCount: searchResult.items.length,
+          totalCount: searchResult.total
+        });
+        return searchResult;
+      }
+    );
+    response.json(envelope(response.locals.requestId, result));
+  }));
 
   app.get("/api/v1/nodes/:id", (request, response) => {
     const repository = currentRepository();
@@ -1349,41 +1705,40 @@ export function createMemforgeApp(params: {
   app.post("/api/v1/nodes", (request, response) => {
     const repository = currentRepository();
     const input = createNodeSchema.parse(request.body ?? {});
-    const governance = resolveNodeGovernance(
-      input,
-      resolveGovernancePolicy(repository.getSettings(["review.autoApproveLowRisk", "review.trustedSourceToolNames"]))
-    );
-    const node = repository.createNode({
-      ...input,
-      resolvedCanonicality: governance.canonicality,
-      resolvedStatus: governance.status
-    });
-    repository.recordProvenance({
-      entityType: "node",
-      entityId: node.id,
-      operationType: "create",
-      source: input.source,
-      metadata: {
-        reason: governance.reason
+    response.status(201).json(envelope(response.locals.requestId, createDurableNodeResponse(repository, input)));
+  });
+
+  app.post("/api/v1/nodes/batch", (request, response) => {
+    const repository = currentRepository();
+    const input = createNodesSchema.parse(request.body ?? {});
+    const items = input.nodes.map((nodeInput, index) => {
+      try {
+        return {
+          ok: true as const,
+          index,
+          ...createDurableNodeResponse(repository, nodeInput)
+        };
+      } catch (error) {
+        if (error instanceof AppError) {
+          return {
+            ok: false as const,
+            index,
+            error: toBatchErrorPayload(error)
+          };
+        }
+        throw error;
       }
     });
-    const governanceResult = recomputeGovernanceForEntities("node", [node.id]);
-    queueInferredRefresh(node.id, "node-write");
-    scheduleAutoSemanticIndex();
-    broadcastWorkspaceEvent({
-      reason: "node.created",
-      entityType: "node",
-      entityId: node.id
-    });
-    response.status(201).json(
+    const successCount = items.filter((item) => item.ok).length;
+    const errorCount = items.length - successCount;
+    response.status(errorCount > 0 ? 207 : 201).json(
       envelope(response.locals.requestId, {
-        node: repository.getNode(node.id),
-        governance: buildGovernancePayload(
-          repository,
-          "node",
-          node.id,
-          governanceResult.items[0] ?? repository.getGovernanceStateNullable("node", node.id)
-        )
+        items,
+        summary: {
+          requestedCount: items.length,
+          successCount,
+          errorCount
+        }
       })
     );
   });
@@ -1441,16 +1796,27 @@ export function createMemforgeApp(params: {
         entityId: node.id
       });
       response.status(201).json(
-        envelope(response.locals.requestId, {
-          storedAs: "node",
-          node: repository.getNode(node.id),
-          governance: buildGovernancePayload(
+        envelope(response.locals.requestId, (() => {
+          const storedNode = repository.getNode(node.id);
+          const governancePayload = buildGovernancePayload(
             repository,
             "node",
             node.id,
             governanceResult.items[0] ?? repository.getGovernanceStateNullable("node", node.id)
-          )
-        })
+          );
+          return {
+            storedAs: "node",
+            node: storedNode,
+            governance: governancePayload,
+            landing: buildLandingPayload({
+              storedAs: "node",
+              canonicality: storedNode.canonicality,
+              status: storedNode.status,
+              governanceState: governancePayload.state?.state ?? null,
+              reason: governance.reason
+            })
+          };
+        })())
       );
       return;
     }
@@ -1489,7 +1855,16 @@ export function createMemforgeApp(params: {
         storedAs: "activity",
         activity,
         targetNode: repository.getNode(targetNode.id),
-        governance: null
+        governance: null,
+        landing: buildLandingPayload({
+          storedAs: "activity",
+          status: "recorded",
+          governanceState: null,
+          reason:
+            input.mode === "activity"
+              ? "Capture was explicitly routed to the activity timeline."
+              : "Short log-like capture was routed to the activity timeline."
+        })
       })
     );
   });
@@ -1614,7 +1989,7 @@ export function createMemforgeApp(params: {
     response.json(envelope(response.locals.requestId, { items }));
   });
 
-  app.get("/api/v1/nodes/:id/neighborhood", (request, response) => {
+  app.get("/api/v1/nodes/:id/neighborhood", handleAsyncRoute(async (request, response) => {
     const depth = Number(request.query.depth ?? 1);
     if (depth !== 1) {
       throw new AppError(400, "INVALID_INPUT", "Only depth=1 is supported in the hot path.");
@@ -1622,13 +1997,27 @@ export function createMemforgeApp(params: {
     const types = parseRelationTypesQuery(request.query.types);
     const includeInferred = request.query.include_inferred === "1" || request.query.include_inferred === "true" || request.query.include_inferred === undefined;
     const maxInferred = parseClampedNumber(request.query.max_inferred, 4, 0, 10);
-    const items = buildNeighborhoodItems(currentRepository(), request.params.id, {
-      relationTypes: types,
-      includeInferred,
-      maxInferred
-    });
+    const items = await runObservedSpan(
+      "nodes.neighborhood",
+      {
+        relationTypeCount: types?.length ?? 0,
+        includeInferred,
+        maxInferred
+      },
+      (span) => {
+        const result = buildNeighborhoodItems(currentRepository(), readRequestParam(request.params.id), {
+          relationTypes: types,
+          includeInferred,
+          maxInferred
+        });
+        span.addDetails({
+          resultCount: result.length
+        });
+        return result;
+      }
+    );
     response.json(envelope(response.locals.requestId, { items }));
-  });
+  }));
 
   app.post("/api/v1/relations", (request, response) => {
     const repository = currentRepository();
@@ -1655,15 +2044,25 @@ export function createMemforgeApp(params: {
       entityId: relation.id
     });
     response.status(201).json(
-      envelope(response.locals.requestId, {
-        relation: repository.getRelation(relation.id),
-        governance: buildGovernancePayload(
+      envelope(response.locals.requestId, (() => {
+        const storedRelation = repository.getRelation(relation.id);
+        const governancePayload = buildGovernancePayload(
           repository,
           "relation",
           relation.id,
           governanceResult.items[0] ?? repository.getGovernanceStateNullable("relation", relation.id)
-        )
-      })
+        );
+        return {
+          relation: storedRelation,
+          governance: governancePayload,
+          landing: buildLandingPayload({
+            storedAs: "relation",
+            status: storedRelation.status,
+            governanceState: governancePayload.state?.state ?? null,
+            reason: governance.reason
+          })
+        };
+      })())
     );
   });
 
@@ -1732,7 +2131,7 @@ export function createMemforgeApp(params: {
     );
   });
 
-  app.post("/api/v1/inferred-relations/recompute", async (request, response) => {
+  app.post("/api/v1/inferred-relations/recompute", handleAsyncRoute(async (request, response) => {
     const input = recomputeInferredRelationsSchema.parse(request.body ?? {});
     const isFullMaintenancePass = !input.generator && !input.relationIds?.length;
     if (isFullMaintenancePass) {
@@ -1747,7 +2146,7 @@ export function createMemforgeApp(params: {
       entityType: "relation"
     });
     response.json(envelope(response.locals.requestId, result));
-  });
+  }));
 
   app.post("/api/v1/inferred-relations/reindex", (request, response) => {
     const input = reindexInferredRelationsSchema.parse(request.body ?? {});
@@ -1918,48 +2317,79 @@ export function createMemforgeApp(params: {
     response.json(envelope(response.locals.requestId, { items }));
   });
 
-  app.post("/api/v1/retrieval/rank-candidates", async (request, response) => {
-    const repository = currentRepository();
-    const query = typeof request.body?.query === "string" ? request.body.query : "";
-    const candidateNodeIds: string[] = Array.isArray(request.body?.candidateNodeIds) ? request.body.candidateNodeIds : [];
-    const preset = typeof request.body?.preset === "string" ? request.body.preset : "for-assistant";
-    const targetNodeId = typeof request.body?.targetNodeId === "string" ? request.body.targetNodeId : null;
-    const relationBonuses = targetNodeId ? buildCandidateRelationBonusMap(repository, targetNodeId, candidateNodeIds) : new Map();
-    const candidates = candidateNodeIds.map((id: string) => repository.getNode(id));
-    const semanticAugmentation = repository.getSemanticAugmentationSettings();
-    const semanticBonuses = shouldUseSemanticCandidateAugmentation(query, candidates)
-      ? buildSemanticCandidateBonusMap(await repository.rankSemanticCandidates(query, candidateNodeIds), semanticAugmentation)
-      : new Map();
-    const ranked = candidates
-      .map((node) => {
-        const relationRetrievalRank = relationBonuses.get(node.id)?.retrievalRank ?? 0;
-        const semanticRetrievalRank = semanticBonuses.get(node.id)?.retrievalRank ?? 0;
-        const rankingScore = computeRankCandidateScore(node, query, preset, relationRetrievalRank + semanticRetrievalRank);
-        const relationReason = relationBonuses.get(node.id)?.reason ?? null;
-        const semanticReason = semanticBonuses.get(node.id)?.reason ?? null;
-        return {
-          nodeId: node.id,
-          score: rankingScore,
-          retrievalRank: rankingScore,
-          title: node.title,
-          relationSource: relationBonuses.get(node.id)?.relationSource ?? null,
-          relationType: relationBonuses.get(node.id)?.relationType ?? null,
-          relationScore: relationBonuses.get(node.id)?.relationScore ?? null,
-          semanticSimilarity: semanticBonuses.get(node.id)?.semanticSimilarity ?? null,
-          reason: [relationReason, semanticReason].filter(Boolean).join("; ") || null
-        };
-      })
-      .sort((left: { score: number }, right: { score: number }) => right.score - left.score);
+  app.post("/api/v1/retrieval/rank-candidates", handleAsyncRoute(async (request, response) => {
+    const ranked = await runObservedSpan(
+      "retrieval.rank_candidates",
+      {
+        candidateCount: Array.isArray(request.body?.candidateNodeIds) ? request.body.candidateNodeIds.length : 0,
+        queryPresent: typeof request.body?.query === "string" && request.body.query.trim().length > 0
+      },
+      async (span) => {
+        const repository = currentRepository();
+        const query = typeof request.body?.query === "string" ? request.body.query : "";
+        const candidateNodeIds: string[] = Array.isArray(request.body?.candidateNodeIds) ? request.body.candidateNodeIds : [];
+        const preset = typeof request.body?.preset === "string" ? request.body.preset : "for-assistant";
+        const targetNodeId = typeof request.body?.targetNodeId === "string" ? request.body.targetNodeId : null;
+        const relationBonuses = targetNodeId ? buildCandidateRelationBonusMap(repository, targetNodeId, candidateNodeIds) : new Map();
+        const candidates = candidateNodeIds.map((id: string) => repository.getNode(id));
+        const semanticAugmentation = repository.getSemanticAugmentationSettings();
+        const semanticEnabled = shouldUseSemanticCandidateAugmentation(query, candidates);
+        const semanticBonuses = semanticEnabled
+          ? buildSemanticCandidateBonusMap(await repository.rankSemanticCandidates(query, candidateNodeIds), semanticAugmentation)
+          : new Map();
+        const result = candidates
+          .map((node) => {
+            const relationRetrievalRank = relationBonuses.get(node.id)?.retrievalRank ?? 0;
+            const semanticRetrievalRank = semanticBonuses.get(node.id)?.retrievalRank ?? 0;
+            const rankingScore = computeRankCandidateScore(node, query, preset, relationRetrievalRank + semanticRetrievalRank);
+            const relationReason = relationBonuses.get(node.id)?.reason ?? null;
+            const semanticReason = semanticBonuses.get(node.id)?.reason ?? null;
+            return {
+              nodeId: node.id,
+              score: rankingScore,
+              retrievalRank: rankingScore,
+              title: node.title,
+              relationSource: relationBonuses.get(node.id)?.relationSource ?? null,
+              relationType: relationBonuses.get(node.id)?.relationType ?? null,
+              relationScore: relationBonuses.get(node.id)?.relationScore ?? null,
+              semanticSimilarity: semanticBonuses.get(node.id)?.semanticSimilarity ?? null,
+              reason: [relationReason, semanticReason].filter(Boolean).join("; ") || null
+            };
+          })
+          .sort((left: { score: number }, right: { score: number }) => right.score - left.score);
+        span.addDetails({
+          resultCount: result.length,
+          semanticUsed: semanticEnabled
+        });
+        return result;
+      }
+    );
     response.json(envelope(response.locals.requestId, { items: ranked }));
-  });
+  }));
 
-  app.post("/api/v1/context/bundles", async (request, response) => {
+  app.post("/api/v1/context/bundles", handleAsyncRoute(async (request, response) => {
     const input = buildContextBundleSchema.parse(request.body ?? {});
-    const bundle = await buildContextBundle(currentRepository(), input);
+    const bundle = await runObservedSpan(
+      "context.bundle",
+      {
+        mode: input.mode,
+        preset: input.preset,
+        maxItems: input.options.maxItems,
+        includeRelated: input.options.includeRelated
+      },
+      async (span) => {
+        const result = await buildContextBundle(currentRepository(), input);
+        span.addDetails({
+          itemCount: result.items.length,
+          activityDigestCount: result.activityDigest.length
+        });
+        return result;
+      }
+    );
     response.json(envelope(response.locals.requestId, { bundle }));
-  });
+  }));
 
-  app.post("/api/v1/context/bundles/preview", async (request, response) => {
+  app.post("/api/v1/context/bundles/preview", handleAsyncRoute(async (request, response) => {
     const input = buildContextBundleSchema.parse(request.body ?? {});
     const bundle = await buildContextBundle(currentRepository(), input);
     response.json(
@@ -1968,9 +2398,9 @@ export function createMemforgeApp(params: {
         preview: bundleAsMarkdown(bundle)
       })
     );
-  });
+  }));
 
-  app.post("/api/v1/context/bundles/export", async (request, response) => {
+  app.post("/api/v1/context/bundles/export", handleAsyncRoute(async (request, response) => {
     const input = buildContextBundleSchema.parse(request.body ?? {});
     const format = request.body?.format === "json" ? "json" : request.body?.format === "text" ? "text" : "markdown";
     const bundle = await buildContextBundle(currentRepository(), input);
@@ -1981,7 +2411,7 @@ export function createMemforgeApp(params: {
           ? bundle.items.map((item) => `${item.title ?? item.nodeId}: ${item.summary ?? "No summary"}`).join("\n")
           : bundleAsMarkdown(bundle);
     response.json(envelope(response.locals.requestId, { format, output, bundle }));
-  });
+  }));
 
   app.get("/api/v1/governance/issues", (request, response) => {
     const states = parseCommaSeparatedValues(request.query.states)?.filter(
@@ -2095,11 +2525,15 @@ export function createMemforgeApp(params: {
 
   app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
     if (error instanceof AppError) {
+      response.locals.telemetryErrorCode = error.code;
+      response.locals.telemetryErrorKind = "app_error";
       response.status(error.statusCode).json(errorEnvelope(response.locals.requestId, error));
       return;
     }
 
     if (error instanceof Error && "issues" in error) {
+      response.locals.telemetryErrorCode = "INVALID_INPUT";
+      response.locals.telemetryErrorKind = "validation_error";
       response
         .status(400)
         .json(errorEnvelope(response.locals.requestId, new AppError(400, "INVALID_INPUT", "Invalid input.", error)));
@@ -2107,6 +2541,8 @@ export function createMemforgeApp(params: {
     }
 
     const unexpected = new AppError(500, "INTERNAL_ERROR", "Unexpected internal error.");
+    response.locals.telemetryErrorCode = unexpected.code;
+    response.locals.telemetryErrorKind = "unexpected_error";
     response.status(unexpected.statusCode).json(errorEnvelope(response.locals.requestId, unexpected));
   });
 

@@ -18,6 +18,7 @@ import type {
   RelationRecord,
   RelationUsageEventRecord,
   RelationUsageSummary,
+  SearchMatchReason,
   SearchFeedbackEventRecord,
   SearchFeedbackSummary,
   SearchResultItem,
@@ -42,6 +43,7 @@ import type {
   WorkspaceSearchInput
 } from "../shared/contracts.js";
 import { AppError, assertPresent } from "./errors.js";
+import { appendCurrentTelemetryDetails } from "./observability.js";
 import { computeMaintainedScores } from "./relation-scoring.js";
 import { buildSemanticChunks, buildSemanticDocumentText, normalizeTagList } from "./semantic/chunker.js";
 import { embedSemanticQueryText, normalizeSemanticProviderConfig, resolveSemanticEmbeddingProvider } from "./semantic/provider.js";
@@ -68,6 +70,7 @@ const SEARCH_FEEDBACK_WINDOW_PADDING = 20;
 const SEARCH_FEEDBACK_MAX_WINDOW = 100;
 const ACTIVITY_RESULT_CAP_PER_TARGET = 2;
 const WORKSPACE_CAPTURE_INBOX_KEY = "workspace.capture.inboxNodeId";
+const SEARCH_FALLBACK_TOKEN_LIMIT = 5;
 const workspaceInboxSource: Source = {
   actorType: "system",
   actorLabel: "Memforge",
@@ -117,6 +120,80 @@ type SemanticIssueCursor = {
   updatedAt: string;
   nodeId: string;
 };
+
+function normalizeSearchText(value: string | null | undefined): string {
+  return (value ?? "").normalize("NFKC").toLowerCase();
+}
+
+function tokenizeSearchQuery(query: string, maxTokens = 12): string[] {
+  const matches = normalizeSearchText(query).match(/[\p{L}\p{N}]{2,}/gu) ?? [];
+  return Array.from(new Set(matches)).slice(0, maxTokens);
+}
+
+function collectMatchedFields(
+  query: string,
+  candidates: Array<{ field: string; value: string | null | undefined }>
+): string[] {
+  const trimmedQuery = normalizeSearchText(query).trim();
+  if (!trimmedQuery) {
+    return [];
+  }
+
+  const tokens = tokenizeSearchQuery(trimmedQuery);
+  const matchTerms = tokens.length ? tokens : [trimmedQuery];
+  const matches = new Set<string>();
+
+  for (const candidate of candidates) {
+    const haystack = normalizeSearchText(candidate.value);
+    if (!haystack) {
+      continue;
+    }
+
+    if (haystack.includes(trimmedQuery) || matchTerms.some((term) => haystack.includes(term))) {
+      matches.add(candidate.field);
+    }
+  }
+
+  return [...matches];
+}
+
+function buildSearchMatchReason(
+  strategy: SearchMatchReason["strategy"],
+  matchedFields: string[]
+): SearchMatchReason {
+  return {
+    strategy,
+    matchedFields
+  };
+}
+
+function mergeMatchReasons(
+  left: SearchMatchReason | undefined,
+  right: SearchMatchReason | undefined,
+  strategy: SearchMatchReason["strategy"]
+): SearchMatchReason {
+  return {
+    strategy,
+    matchedFields: Array.from(new Set([...(left?.matchedFields ?? []), ...(right?.matchedFields ?? [])]))
+  };
+}
+
+function computeWorkspaceRecencyBonus(timestamp: string, resultType: "node" | "activity") {
+  const ageMs = Date.now() - new Date(timestamp).getTime();
+  if (ageMs <= 60 * 60 * 1000) return resultType === "activity" ? 16 : 12;
+  if (ageMs <= 24 * 60 * 60 * 1000) return resultType === "activity" ? 12 : 8;
+  if (ageMs <= 7 * 24 * 60 * 60 * 1000) return resultType === "activity" ? 7 : 5;
+  if (ageMs <= 30 * 24 * 60 * 60 * 1000) return resultType === "activity" ? 3 : 2;
+  return 0;
+}
+
+function computeWorkspaceRankBonus(index: number, total: number) {
+  if (total <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, Math.round(((total - index) / total) * 24));
+}
 
 type SemanticIndexSettings = {
   enabled: boolean;
@@ -1290,38 +1367,76 @@ export class MemforgeRepository {
   }): { items: SearchResultItem[]; total: number } {
     if (input.query.trim()) {
       try {
-        return this.searchNodesWithFts(input);
+        const result = this.searchNodesWithFts(input);
+        appendCurrentTelemetryDetails({
+          ftsFallback: false,
+          resultCount: result.items.length,
+          totalCount: result.total
+        });
+        return result;
       } catch {
-        return this.searchNodesWithLike(input);
+        const fallbackResult = this.searchNodesWithLike(input);
+        appendCurrentTelemetryDetails({
+          ftsFallback: true,
+          resultCount: fallbackResult.items.length,
+          totalCount: fallbackResult.total
+        });
+        return fallbackResult;
       }
     }
 
-    return this.searchNodesWithLike(input);
+    const result = this.searchNodesWithLike(input);
+    appendCurrentTelemetryDetails({
+      ftsFallback: false,
+      resultCount: result.items.length,
+      totalCount: result.total
+    });
+    return result;
   }
 
   searchActivities(input: ActivitySearchInput): { items: ActivitySearchResultItem[]; total: number } {
     if (input.query.trim()) {
       try {
-        return this.searchActivitiesWithFts(input);
+        const result = this.searchActivitiesWithFts(input);
+        appendCurrentTelemetryDetails({
+          ftsFallback: false,
+          resultCount: result.items.length,
+          totalCount: result.total
+        });
+        return result;
       } catch {
-        return this.searchActivitiesWithLike(input);
+        const fallbackResult = this.searchActivitiesWithLike(input);
+        appendCurrentTelemetryDetails({
+          ftsFallback: true,
+          resultCount: fallbackResult.items.length,
+          totalCount: fallbackResult.total
+        });
+        return fallbackResult;
       }
     }
 
-    return this.searchActivitiesWithLike(input);
+    const result = this.searchActivitiesWithLike(input);
+    appendCurrentTelemetryDetails({
+      ftsFallback: false,
+      resultCount: result.items.length,
+      totalCount: result.total
+    });
+    return result;
   }
 
   searchWorkspace(input: WorkspaceSearchInput): { items: WorkspaceSearchResultItem[]; total: number } {
     const includeNodes = input.scopes.includes("nodes");
     const includeActivities = input.scopes.includes("activities");
     const requestedWindow = Math.min(input.limit + input.offset + SEARCH_FEEDBACK_WINDOW_PADDING, SEARCH_FEEDBACK_MAX_WINDOW);
+    const queryPresent = Boolean(input.query.trim());
+    const searchSort = input.sort === "smart" ? (queryPresent ? "relevance" : "updated_at") : input.sort;
     const nodeResults = includeNodes
       ? this.searchNodes({
           query: input.query,
           filters: input.nodeFilters ?? {},
           limit: requestedWindow,
           offset: 0,
-          sort: input.sort
+          sort: searchSort
         })
       : { items: [], total: 0 };
     const activityResults = includeActivities
@@ -1330,29 +1445,160 @@ export class MemforgeRepository {
           filters: input.activityFilters ?? {},
           limit: requestedWindow,
           offset: 0,
-          sort: input.sort
+          sort: searchSort
         })
       : { items: [], total: 0 };
+    const fallbackTriggered = queryPresent && nodeResults.total + activityResults.total === 0;
+    const fallbackTokens = fallbackTriggered ? tokenizeSearchQuery(input.query, SEARCH_FALLBACK_TOKEN_LIMIT) : [];
+    const resolvedNodeResults =
+      fallbackTokens.length >= 2 && includeNodes
+        ? this.searchWorkspaceNodeFallback(fallbackTokens, input.nodeFilters ?? {}, requestedWindow)
+        : nodeResults;
+    const resolvedActivityResults =
+      fallbackTokens.length >= 2 && includeActivities
+        ? this.searchWorkspaceActivityFallback(fallbackTokens, input.activityFilters ?? {}, requestedWindow)
+        : activityResults;
+    const merged = this.mergeWorkspaceSearchResults(
+      resolvedNodeResults.items,
+      resolvedActivityResults.items,
+      input.sort
+    );
 
-    const merged =
-      input.sort === "updated_at"
-        ? [
-            ...nodeResults.items.map((node) => ({ resultType: "node" as const, node })),
-            ...activityResults.items.map((activity) => ({ resultType: "activity" as const, activity }))
-          ].sort((left, right) => {
-            const leftTimestamp = left.resultType === "node" ? left.node.updatedAt : left.activity.createdAt;
-            const rightTimestamp = right.resultType === "node" ? right.node.updatedAt : right.activity.createdAt;
-            return rightTimestamp.localeCompare(leftTimestamp);
-          })
-        : [
-            ...nodeResults.items.map((node) => ({ resultType: "node" as const, node })),
-            ...activityResults.items.map((activity) => ({ resultType: "activity" as const, activity }))
-          ];
-
-    return {
-      total: nodeResults.total + activityResults.total,
+    const result = {
+      total:
+        fallbackTokens.length >= 2
+          ? merged.length
+          : resolvedNodeResults.total + resolvedActivityResults.total,
       items: merged.slice(input.offset, input.offset + input.limit)
     };
+    appendCurrentTelemetryDetails({
+      candidateCount: requestedWindow,
+      nodeCandidateCount: resolvedNodeResults.items.length,
+      activityCandidateCount: resolvedActivityResults.items.length,
+      resultCount: result.items.length,
+      totalCount: result.total,
+      fallbackTokenCount: fallbackTokens.length
+    });
+    return result;
+  }
+
+  private searchWorkspaceNodeFallback(
+    tokens: string[],
+    filters: WorkspaceSearchInput["nodeFilters"],
+    limit: number
+  ): { items: SearchResultItem[]; total: number } {
+    const merged = new Map<string, SearchResultItem>();
+
+    for (const token of tokens) {
+      const result = this.searchNodes({
+        query: token,
+        filters: filters ?? {},
+        limit,
+        offset: 0,
+        sort: "relevance"
+      });
+      for (const item of result.items) {
+        const existing = merged.get(item.id);
+        if (existing) {
+          existing.matchReason = mergeMatchReasons(existing.matchReason, item.matchReason, "fallback_token");
+          continue;
+        }
+        merged.set(item.id, {
+          ...item,
+          matchReason: mergeMatchReasons(undefined, item.matchReason, "fallback_token")
+        });
+      }
+    }
+
+    return {
+      total: merged.size,
+      items: [...merged.values()]
+    };
+  }
+
+  private searchWorkspaceActivityFallback(
+    tokens: string[],
+    filters: WorkspaceSearchInput["activityFilters"],
+    limit: number
+  ): { items: ActivitySearchResultItem[]; total: number } {
+    const merged = new Map<string, ActivitySearchResultItem>();
+
+    for (const token of tokens) {
+      const result = this.searchActivities({
+        query: token,
+        filters: filters ?? {},
+        limit,
+        offset: 0,
+        sort: "relevance"
+      });
+      for (const item of result.items) {
+        const existing = merged.get(item.id);
+        if (existing) {
+          existing.matchReason = mergeMatchReasons(existing.matchReason, item.matchReason, "fallback_token");
+          continue;
+        }
+        merged.set(item.id, {
+          ...item,
+          matchReason: mergeMatchReasons(undefined, item.matchReason, "fallback_token")
+        });
+      }
+    }
+
+    return {
+      total: merged.size,
+      items: [...merged.values()]
+    };
+  }
+
+  private mergeWorkspaceSearchResults(
+    nodeItems: SearchResultItem[],
+    activityItems: ActivitySearchResultItem[],
+    sort: WorkspaceSearchInput["sort"]
+  ): WorkspaceSearchResultItem[] {
+    const merged = [
+      ...nodeItems.map((node, index) => ({
+        resultType: "node" as const,
+        node,
+        index,
+        total: nodeItems.length,
+        timestamp: node.updatedAt,
+        contested: node.status === "contested"
+      })),
+      ...activityItems.map((activity, index) => ({
+        resultType: "activity" as const,
+        activity,
+        index,
+        total: activityItems.length,
+        timestamp: activity.createdAt,
+        contested: activity.targetNodeStatus === "contested"
+      }))
+    ];
+
+    if (sort === "updated_at") {
+      return merged
+        .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
+        .map(({ index: _index, total: _total, timestamp: _timestamp, contested: _contested, ...item }) => item);
+    }
+
+    if (sort === "smart") {
+      return merged
+        .sort((left, right) => {
+          const leftScore =
+            computeWorkspaceRankBonus(left.index, left.total) +
+            computeWorkspaceRecencyBonus(left.timestamp, left.resultType) +
+            (left.resultType === "activity" ? 4 : 0) -
+            (left.contested ? 20 : 0);
+          const rightScore =
+            computeWorkspaceRankBonus(right.index, right.total) +
+            computeWorkspaceRecencyBonus(right.timestamp, right.resultType) +
+            (right.resultType === "activity" ? 4 : 0) -
+            (right.contested ? 20 : 0);
+          return rightScore - leftScore || right.timestamp.localeCompare(left.timestamp);
+        })
+        .map(({ index: _index, total: _total, timestamp: _timestamp, contested: _contested, ...item }) => item);
+    }
+
+    return merged.map(({ index: _index, total: _total, timestamp: _timestamp, contested: _contested, ...item }) => item);
   }
 
   private searchNodesWithFts(input: {
@@ -1378,7 +1624,19 @@ export class MemforgeRepository {
       orderBy = "CASE WHEN n.status = 'contested' THEN 1 ELSE 0 END, bm25(nodes_fts, 3.0, 1.5, 2.0), n.updated_at DESC";
     }
 
-    return this.runSearchQuery(from, where, values, orderBy, [], input.limit, input.offset, input.filters, input.sort === "relevance");
+    return this.runSearchQuery(
+      from,
+      where,
+      values,
+      orderBy,
+      [],
+      input.limit,
+      input.offset,
+      input.filters,
+      input.sort === "relevance",
+      input.query,
+      "fts"
+    );
   }
 
   private searchNodesWithLike(input: {
@@ -1429,7 +1687,9 @@ export class MemforgeRepository {
       input.limit,
       input.offset,
       input.filters,
-      input.sort === "relevance"
+      input.sort === "relevance",
+      input.query,
+      input.query.trim() ? "like" : "browse"
     );
   }
 
@@ -1477,7 +1737,8 @@ export class MemforgeRepository {
           ? "CASE WHEN n.status = 'contested' THEN 1 ELSE 0 END, bm25(activities_fts, 2.0, 1.0), a.created_at DESC"
           : "CASE WHEN n.status = 'contested' THEN 1 ELSE 0 END, a.created_at DESC",
       orderValues: [],
-      input
+      input,
+      strategy: "fts"
     });
   }
 
@@ -1489,18 +1750,22 @@ export class MemforgeRepository {
 
     if (input.query.trim()) {
       const queryLike = `%${input.query.trim()}%`;
-      initialWhere.push(`lower(coalesce(a.body, '')) LIKE lower(?)`);
-      initialWhereValues.push(queryLike);
+      initialWhere.push(
+        `(lower(coalesce(a.body, '')) LIKE lower(?) OR lower(coalesce(n.title, '')) LIKE lower(?) OR lower(coalesce(a.activity_type, '')) LIKE lower(?) OR lower(coalesce(a.source_label, '')) LIKE lower(?))`
+      );
+      initialWhereValues.push(queryLike, queryLike, queryLike, queryLike);
       if (input.sort === "relevance") {
         orderBy = `
           CASE
             WHEN lower(coalesce(a.body, '')) LIKE lower(?) THEN 0
-            ELSE 1
+            WHEN lower(coalesce(n.title, '')) LIKE lower(?) THEN 1
+            WHEN lower(coalesce(a.activity_type, '')) LIKE lower(?) THEN 2
+            ELSE 3
           END,
           CASE WHEN n.status = 'contested' THEN 1 ELSE 0 END,
           a.created_at DESC
         `;
-        orderValues.push(queryLike);
+        orderValues.push(queryLike, queryLike, queryLike);
       }
     }
 
@@ -1510,7 +1775,8 @@ export class MemforgeRepository {
       initialWhereValues,
       orderBy,
       orderValues,
-      input
+      input,
+      strategy: input.query.trim() ? "like" : "browse"
     });
   }
 
@@ -1537,6 +1803,7 @@ export class MemforgeRepository {
     orderBy: string;
     orderValues: SqlValue[];
     input: ActivitySearchInput;
+    strategy: SearchMatchReason["strategy"];
   }): { items: ActivitySearchResultItem[]; total: number } {
     const where = [...params.initialWhere];
     const whereValues = [...params.initialWhereValues];
@@ -1609,7 +1876,18 @@ export class MemforgeRepository {
       activityType: row.activity_type as ActivitySearchResultItem["activityType"],
       body: row.body ? String(row.body) : null,
       sourceLabel: row.source_label ? String(row.source_label) : null,
-      createdAt: String(row.created_at)
+      createdAt: String(row.created_at),
+      matchReason: buildSearchMatchReason(
+        params.strategy,
+        params.strategy === "browse"
+          ? []
+          : collectMatchedFields(params.input.query, [
+              { field: "body", value: row.body ? String(row.body) : null },
+              { field: "targetNodeTitle", value: row.target_title ? String(row.target_title) : null },
+              { field: "activityType", value: row.activity_type ? String(row.activity_type) : null },
+              { field: "sourceLabel", value: row.source_label ? String(row.source_label) : null }
+            ])
+      )
     }));
     const rankedItems = useSearchFeedbackBoost ? this.applyActivitySearchFeedbackBoost(items) : items;
     const cappedItems = this.capActivityResultsPerTarget(rankedItems);
@@ -1634,7 +1912,9 @@ export class MemforgeRepository {
       sourceLabels?: string[];
       tags?: string[];
     },
-    useSearchFeedbackBoost: boolean
+    useSearchFeedbackBoost: boolean,
+    query: string,
+    strategy: SearchMatchReason["strategy"]
   ): { items: SearchResultItem[]; total: number } {
     const where = [...initialWhere];
     const whereValues = [...initialWhereValues];
@@ -1672,7 +1952,7 @@ export class MemforgeRepository {
     const effectiveOffset = useSearchFeedbackBoost ? 0 : offset;
     const rows = this.db
       .prepare(
-        `SELECT n.id, n.type, n.title, n.summary, n.status, n.canonicality, n.source_label, n.updated_at, n.tags_json
+        `SELECT n.id, n.type, n.title, n.body, n.summary, n.status, n.canonicality, n.source_label, n.updated_at, n.tags_json
          FROM ${from}
          ${whereClause}
          ORDER BY ${orderBy}
@@ -1689,7 +1969,19 @@ export class MemforgeRepository {
       canonicality: row.canonicality as SearchResultItem["canonicality"],
       sourceLabel: row.source_label ? String(row.source_label) : null,
       updatedAt: String(row.updated_at),
-      tags: parseJson<string[]>(row.tags_json as string | null, [])
+      tags: parseJson<string[]>(row.tags_json as string | null, []),
+      matchReason: buildSearchMatchReason(
+        strategy,
+        strategy === "browse"
+          ? []
+          : collectMatchedFields(query, [
+              { field: "title", value: row.title ? String(row.title) : null },
+              { field: "summary", value: row.summary ? String(row.summary) : null },
+              { field: "body", value: row.body ? String(row.body) : null },
+              { field: "tags", value: parseJson<string[]>(row.tags_json as string | null, []).join(" ") },
+              { field: "sourceLabel", value: row.source_label ? String(row.source_label) : null }
+            ])
+      )
     }));
     const rankedItems = useSearchFeedbackBoost ? this.applySearchFeedbackBoost(items) : items;
 

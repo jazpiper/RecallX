@@ -8,6 +8,7 @@ import type {
   GovernanceStateRecord,
   GraphConnection,
   Integration,
+  LandingInfo,
   NodeDetail,
   Node,
   Relation,
@@ -697,7 +698,7 @@ export async function searchWorkspace(query: string, scopes: Array<'nodes' | 'ac
           scopes,
           limit: 20,
           offset: 0,
-          sort: query.trim() ? 'relevance' : 'updated_at',
+          sort: query.trim() ? 'smart' : 'updated_at',
         }),
       });
       const items = Array.isArray(payload?.data?.items) ? payload.data.items : [];
@@ -710,11 +711,15 @@ export async function searchWorkspace(query: string, scopes: Array<'nodes' | 'ac
                 targetNodeTitle: item.activity?.targetNodeTitle ?? item.activity?.target_title,
                 targetNodeType: item.activity?.targetNodeType ?? item.activity?.target_type,
                 targetNodeStatus: item.activity?.targetNodeStatus ?? item.activity?.target_status,
+                matchReason: item.activity?.matchReason,
               },
             }
           : {
               resultType: 'node' as const,
-              node: mapNode(item.node),
+              node: {
+                ...mapNode(item.node),
+                matchReason: item.node?.matchReason,
+              },
             }
       );
     },
@@ -892,7 +897,7 @@ export async function createNode(input: {
   title: string;
   body: string;
   tags?: string[];
-}): Promise<Node> {
+}): Promise<{ node: Node; landing: LandingInfo | null }> {
   const payload = await requestJson('/nodes', {
     method: 'POST',
     body: JSON.stringify({
@@ -906,7 +911,10 @@ export async function createNode(input: {
       },
     }),
   });
-  return mapNode(payload?.data?.node);
+  return {
+    node: mapNode(payload?.data?.node),
+    landing: payload?.data?.landing ?? null,
+  };
 }
 
 export async function refreshNodeSummary(id: string): Promise<Node> {

@@ -265,6 +265,12 @@ describe("capture workflow behavior", () => {
       expect(payload.data.targetNode.type).toBe("conversation");
       expect(payload.data.targetNode.title).toBe("Workspace Inbox");
       expect(payload.data.activity.targetNodeId).toBe(payload.data.targetNode.id);
+      expect(payload.data.landing).toEqual({
+        storedAs: "activity",
+        status: "recorded",
+        governanceState: null,
+        reason: "Short log-like capture was routed to the activity timeline."
+      });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
@@ -308,6 +314,8 @@ describe("capture workflow behavior", () => {
       expect(response.status).toBe(201);
       expect(payload.data.storedAs).toBe("node");
       expect(payload.data.node.type).toBe("note");
+      expect(payload.data.landing.storedAs).toBe("node");
+      expect(payload.data.landing.reason).toBe("Reusable agent-authored knowledge starts suggested and active.");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
@@ -349,6 +357,7 @@ describe("capture workflow behavior", () => {
       expect(response.status).toBe(201);
       expect(payload.data.storedAs).toBe("node");
       expect(payload.data.node.type).toBe("decision");
+      expect(payload.data.landing.reason).toContain("decisions start suggested");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
@@ -433,6 +442,168 @@ describe("capture workflow behavior", () => {
 
       expect(response.status).toBe(201);
       expect(payload.data.node.type).toBe("question");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("creates node batches with per-item landing metadata", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/nodes/batch`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          nodes: [
+            {
+              type: "note",
+              title: "Reusable batch note",
+              body: "Use workspace search as the default entry point when the target node is unknown.",
+              summary: "Search workspace should be the default mixed retrieval entry point.",
+              source: {
+                actorType: "agent",
+                actorLabel: "Codex",
+                toolName: "codex"
+              },
+              metadata: {}
+            },
+            {
+              type: "question",
+              title: "Batch follow-up",
+              body: "Should batch create preserve per-item governance landing details?",
+              source: {
+                actorType: "agent",
+                actorLabel: "Codex",
+                toolName: "codex"
+              },
+              metadata: {}
+            }
+          ]
+        })
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(201);
+      expect(payload.data.summary).toEqual({
+        requestedCount: 2,
+        successCount: 2,
+        errorCount: 0
+      });
+      expect(payload.data.items).toHaveLength(2);
+      expect(payload.data.items[0]).toMatchObject({
+        ok: true,
+        index: 0,
+        landing: {
+          storedAs: "node",
+          canonicality: "suggested",
+          status: "active",
+          reason: "Reusable agent-authored knowledge starts suggested and active."
+        }
+      });
+      expect(payload.data.items[1]).toMatchObject({
+        ok: true,
+        index: 1,
+        landing: {
+          storedAs: "node",
+          status: "active"
+        }
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("returns partial success for node batches when one item is short-form agent output", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/nodes/batch`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          nodes: [
+            {
+              type: "note",
+              title: "Short update",
+              body: "done",
+              source: {
+                actorType: "agent",
+                actorLabel: "Codex",
+                toolName: "codex"
+              },
+              metadata: {}
+            },
+            {
+              type: "note",
+              title: "Durable batch note",
+              body: "Use memforge_create_nodes for end-of-session writeback when several durable facts were identified.",
+              summary: "Batch durable write for multiple reusable facts.",
+              source: {
+                actorType: "agent",
+                actorLabel: "Codex",
+                toolName: "codex"
+              },
+              metadata: {}
+            }
+          ]
+        })
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(207);
+      expect(payload.data.summary).toEqual({
+        requestedCount: 2,
+        successCount: 1,
+        errorCount: 1
+      });
+      expect(payload.data.items[0]).toMatchObject({
+        ok: false,
+        index: 0,
+        error: {
+          code: "FORBIDDEN",
+          message: "Short log-like agent output must be appended as activity, not stored as a durable node.",
+          details: expect.objectContaining({
+            suggestedMode: "activity",
+            suggestedTarget: "workspace-inbox"
+          })
+        }
+      });
+      expect(payload.data.items[1]).toMatchObject({
+        ok: true,
+        index: 1,
+        landing: {
+          storedAs: "node",
+          canonicality: "suggested",
+          status: "active"
+        }
+      });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
@@ -2751,6 +2922,80 @@ describe("inferred relation API integration", () => {
     }
   });
 
+  it("builds a workspace-entry context bundle when no target is provided", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+    const source = {
+      actorType: "agent" as const,
+      actorLabel: "Codex",
+      toolName: "codex",
+    };
+    const project = repository.createNode({
+      type: "project",
+      title: "Workspace project",
+      body: "Recent project context",
+      source,
+      tags: [],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    repository.appendActivity({
+      targetNodeId: project.id,
+      activityType: "agent_run_summary",
+      body: "Recent workspace activity",
+      source,
+      metadata: {},
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      const bundleResponse = await fetch(`${baseUrl}/context/bundles`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "compact",
+          preset: "for-assistant",
+          options: {
+            includeRelated: true,
+            includeInferred: true,
+            includeRecentActivities: true,
+            includeDecisions: true,
+            includeOpenQuestions: true,
+            maxInferred: 4,
+            maxItems: 6
+          }
+        }),
+      });
+      const bundleBody = await bundleResponse.json();
+
+      expect(bundleResponse.status).toBe(200);
+      expect(bundleBody.data.bundle.target).toEqual({
+        type: "workspace",
+        id: "workspace",
+        title: "Workspace context"
+      });
+      expect(bundleBody.data.bundle.items.some((item: { nodeId: string }) => item.nodeId === project.id)).toBe(true);
+      expect(bundleBody.data.bundle.activityDigest[0]).toContain("Recent workspace activity");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
   it("adds local-ngram semantic bonuses to context bundles when lexical overlap is weak", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
     tempRoots.push(root);
@@ -3003,6 +3248,8 @@ describe("inferred relation API integration", () => {
       expect(payload.data.total).toBe(1);
       expect(payload.data.items[0].targetNodeId).toBe(node.id);
       expect(payload.data.items[0].activityType).toBe("agent_run_summary");
+      expect(payload.data.items[0].matchReason.strategy).toBe("fts");
+      expect(payload.data.items[0].matchReason.matchedFields).toContain("body");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
@@ -3066,6 +3313,199 @@ describe("inferred relation API integration", () => {
       expect(payload.data.total).toBeGreaterThanOrEqual(2);
       expect(payload.data.items.some((item: { resultType: string }) => item.resultType === "node")).toBe(true);
       expect(payload.data.items.some((item: { resultType: string }) => item.resultType === "activity")).toBe(true);
+      expect(payload.data.items.find((item: { resultType: string }) => item.resultType === "node")?.node?.matchReason?.matchedFields).toContain(
+        "title"
+      );
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("keeps HTTP blank-query browse behavior and marks browse match reasons", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const source = {
+      actorType: "agent" as const,
+      actorLabel: "Codex",
+      toolName: "codex",
+    };
+    repository.createNode({
+      type: "note",
+      title: "Recent browse candidate",
+      body: "Visible through browse mode.",
+      source,
+      tags: ["browse"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      const response = await fetch(`${baseUrl}/nodes/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "",
+          filters: {},
+          limit: 5,
+          offset: 0,
+          sort: "updated_at",
+        }),
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload.data.items[0].matchReason).toEqual({
+        strategy: "browse",
+        matchedFields: []
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("falls back to tokenized workspace search and labels fallback match reasons", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const source = {
+      actorType: "agent" as const,
+      actorLabel: "Codex",
+      toolName: "codex",
+    };
+    const node = repository.createNode({
+      type: "note",
+      title: "Cleanup guide",
+      body: "Durable note about migrations.",
+      source,
+      tags: ["cleanup"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    repository.appendActivity({
+      targetNodeId: node.id,
+      activityType: "agent_run_summary",
+      body: "Governance migration completed successfully.",
+      source,
+      metadata: {},
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      const response = await fetch(`${baseUrl}/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "cleanup governance migration",
+          scopes: ["nodes", "activities"],
+          limit: 10,
+          offset: 0,
+          sort: "smart",
+        }),
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload.data.items.some((item: { resultType: string; node?: { matchReason?: { strategy: string } } }) =>
+        item.resultType === "node" && item.node?.matchReason?.strategy === "fallback_token"
+      )).toBe(true);
+      expect(payload.data.items.some((item: { resultType: string; activity?: { matchReason?: { strategy: string } } }) =>
+        item.resultType === "activity" && item.activity?.matchReason?.strategy === "fallback_token"
+      )).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("uses smart sort to keep recent activity near the top of mixed search results", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "memforge-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createMemforgeApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const source = {
+      actorType: "agent" as const,
+      actorLabel: "Codex",
+      toolName: "codex",
+    };
+    const node = repository.createNode({
+      type: "note",
+      title: "Cleanup reference",
+      body: "Durable cleanup note.",
+      source,
+      tags: [],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    repository.appendActivity({
+      targetNodeId: node.id,
+      activityType: "agent_run_summary",
+      body: "Cleanup summary finished a moment ago.",
+      source,
+      metadata: {},
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      const response = await fetch(`${baseUrl}/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "cleanup",
+          scopes: ["nodes", "activities"],
+          limit: 10,
+          offset: 0,
+          sort: "smart",
+        }),
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload.data.items[0].resultType).toBe("activity");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
@@ -4457,6 +4897,13 @@ describe("node governance behavior", () => {
       expect(payload.data.node.status).toBe("active");
       expect(payload.data.reviewItem).toBeUndefined();
       expect(payload.data.governance.state.state).toBe("low_confidence");
+      expect(payload.data.landing).toEqual({
+        storedAs: "node",
+        canonicality: "suggested",
+        status: "active",
+        governanceState: "low_confidence",
+        reason: "Reusable agent-authored knowledge starts suggested and active."
+      });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
@@ -4533,11 +4980,18 @@ describe("node governance behavior", () => {
       expect(nodePayload.data.node.status).toBe("active");
       expect(nodePayload.data.reviewItem).toBeUndefined();
       expect(nodePayload.data.governance.state.state).toBe("low_confidence");
+      expect(nodePayload.data.landing.storedAs).toBe("node");
 
       expect(relationResponse.status).toBe(201);
       expect(relationPayload.data.relation.status).toBe("suggested");
       expect(relationPayload.data.reviewItem).toBeUndefined();
       expect(relationPayload.data.governance.state.state).toBe("low_confidence");
+      expect(relationPayload.data.landing).toEqual({
+        storedAs: "relation",
+        status: "suggested",
+        governanceState: "low_confidence",
+        reason: "Agent-authored relations start suggested and rely on automatic governance promotion."
+      });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

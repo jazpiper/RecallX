@@ -131,6 +131,10 @@ export class WorkspaceSessionManager {
       "relations.autoRecompute.maxStalenessMs": 300_000,
       "relations.autoRecompute.batchLimit": 100,
       "relations.autoRecompute.lastRunAt": null,
+      "observability.enabled": false,
+      "observability.retentionDays": 14,
+      "observability.slowRequestMs": 250,
+      "observability.capturePayloadShape": true,
       "export.defaultFormat": "markdown",
     });
     repository.ensureSearchTagIndex();

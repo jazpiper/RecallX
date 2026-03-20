@@ -87,6 +87,7 @@ Rules:
 | `memforge_recompute_inferred_relations` | Recompute inferred relation scores | `POST /inferred-relations/recompute` |
 | `memforge_append_activity` | Append node activity | `POST /activities` |
 | `memforge_create_node` | Create durable node | `POST /nodes` |
+| `memforge_create_nodes` | Create multiple durable nodes with partial success | `POST /nodes/batch` |
 | `memforge_create_relation` | Create relation | `POST /relations` |
 | `memforge_list_governance_issues` | Read surfaced contested or low-confidence entities | `GET /governance/issues` |
 | `memforge_get_governance_state` | Read governance state for one entity | `GET /governance/state/:entityType/:id` |
@@ -107,6 +108,7 @@ Rules:
 - Usage feedback is intentionally a separate write. Do not append a relation usage event for every read; reserve it for cases where a canonical or inferred relation actually helped retrieval or final output.
 - Score recomputation is also explicit. Use `memforge_recompute_inferred_relations` in maintenance flows or automations, not in the latency-sensitive request path.
 - The search tools normalize common alias mistakes such as `type`, `activityType`, `targetNodeId`, `scope`, and single-string arrays before forwarding to HTTP.
+- When you do not already know the target node, prefer `memforge_search_workspace` as the default entry point. Use `memforge_search_nodes` for durable-only narrowing and `memforge_search_activities` for recent operational narrowing.
 
 ---
 
@@ -146,13 +148,56 @@ The MCP tool simplifies the HTTP payload:
 
 ```json
 {
+  "mode": "compact",
+  "preset": "for-coding"
+}
+```
+
+Add `targetId` when you already know the node you want to anchor on:
+
+```json
+{
   "targetId": "node_...",
   "mode": "compact",
   "preset": "for-coding"
 }
 ```
 
-The bridge expands that to the API's node-centric `target: { id }` shape.
+When `targetId` is omitted, the bridge requests a workspace-entry bundle instead of a node-anchored bundle.
+
+### Write landing metadata
+
+`memforge_create_node`, `memforge_create_relation`, and `memforge_capture_memory` now return a `landing` object that explains where the write landed under automatic governance:
+
+- `storedAs`
+- `canonicality` when applicable
+- `status`
+- `governanceState`
+- `reason`
+
+`memforge_create_nodes` returns the same `landing` shape on each successful item and preserves item-level errors for partial-success batches.
+
+### Search defaults
+
+When starting a task without a known node id, prefer mixed search first:
+
+```json
+{
+  "query": "cleanup governance migration",
+  "sort": "smart"
+}
+```
+
+`memforge_search_workspace` keeps both node and activity recall in play, while `memforge_search_nodes` and `memforge_search_activities` are better used as follow-up narrowing tools.
+
+Empty-query browse is explicit at the MCP layer:
+
+```json
+{
+  "allowEmptyQuery": true,
+  "sort": "updated_at"
+}
+```
 
 ### Governance reads
 

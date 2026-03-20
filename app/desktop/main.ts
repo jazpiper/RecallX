@@ -1,12 +1,16 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { app, BrowserWindow, Menu, Tray, clipboard, nativeImage, shell } from "electron";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createMemforgeMcpServer } from "../mcp/server.js";
+import { openDatabase } from "../server/db.js";
+import { createObservabilityWriter } from "../server/observability.js";
+import { MemforgeRepository } from "../server/repositories.js";
 import { memforgeHomeDir, resolveWorkspaceRoot } from "../server/workspace.js";
+import { ensureWorkspace } from "../server/workspace.js";
 
 type CliOptions = {
   mcpStdio: boolean;
@@ -25,15 +29,19 @@ type DesktopRuntimeState = {
   lastError: string | null;
 };
 
+const DEFAULT_DESKTOP_PORT = 8788;
 const DESKTOP_BIND = process.env.MEMFORGE_BIND ?? "127.0.0.1";
-const DESKTOP_PORT = Number(process.env.MEMFORGE_PORT ?? 8787);
+const DESKTOP_PORT = Number(process.env.MEMFORGE_DESKTOP_PORT ?? process.env.MEMFORGE_PORT ?? DEFAULT_DESKTOP_PORT);
 const DESKTOP_WORKSPACE_NAME = process.env.MEMFORGE_WORKSPACE_NAME?.trim() || "Memforge";
 const RENDERER_DEV_URL = process.env.MEMFORGE_DESKTOP_DEV_URL;
 const API_READY_TIMEOUT_MS = 15_000;
 const API_RETRY_DELAY_MS = 250;
 const STATUS_POLL_INTERVAL_MS = 15_000;
+const API_SHUTDOWN_TIMEOUT_MS = 2_000;
 const MCP_LAUNCHER_PATH = path.join(memforgeHomeDir(), "bin", "memforge-mcp");
 const DESKTOP_COMMAND_SHIM_PATH = path.join(os.homedir(), ".local", "bin", "Memforge");
+const DESKTOP_RUNTIME_DIR = path.join(memforgeHomeDir(), "run");
+const DESKTOP_API_PID_PATH = path.join(DESKTOP_RUNTIME_DIR, `desktop-api-${DESKTOP_PORT}.json`);
 const TRAY_ICON_ASSET_PATH = ["app", "desktop", "assets", "trayTemplate.png"] as const;
 
 let mainWindow: BrowserWindow | null = null;
@@ -44,6 +52,14 @@ let quitting = false;
 let managedApiBase: string | null = null;
 let managedApiPort: number | null = null;
 let keepRunningInBackground = true;
+let allowImmediateQuit = false;
+
+type ManagedApiPidRecord = {
+  pid: number;
+  port: number;
+  workspaceRoot: string;
+  recordedAt: string;
+};
 
 function revealWindow(window: BrowserWindow): void {
   if (window.isDestroyed()) {
@@ -81,6 +97,90 @@ function buildLauncherScript(commandParts: string[]): string {
   return `#!/bin/sh
 exec ${commandParts.map(quoteShellArg).join(" ")} "$@"
 `;
+}
+
+function readManagedApiPidRecord(): ManagedApiPidRecord | null {
+  try {
+    const raw = readFileSync(DESKTOP_API_PID_PATH, "utf8");
+    const parsed = JSON.parse(raw) as Partial<ManagedApiPidRecord>;
+    if (
+      typeof parsed.pid !== "number" ||
+      typeof parsed.port !== "number" ||
+      typeof parsed.workspaceRoot !== "string" ||
+      typeof parsed.recordedAt !== "string"
+    ) {
+      return null;
+    }
+    return parsed as ManagedApiPidRecord;
+  } catch {
+    return null;
+  }
+}
+
+function writeManagedApiPidRecord(pid: number): void {
+  mkdirSync(DESKTOP_RUNTIME_DIR, { recursive: true });
+  writeFileSync(
+    DESKTOP_API_PID_PATH,
+    JSON.stringify(
+      {
+        pid,
+        port: DESKTOP_PORT,
+        workspaceRoot: DESKTOP_WORKSPACE_ROOT,
+        recordedAt: new Date().toISOString()
+      } satisfies ManagedApiPidRecord,
+      null,
+      2
+    ),
+    "utf8"
+  );
+}
+
+function clearManagedApiPidRecord(): void {
+  try {
+    rmSync(DESKTOP_API_PID_PATH, { force: true });
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return !isProcessAlive(pid);
+}
+
+async function killManagedApiPid(pid: number): Promise<boolean> {
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return true;
+  }
+
+  if (await waitForPidExit(pid, API_SHUTDOWN_TIMEOUT_MS)) {
+    return true;
+  }
+
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    return !isProcessAlive(pid);
+  }
+
+  return waitForPidExit(pid, 1_000);
 }
 
 function getLiveMainWindow(): BrowserWindow | null {
@@ -315,6 +415,57 @@ const desktopState: DesktopRuntimeState = {
   lastError: null
 };
 
+function readDesktopObservabilityState() {
+  try {
+    const workspace = ensureWorkspace(desktopState.workspaceRoot);
+    const db = openDatabase(workspace);
+    const repository = new MemforgeRepository(db, desktopState.workspaceRoot);
+    const settings = repository.getSettings([
+      "observability.enabled",
+      "observability.retentionDays",
+      "observability.slowRequestMs",
+      "observability.capturePayloadShape"
+    ]);
+    db.close();
+
+    return {
+      enabled: settings["observability.enabled"] === true,
+      workspaceRoot: desktopState.workspaceRoot,
+      workspaceName: desktopState.workspaceName,
+      retentionDays: typeof settings["observability.retentionDays"] === "number" ? settings["observability.retentionDays"] : 14,
+      slowRequestMs: typeof settings["observability.slowRequestMs"] === "number" ? settings["observability.slowRequestMs"] : 250,
+      capturePayloadShape: settings["observability.capturePayloadShape"] !== false
+    };
+  } catch {
+    return {
+      enabled: false,
+      workspaceRoot: desktopState.workspaceRoot,
+      workspaceName: desktopState.workspaceName,
+      retentionDays: 14,
+      slowRequestMs: 250,
+      capturePayloadShape: true
+    };
+  }
+}
+
+const desktopObservability = createObservabilityWriter({
+  getState: readDesktopObservabilityState
+});
+
+function recordDesktopError(operation: string, error: unknown, details?: Record<string, unknown>) {
+  const message = error instanceof Error ? error.message : String(error);
+  void desktopObservability.recordError({
+    surface: "desktop",
+    operation,
+    errorCode: "DESKTOP_ERROR",
+    errorKind: "unexpected_error",
+    details: {
+      message,
+      ...details
+    }
+  });
+}
+
 function apiBaseForPort(port: number): string {
   return `http://${DESKTOP_BIND}:${port}/api/v1`;
 }
@@ -409,10 +560,43 @@ async function findReusableApiBase(startPort: number, attempts = 20): Promise<st
   return null;
 }
 
+async function cleanupStaleManagedApiPort(): Promise<void> {
+  if (!shouldManageLocalApi()) {
+    return;
+  }
+
+  const preferredApiBase = apiBaseForPort(DESKTOP_PORT);
+  if (await isApiReady(preferredApiBase)) {
+    return;
+  }
+
+  if (await canListenOnPort(DESKTOP_PORT)) {
+    clearManagedApiPidRecord();
+    return;
+  }
+
+  const pidRecord = readManagedApiPidRecord();
+  if (!pidRecord || pidRecord.port !== DESKTOP_PORT || pidRecord.workspaceRoot !== DESKTOP_WORKSPACE_ROOT) {
+    return;
+  }
+
+  if (!isProcessAlive(pidRecord.pid)) {
+    clearManagedApiPidRecord();
+    return;
+  }
+
+  const stopped = await killManagedApiPid(pidRecord.pid);
+  if (stopped) {
+    clearManagedApiPidRecord();
+  }
+}
+
 async function resolveManagedApiBase(): Promise<string> {
   if (managedApiBase) {
     return managedApiBase;
   }
+
+  await cleanupStaleManagedApiPort();
 
   const preferredApiBase = apiBaseForPort(DESKTOP_PORT);
   const preferredIsReady = await isApiReady(preferredApiBase);
@@ -502,6 +686,10 @@ function startApiServer(port: number): void {
     stdio: "pipe"
   });
 
+  if (apiProcess.pid) {
+    writeManagedApiPidRecord(apiProcess.pid);
+  }
+
   apiProcess.stdout?.on("data", (chunk) => {
     process.stderr.write(`[memforge-api] ${String(chunk)}`);
   });
@@ -510,8 +698,12 @@ function startApiServer(port: number): void {
   });
   apiProcess.on("exit", (code) => {
     apiProcess = null;
+    clearManagedApiPidRecord();
     if (!quitting && code && code !== 0) {
       console.error(`Memforge API exited with code ${code}`);
+      recordDesktopError("desktop.api_child_exit", new Error(`Local service exited with code ${code}`), {
+        exitCode: code
+      });
       updateDesktopState({
         serviceStatus: "error",
         lastError: `Local service exited with code ${code}`
@@ -562,6 +754,7 @@ async function refreshDesktopStatus(): Promise<void> {
       lastError: null
     });
   } catch (error) {
+    recordDesktopError("desktop.status_refresh", error);
     updateDesktopState({
       serviceStatus: "error",
       lastError: error instanceof Error ? error.message : "Unknown desktop status error"
@@ -621,10 +814,30 @@ async function runMcpStdioMode(): Promise<void> {
   ensureLauncherScripts();
 
   process.env.MEMFORGE_API_URL = await resolveApiBase();
-  const server = createMemforgeMcpServer();
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error(`Memforge MCP connected over stdio -> ${process.env.MEMFORGE_API_URL}`);
+  const span = desktopObservability.startSpan({
+    surface: "desktop",
+    operation: "desktop.mcp_stdio_start"
+  });
+
+  try {
+    const server = createMemforgeMcpServer({
+      observabilityState: readDesktopObservabilityState(),
+      getObservabilityState: readDesktopObservabilityState
+    });
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    await span.finish({
+      outcome: "success"
+    });
+    console.error(`Memforge MCP connected over stdio -> ${process.env.MEMFORGE_API_URL}`);
+  } catch (error) {
+    await span.finish({
+      outcome: "error",
+      errorCode: "MCP_STDIO_START_FAILED",
+      errorKind: "unexpected_error"
+    });
+    throw error;
+  }
 }
 
 async function openMainWindow(): Promise<BrowserWindow> {
@@ -668,7 +881,7 @@ async function restartLocalService(): Promise<void> {
     lastError: null
   });
 
-  stopApiServer();
+  await stopApiServer();
   managedApiBase = null;
   managedApiPort = null;
 
@@ -695,6 +908,7 @@ async function restartLocalService(): Promise<void> {
       }
     }
   } catch (error) {
+    recordDesktopError("desktop.service_restart", error);
     updateDesktopState({
       serviceStatus: "error",
       lastError: error instanceof Error ? error.message : "Failed to restart local service"
@@ -745,10 +959,14 @@ async function createMainWindow(): Promise<void> {
   });
   window.webContents.on("did-fail-load", (_event, errorCode, errorDescription) => {
     console.error(`Memforge renderer failed to load (${errorCode}): ${errorDescription}`);
+    recordDesktopError("desktop.renderer_load_failed", new Error(errorDescription), {
+      errorCode
+    });
     revealWindow(window);
   });
   window.webContents.on("render-process-gone", (_event, details) => {
     console.error(`Memforge renderer process gone: ${details.reason}`);
+    recordDesktopError("desktop.renderer_process_gone", new Error(details.reason));
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
@@ -783,16 +1001,25 @@ async function createMainWindow(): Promise<void> {
   void refreshDesktopStatus();
 }
 
-function stopApiServer(): void {
-  if (!apiProcess) {
+async function stopApiServer(): Promise<void> {
+  const processToStop = apiProcess;
+  const pidRecord = readManagedApiPidRecord();
+
+  if (!processToStop && !pidRecord) {
     updateDesktopState({
       serviceStatus: "stopped"
     });
+    clearManagedApiPidRecord();
     return;
   }
 
-  apiProcess.kill();
+  const pid = processToStop?.pid ?? pidRecord?.pid ?? null;
+  if (typeof pid === "number") {
+    await killManagedApiPid(pid);
+  }
+
   apiProcess = null;
+  clearManagedApiPidRecord();
   updateDesktopState({
     serviceStatus: "stopped"
   });
@@ -808,9 +1035,24 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  if (allowImmediateQuit) {
+    return;
+  }
+
   quitting = true;
   stopStatusPolling();
-  stopApiServer();
+});
+
+app.on("will-quit", (event) => {
+  if (allowImmediateQuit) {
+    return;
+  }
+
+  event.preventDefault();
+  void stopApiServer().finally(() => {
+    allowImmediateQuit = true;
+    app.quit();
+  });
 });
 
 if (!cliOptions.mcpStdio) {

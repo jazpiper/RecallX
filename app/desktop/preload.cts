@@ -6,7 +6,7 @@ function readArgument(prefix: string): string | null {
   return value ? value.slice(prefix.length) : null;
 }
 
-const apiBase = readArgument("--memforge-api-base=") ?? "http://127.0.0.1:8787/api/v1";
+const apiBase = readArgument("--memforge-api-base=") ?? "http://127.0.0.1:8788/api/v1";
 const healthUrl = readArgument("--memforge-health-url=") ?? `${apiBase}/health`;
 const workspaceHome = readArgument("--memforge-workspace-home=");
 const workspaceRoot = readArgument("--memforge-workspace-root=");

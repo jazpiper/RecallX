@@ -117,7 +117,7 @@ export const workspaceSearchSchema = z.object({
   activityFilters: activitySearchSchema.shape.filters.optional(),
   limit: z.number().int().min(1).max(100).default(10),
   offset: z.number().int().min(0).default(0),
-  sort: z.enum(["relevance", "updated_at"]).default("relevance")
+  sort: z.enum(["relevance", "updated_at", "smart"]).default("relevance")
 });
 
 export const governanceIssuesQuerySchema = z.object({
@@ -141,6 +141,10 @@ export const createNodeSchema = z.object({
   status: z.enum(nodeStatuses).optional(),
   source: sourceSchema,
   metadata: z.record(z.any()).default({})
+});
+
+export const createNodesSchema = z.object({
+  nodes: z.array(createNodeSchema).min(1).max(100)
 });
 
 export const updateNodeSchema = z.object({
@@ -243,9 +247,11 @@ export const attachArtifactSchema = z.object({
 });
 
 export const buildContextBundleSchema = z.object({
-  target: z.object({
-    id: z.string().min(1)
-  }),
+  target: z
+    .object({
+      id: z.string().min(1)
+    })
+    .optional(),
   mode: z.enum(bundleModes).default("compact"),
   preset: z.enum(bundlePresets).default("for-assistant"),
   options: z
@@ -311,6 +317,7 @@ export type ActivitySearchInput = z.infer<typeof activitySearchSchema>;
 export type WorkspaceSearchInput = z.infer<typeof workspaceSearchSchema>;
 export type GovernanceIssuesQueryInput = z.infer<typeof governanceIssuesQuerySchema>;
 export type CreateNodeInput = z.infer<typeof createNodeSchema>;
+export type CreateNodesInput = z.infer<typeof createNodesSchema>;
 export type UpdateNodeInput = z.infer<typeof updateNodeSchema>;
 export type CreateRelationInput = z.infer<typeof createRelationSchema>;
 export type UpdateRelationInput = z.infer<typeof updateRelationSchema>;

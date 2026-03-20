@@ -20,13 +20,30 @@ describe("Memforge MCP server", () => {
     get?: ReturnType<typeof vi.fn>;
     post?: ReturnType<typeof vi.fn>;
     patch?: ReturnType<typeof vi.fn>;
+  }, options?: {
+    getObservabilityState?: () => {
+      enabled: boolean;
+      workspaceRoot: string;
+      workspaceName: string;
+      retentionDays: number;
+      slowRequestMs: number;
+      capturePayloadShape: boolean;
+    } | Promise<{
+      enabled: boolean;
+      workspaceRoot: string;
+      workspaceName: string;
+      retentionDays: number;
+      slowRequestMs: number;
+      capturePayloadShape: boolean;
+    }>;
   }) {
     const server = createMemforgeMcpServer({
       apiClient: {
         get: apiClient?.get ?? vi.fn(),
         post: apiClient?.post ?? vi.fn(),
         patch: apiClient?.patch ?? vi.fn()
-      }
+      },
+      getObservabilityState: options?.getObservabilityState
     });
     const client = new Client({
       name: "memforge-mcp-test-client",
@@ -58,6 +75,7 @@ describe("Memforge MCP server", () => {
     expect(toolNames).toContain("memforge_capture_memory");
     expect(toolNames).toContain("memforge_append_activity");
     expect(toolNames).toContain("memforge_create_node");
+    expect(toolNames).toContain("memforge_create_nodes");
     expect(toolNames).toContain("memforge_upsert_inferred_relation");
     expect(toolNames).toContain("memforge_append_relation_usage_event");
     expect(toolNames).toContain("memforge_append_search_feedback");
@@ -102,6 +120,131 @@ describe("Memforge MCP server", () => {
     expect("structuredContent" in result && result.structuredContent).toMatchObject({
       total: 1
     });
+  });
+
+  it("allows memforge_health calls with an optional input object and preserves detailed health payloads", async () => {
+    const healthGet = vi.fn().mockResolvedValue({
+      status: "ok",
+      workspaceLoaded: true,
+      workspaceRoot: "/Users/test/.memforge/Memforge",
+      schemaVersion: 7,
+      autoRecompute: {
+        enabled: true
+      }
+    });
+    const { client } = await connectTestClient({
+      get: healthGet
+    });
+
+    const result = await client.callTool({
+      name: "memforge_health",
+      arguments: {
+        includeDetails: true
+      }
+    });
+
+    expect(healthGet).toHaveBeenCalledWith("/health");
+    expect("structuredContent" in result && result.structuredContent).toMatchObject({
+      status: "ok",
+      autoRecompute: {
+        enabled: true
+      }
+    });
+  });
+
+  it("rejects empty search queries by default at the MCP layer", async () => {
+    const searchPost = vi.fn().mockResolvedValue({
+      items: [],
+      total: 0
+    });
+    const { client } = await connectTestClient({
+      post: searchPost
+    });
+
+    const result = await client.callTool({
+      name: "memforge_search_workspace",
+      arguments: {}
+    });
+    const resultContent = Array.isArray((result as { content?: unknown }).content)
+      ? ((result as { content: Array<{ type?: string; text?: string }> }).content)
+      : [];
+
+    expect("isError" in result && result.isError).toBe(true);
+    expect(resultContent[0]?.text ?? "").toContain("allowEmptyQuery: true");
+    expect(searchPost).not.toHaveBeenCalled();
+  });
+
+  it("allows browse-style empty queries when allowEmptyQuery is true", async () => {
+    const searchPost = vi.fn().mockResolvedValue({
+      items: [],
+      total: 0
+    });
+    const { client } = await connectTestClient({
+      post: searchPost
+    });
+
+    await client.callTool({
+      name: "memforge_search_nodes",
+      arguments: {
+        allowEmptyQuery: true
+      }
+    });
+
+    expect(searchPost).toHaveBeenCalledWith(
+      "/nodes/search",
+      expect.objectContaining({
+        query: "",
+        sort: "relevance"
+      })
+    );
+  });
+
+  it("refreshes observability state for each tool call", async () => {
+    const searchPost = vi.fn().mockResolvedValue({
+      items: [],
+      total: 0
+    });
+    const getObservabilityState = vi
+      .fn()
+      .mockResolvedValueOnce({
+        enabled: true,
+        workspaceRoot: "/tmp/workspace-a",
+        workspaceName: "Workspace A",
+        retentionDays: 14,
+        slowRequestMs: 250,
+        capturePayloadShape: true
+      })
+      .mockResolvedValueOnce({
+        enabled: true,
+        workspaceRoot: "/tmp/workspace-b",
+        workspaceName: "Workspace B",
+        retentionDays: 14,
+        slowRequestMs: 250,
+        capturePayloadShape: true
+      });
+    const { client } = await connectTestClient(
+      {
+        post: searchPost
+      },
+      {
+        getObservabilityState
+      }
+    );
+
+    await client.callTool({
+      name: "memforge_search_nodes",
+      arguments: {
+        query: "first"
+      }
+    });
+    await client.callTool({
+      name: "memforge_search_nodes",
+      arguments: {
+        query: "second"
+      }
+    });
+
+    expect(getObservabilityState).toHaveBeenCalledTimes(2);
   });
 
   it("normalizes node search aliases before calling the HTTP API", async () => {
@@ -189,7 +332,8 @@ describe("Memforge MCP server", () => {
       name: "memforge_search_workspace",
       arguments: {
         query: "cleanup",
-        scopes: ["activities"]
+        scopes: ["activities"],
+        sort: "smart"
       }
     });
 
@@ -214,7 +358,7 @@ describe("Memforge MCP server", () => {
         scopes: ["activities"],
         limit: 10,
         offset: 0,
-        sort: "relevance"
+        sort: "smart"
       })
     );
   });
@@ -328,6 +472,66 @@ describe("Memforge MCP server", () => {
         })
       })
     );
+  });
+
+  it("fills default provenance for each item when create_nodes omits source", async () => {
+    const createPost = vi.fn().mockResolvedValue({
+      items: [],
+      summary: {
+        requestedCount: 2,
+        successCount: 2,
+        errorCount: 0
+      }
+    });
+    const { client } = await connectTestClient({
+      post: createPost
+    });
+
+    await client.callTool({
+      name: "memforge_create_nodes",
+      arguments: {
+        nodes: [
+          {
+            type: "note",
+            title: "Batch node one"
+          },
+          {
+            type: "project",
+            title: "Batch node two",
+            tags: ["batch"]
+          }
+        ]
+      }
+    });
+
+    expect(createPost).toHaveBeenCalledWith("/nodes/batch", {
+      nodes: [
+        expect.objectContaining({
+          type: "note",
+          title: "Batch node one",
+          body: "",
+          tags: [],
+          metadata: {},
+          source: expect.objectContaining({
+            actorType: "agent",
+            actorLabel: "Memforge MCP",
+            toolName: "memforge-mcp"
+          })
+        }),
+        expect.objectContaining({
+          type: "project",
+          title: "Batch node two",
+          body: "",
+          tags: ["batch"],
+          metadata: {},
+          source: expect.objectContaining({
+            actorType: "agent",
+            actorLabel: "Memforge MCP",
+            toolName: "memforge-mcp"
+          })
+        })
+      ]
+    });
   });
 
   it("fills default provenance when append_activity omits source", async () => {
@@ -779,5 +983,43 @@ describe("Memforge MCP server", () => {
         ]
       }
     });
+  });
+
+  it("allows workspace-entry context bundles without a target id", async () => {
+    const postMock = vi.fn().mockResolvedValue({
+      bundle: {
+        target: {
+          type: "workspace",
+          id: "workspace",
+          title: "Workspace context"
+        },
+        mode: "compact",
+        preset: "for-assistant",
+        summary: "Recent workspace context.",
+        items: [],
+        activityDigest: [],
+        decisions: [],
+        openQuestions: [],
+        sources: []
+      }
+    });
+    const { client } = await connectTestClient({
+      post: postMock
+    });
+
+    await client.callTool({
+      name: "memforge_context_bundle",
+      arguments: {
+        mode: "compact",
+        preset: "for-assistant"
+      }
+    });
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/context/bundles",
+      expect.not.objectContaining({
+        target: expect.anything()
+      })
+    );
   });
 });
