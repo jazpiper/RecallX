@@ -132,6 +132,11 @@ type SemanticIssueCursor = {
   nodeId: string;
 };
 
+type SearchFieldMatcher = {
+  trimmedQuery: string;
+  matchTerms: string[];
+};
+
 function normalizeSearchText(value: string | null | undefined): string {
   return (value ?? "").normalize("NFKC").toLowerCase();
 }
@@ -141,17 +146,27 @@ function tokenizeSearchQuery(query: string, maxTokens = 12): string[] {
   return Array.from(new Set(matches)).slice(0, maxTokens);
 }
 
-function collectMatchedFields(
-  query: string,
-  candidates: Array<{ field: string; value: string | null | undefined }>
-): string[] {
+function createSearchFieldMatcher(query: string): SearchFieldMatcher | null {
   const trimmedQuery = normalizeSearchText(query).trim();
   if (!trimmedQuery) {
-    return [];
+    return null;
   }
 
   const tokens = tokenizeSearchQuery(trimmedQuery);
-  const matchTerms = tokens.length ? tokens : [trimmedQuery];
+  return {
+    trimmedQuery,
+    matchTerms: tokens.length ? tokens : [trimmedQuery]
+  };
+}
+
+function collectMatchedFields(
+  matcher: SearchFieldMatcher | null,
+  candidates: Array<{ field: string; value: string | null | undefined }>
+): string[] {
+  if (!matcher) {
+    return [];
+  }
+
   const matches = new Set<string>();
 
   for (const candidate of candidates) {
@@ -160,7 +175,7 @@ function collectMatchedFields(
       continue;
     }
 
-    if (haystack.includes(trimmedQuery) || matchTerms.some((term) => haystack.includes(term))) {
+    if (haystack.includes(matcher.trimmedQuery) || matcher.matchTerms.some((term) => haystack.includes(term))) {
       matches.add(candidate.field);
     }
   }
@@ -190,12 +205,7 @@ function mergeMatchReasons(
 }
 
 function computeWorkspaceRecencyBonus(timestamp: string, resultType: "node" | "activity") {
-  const ageMs = Date.now() - new Date(timestamp).getTime();
-  if (ageMs <= 60 * 60 * 1000) return resultType === "activity" ? 16 : 12;
-  if (ageMs <= 24 * 60 * 60 * 1000) return resultType === "activity" ? 12 : 8;
-  if (ageMs <= 7 * 24 * 60 * 60 * 1000) return resultType === "activity" ? 7 : 5;
-  if (ageMs <= 30 * 24 * 60 * 60 * 1000) return resultType === "activity" ? 3 : 2;
-  return 0;
+  return computeWorkspaceRecencyBonusFromAge(Date.now() - new Date(timestamp).getTime(), resultType);
 }
 
 function computeWorkspaceRankBonus(index: number, total: number) {
@@ -204,6 +214,30 @@ function computeWorkspaceRankBonus(index: number, total: number) {
   }
 
   return Math.max(0, Math.round(((total - index) / total) * 24));
+}
+
+function computeWorkspaceSmartScore(input: {
+  index: number;
+  total: number;
+  timestamp: string;
+  resultType: "node" | "activity";
+  contested: boolean;
+  nowMs: number;
+}) {
+  return (
+    computeWorkspaceRankBonus(input.index, input.total) +
+    computeWorkspaceRecencyBonusFromAge(input.nowMs - new Date(input.timestamp).getTime(), input.resultType) +
+    (input.resultType === "activity" ? 4 : 0) -
+    (input.contested ? 20 : 0)
+  );
+}
+
+function computeWorkspaceRecencyBonusFromAge(ageMs: number, resultType: "node" | "activity") {
+  if (ageMs <= 60 * 60 * 1000) return resultType === "activity" ? 16 : 12;
+  if (ageMs <= 24 * 60 * 60 * 1000) return resultType === "activity" ? 12 : 8;
+  if (ageMs <= 7 * 24 * 60 * 60 * 1000) return resultType === "activity" ? 7 : 5;
+  if (ageMs <= 30 * 24 * 60 * 60 * 1000) return resultType === "activity" ? 3 : 2;
+  return 0;
 }
 
 type SemanticIndexSettings = {
@@ -343,30 +377,6 @@ function buildSemanticContentHash(input: {
       tags: normalizeTagList(input.tags)
     })
   );
-}
-
-function decodeVectorBlob(blob: Uint8Array): Float32Array {
-  return new Float32Array(blob.buffer.slice(blob.byteOffset, blob.byteOffset + blob.byteLength));
-}
-
-function computeCosineSimilarity(left: ArrayLike<number>, right: ArrayLike<number>): number {
-  const length = Math.min(left.length, right.length);
-  let dot = 0;
-  let leftMagnitude = 0;
-  let rightMagnitude = 0;
-  for (let index = 0; index < length; index += 1) {
-    const leftValue = Number(left[index] ?? 0);
-    const rightValue = Number(right[index] ?? 0);
-    dot += leftValue * rightValue;
-    leftMagnitude += leftValue * leftValue;
-    rightMagnitude += rightValue * rightValue;
-  }
-
-  if (!leftMagnitude || !rightMagnitude) {
-    return 0;
-  }
-
-  return dot / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
 }
 
 function semanticIssueStatusRank(status: SemanticIndexStatus): number {
@@ -1631,32 +1641,37 @@ export class MemforgeRepository {
     };
 
     const rankedItems: RankedSemanticSearchResultItem[] = [];
+    const candidateNodes = this.getNodesByIds(candidateNodeIds);
     for (const nodeId of candidateNodeIds) {
-        const semanticMatch = semanticMatches.get(nodeId);
-        if (!semanticMatch) {
-          continue;
-        }
+      const semanticMatch = semanticMatches.get(nodeId);
+      if (!semanticMatch) {
+        continue;
+      }
 
-        const retrievalRank = computeSemanticRetrievalRank(semanticMatch.similarity, settings);
-        if (retrievalRank <= 0) {
-          continue;
-        }
+      const retrievalRank = computeSemanticRetrievalRank(semanticMatch.similarity, settings);
+      if (retrievalRank <= 0) {
+        continue;
+      }
 
-        const node = this.getNode(nodeId);
-        rankedItems.push({
-          id: node.id,
-          type: node.type,
-          title: node.title,
-          summary: node.summary,
-          status: node.status,
-          canonicality: node.canonicality,
-          sourceLabel: node.sourceLabel,
-          updatedAt: node.updatedAt,
-          tags: node.tags,
-          matchReason: buildSearchMatchReason("semantic", ["semantic"]),
-          semanticSimilarity: Number(semanticMatch.similarity.toFixed(4)),
-          semanticRetrievalRank: retrievalRank
-        });
+      const node = candidateNodes.get(nodeId);
+      if (!node) {
+        continue;
+      }
+
+      rankedItems.push({
+        id: node.id,
+        type: node.type,
+        title: node.title,
+        summary: node.summary,
+        status: node.status,
+        canonicality: node.canonicality,
+        sourceLabel: node.sourceLabel,
+        updatedAt: node.updatedAt,
+        tags: node.tags,
+        matchReason: buildSearchMatchReason("semantic", ["semantic"]),
+        semanticSimilarity: Number(semanticMatch.similarity.toFixed(4)),
+        semanticRetrievalRank: retrievalRank
+      });
     }
 
     return rankedItems
@@ -1921,6 +1936,7 @@ export class MemforgeRepository {
     activityItems: ActivitySearchResultItem[],
     sort: WorkspaceSearchInput["sort"]
   ): WorkspaceSearchResultItem[] {
+    const nowMs = Date.now();
     const merged = [
       ...nodeItems.map((node, index) => ({
         resultType: "node" as const,
@@ -1928,7 +1944,15 @@ export class MemforgeRepository {
         index,
         total: nodeItems.length,
         timestamp: node.updatedAt,
-        contested: node.status === "contested"
+        contested: node.status === "contested",
+        smartScore: computeWorkspaceSmartScore({
+          index,
+          total: nodeItems.length,
+          timestamp: node.updatedAt,
+          resultType: "node",
+          contested: node.status === "contested",
+          nowMs
+        })
       })),
       ...activityItems.map((activity, index) => ({
         resultType: "activity" as const,
@@ -1936,35 +1960,31 @@ export class MemforgeRepository {
         index,
         total: activityItems.length,
         timestamp: activity.createdAt,
-        contested: activity.targetNodeStatus === "contested"
+        contested: activity.targetNodeStatus === "contested",
+        smartScore: computeWorkspaceSmartScore({
+          index,
+          total: activityItems.length,
+          timestamp: activity.createdAt,
+          resultType: "activity",
+          contested: activity.targetNodeStatus === "contested",
+          nowMs
+        })
       }))
     ];
 
     if (sort === "updated_at") {
       return merged
         .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
-        .map(({ index: _index, total: _total, timestamp: _timestamp, contested: _contested, ...item }) => item);
+        .map(({ index: _index, total: _total, timestamp: _timestamp, contested: _contested, smartScore: _smartScore, ...item }) => item);
     }
 
     if (sort === "smart") {
       return merged
-        .sort((left, right) => {
-          const leftScore =
-            computeWorkspaceRankBonus(left.index, left.total) +
-            computeWorkspaceRecencyBonus(left.timestamp, left.resultType) +
-            (left.resultType === "activity" ? 4 : 0) -
-            (left.contested ? 20 : 0);
-          const rightScore =
-            computeWorkspaceRankBonus(right.index, right.total) +
-            computeWorkspaceRecencyBonus(right.timestamp, right.resultType) +
-            (right.resultType === "activity" ? 4 : 0) -
-            (right.contested ? 20 : 0);
-          return rightScore - leftScore || right.timestamp.localeCompare(left.timestamp);
-        })
-        .map(({ index: _index, total: _total, timestamp: _timestamp, contested: _contested, ...item }) => item);
+        .sort((left, right) => right.smartScore - left.smartScore || right.timestamp.localeCompare(left.timestamp))
+        .map(({ index: _index, total: _total, timestamp: _timestamp, contested: _contested, smartScore: _smartScore, ...item }) => item);
     }
 
-    return merged.map(({ index: _index, total: _total, timestamp: _timestamp, contested: _contested, ...item }) => item);
+    return merged.map(({ index: _index, total: _total, timestamp: _timestamp, contested: _contested, smartScore: _smartScore, ...item }) => item);
   }
 
   private searchNodesWithFts(input: {
@@ -2233,6 +2253,7 @@ export class MemforgeRepository {
       )
       .all(...whereValues, ...params.orderValues, effectiveLimit, effectiveOffset) as Record<string, unknown>[];
 
+    const matcher = params.strategy === "browse" ? null : createSearchFieldMatcher(params.input.query);
     const items = rows.map((row) => ({
       id: String(row.id),
       targetNodeId: String(row.target_node_id),
@@ -2245,14 +2266,12 @@ export class MemforgeRepository {
       createdAt: String(row.created_at),
       matchReason: buildSearchMatchReason(
         params.strategy,
-        params.strategy === "browse"
-          ? []
-          : collectMatchedFields(params.input.query, [
-              { field: "body", value: row.body ? String(row.body) : null },
-              { field: "targetNodeTitle", value: row.target_title ? String(row.target_title) : null },
-              { field: "activityType", value: row.activity_type ? String(row.activity_type) : null },
-              { field: "sourceLabel", value: row.source_label ? String(row.source_label) : null }
-            ])
+        collectMatchedFields(matcher, [
+          { field: "body", value: row.body ? String(row.body) : null },
+          { field: "targetNodeTitle", value: row.target_title ? String(row.target_title) : null },
+          { field: "activityType", value: row.activity_type ? String(row.activity_type) : null },
+          { field: "sourceLabel", value: row.source_label ? String(row.source_label) : null }
+        ])
       )
     }));
     const rankedItems = useSearchFeedbackBoost ? this.applyActivitySearchFeedbackBoost(items) : items;
@@ -2326,29 +2345,31 @@ export class MemforgeRepository {
       )
       .all(...rowValues, effectiveLimit, effectiveOffset) as Record<string, unknown>[];
 
-    const items = rows.map((row) => ({
-      id: String(row.id),
-      type: row.type as SearchResultItem["type"],
-      title: row.title ? String(row.title) : null,
-      summary: row.summary ? String(row.summary) : null,
-      status: row.status as SearchResultItem["status"],
-      canonicality: row.canonicality as SearchResultItem["canonicality"],
-      sourceLabel: row.source_label ? String(row.source_label) : null,
-      updatedAt: String(row.updated_at),
-      tags: parseJson<string[]>(row.tags_json as string | null, []),
-      matchReason: buildSearchMatchReason(
-        strategy,
-        strategy === "browse"
-          ? []
-          : collectMatchedFields(query, [
-              { field: "title", value: row.title ? String(row.title) : null },
-              { field: "summary", value: row.summary ? String(row.summary) : null },
-              { field: "body", value: row.body ? String(row.body) : null },
-              { field: "tags", value: parseJson<string[]>(row.tags_json as string | null, []).join(" ") },
-              { field: "sourceLabel", value: row.source_label ? String(row.source_label) : null }
-            ])
-      )
-    }));
+    const matcher = strategy === "browse" ? null : createSearchFieldMatcher(query);
+    const items = rows.map((row) => {
+      const tags = parseJson<string[]>(row.tags_json as string | null, []);
+      return {
+        id: String(row.id),
+        type: row.type as SearchResultItem["type"],
+        title: row.title ? String(row.title) : null,
+        summary: row.summary ? String(row.summary) : null,
+        status: row.status as SearchResultItem["status"],
+        canonicality: row.canonicality as SearchResultItem["canonicality"],
+        sourceLabel: row.source_label ? String(row.source_label) : null,
+        updatedAt: String(row.updated_at),
+        tags,
+        matchReason: buildSearchMatchReason(
+          strategy,
+          collectMatchedFields(matcher, [
+            { field: "title", value: row.title ? String(row.title) : null },
+            { field: "summary", value: row.summary ? String(row.summary) : null },
+            { field: "body", value: row.body ? String(row.body) : null },
+            { field: "tags", value: tags.join(" ") },
+            { field: "sourceLabel", value: row.source_label ? String(row.source_label) : null }
+          ])
+        )
+      };
+    });
     const rankedItems = useSearchFeedbackBoost ? this.applySearchFeedbackBoost(items) : items;
 
     return {
@@ -2360,6 +2381,24 @@ export class MemforgeRepository {
   getNode(id: string): NodeRecord {
     const row = this.db.prepare(`SELECT * FROM nodes WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
     return mapNode(assertPresent(row, `Node ${id} not found`));
+  }
+
+  getNodesByIds(ids: string[]): Map<string, NodeRecord> {
+    if (!ids.length) {
+      return new Map();
+    }
+
+    const uniqueIds = Array.from(new Set(ids));
+    const rows = this.db
+      .prepare(`SELECT * FROM nodes WHERE id IN (${uniqueIds.map(() => "?").join(", ")})`)
+      .all(...uniqueIds) as Record<string, unknown>[];
+
+    return new Map(
+      rows.map((row) => {
+        const node = mapNode(row);
+        return [node.id, node] as const;
+      })
+    );
   }
 
   ensureWorkspaceInboxNode(): NodeRecord {
@@ -2565,10 +2604,19 @@ export class MemforgeRepository {
       )
       .all(nodeId, nodeId, nodeId, ...(relationFilter ?? [])) as Record<string, unknown>[];
 
-    return rows.map((row) => ({
-      relation: mapRelation(row),
-      node: this.getNode(String(row.related_id))
-    }));
+    const relatedNodes = this.getNodesByIds(rows.map((row) => String(row.related_id)));
+
+    return rows.flatMap((row) => {
+      const node = relatedNodes.get(String(row.related_id));
+      if (!node) {
+        return [];
+      }
+
+      return [{
+        relation: mapRelation(row),
+        node
+      }];
+    });
   }
 
   createRelation(input: CreateRelationInput & { resolvedStatus: string }): RelationRecord {
@@ -3004,9 +3052,12 @@ export class MemforgeRepository {
     reasons: string[];
     lastEvaluatedAt?: string;
     metadata?: JsonMap;
+    previousState?: GovernanceStateRecord | null;
   }): GovernanceStateRecord {
     const now = params.lastEvaluatedAt ?? nowIso();
-    const existing = this.getGovernanceStateNullable(params.entityType, params.entityId);
+    const existing = params.previousState === undefined
+      ? this.getGovernanceStateNullable(params.entityType, params.entityId)
+      : params.previousState;
     const lastTransitionAt = existing?.state === params.state ? existing.lastTransitionAt : now;
     this.db
       .prepare(
@@ -3031,7 +3082,16 @@ export class MemforgeRepository {
         lastTransitionAt,
         JSON.stringify(params.metadata ?? {})
       );
-    return this.getGovernanceState(params.entityType, params.entityId);
+    return {
+      entityType: params.entityType,
+      entityId: params.entityId,
+      state: params.state,
+      confidence: clampConfidence(params.confidence),
+      reasons: [...params.reasons],
+      lastEvaluatedAt: now,
+      lastTransitionAt,
+      metadata: params.metadata ?? {}
+    };
   }
 
   getGovernanceState(entityType: GovernanceEntityType, entityId: string): GovernanceStateRecord {

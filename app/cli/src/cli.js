@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { getApiBase, getAuthToken, requestJson } from "./http.js";
 import {
   renderActivitySearchResults,
-  renderBundleText,
+  renderBundleMarkdown,
   renderGovernanceIssues,
   renderJson,
   renderNode,
@@ -554,7 +554,7 @@ function outputData(data, format, command) {
       writeStdout(renderTelemetryErrors(payload));
       return;
     case "context":
-      writeStdout(renderBundleText(payload));
+      writeStdout(renderBundleMarkdown(payload));
       return;
     case "health":
       writeStdout(renderText(payload));

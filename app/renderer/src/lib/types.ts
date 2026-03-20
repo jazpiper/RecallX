@@ -47,38 +47,6 @@ export interface WorkspaceCatalogItem extends Workspace {
   lastOpenedAt: string;
 }
 
-export interface SemanticStatusSummary {
-  enabled: boolean;
-  provider: string | null;
-  model: string | null;
-  indexBackend: 'sqlite' | 'sqlite-vec';
-  configuredIndexBackend: 'sqlite' | 'sqlite-vec';
-  extensionStatus: 'loaded' | 'fallback' | 'disabled';
-  extensionLoadError: string | null;
-  chunkEnabled: boolean;
-  lastBackfillAt: string | null;
-  counts: {
-    pending: number;
-    processing: number;
-    stale: number;
-    ready: number;
-    failed: number;
-  };
-}
-
-export interface SemanticIssueItem {
-  nodeId: string;
-  title: string | null;
-  embeddingStatus: 'pending' | 'processing' | 'stale' | 'ready' | 'failed';
-  staleReason: string | null;
-  updatedAt: string;
-}
-
-export interface SemanticIssuePage {
-  items: SemanticIssueItem[];
-  nextCursor: string | null;
-}
-
 export interface ContextBundlePreviewItem {
   nodeId: string;
   type: NodeType;
@@ -139,19 +107,6 @@ export interface LandingInfo {
   status: string;
   governanceState: 'healthy' | 'low_confidence' | 'contested' | null;
   reason: string;
-}
-
-export interface SearchResultItem {
-  resultType: 'node' | 'activity';
-  node?: Node & {
-    matchReason?: SearchMatchReason;
-  };
-  activity?: Activity & {
-    targetNodeTitle?: string;
-    targetNodeType?: NodeType;
-    targetNodeStatus?: NodeStatus;
-    matchReason?: SearchMatchReason;
-  };
 }
 
 export interface Node {

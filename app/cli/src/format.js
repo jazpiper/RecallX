@@ -116,17 +116,6 @@ export function renderRelated(data) {
     .join("\n")}\n`;
 }
 
-export function renderActivities(data) {
-  const items = data?.items || [];
-  if (!items.length) {
-    return "No activities.\n";
-  }
-
-  return `${items
-    .map((item, index) => `${index + 1}. ${item.activityType || item.type} - ${item.body || ""}`)
-    .join("\n")}\n`;
-}
-
 export function renderGovernanceIssues(data) {
   const items = data?.items || [];
   if (!items.length) {
@@ -180,10 +169,6 @@ export function renderBundleMarkdown(bundle) {
     }
   }
   return `${lines.join("\n")}\n`;
-}
-
-export function renderBundleText(bundle) {
-  return renderBundleMarkdown(bundle);
 }
 
 export function renderTelemetrySummary(data) {

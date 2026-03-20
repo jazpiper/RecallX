@@ -55,38 +55,6 @@ export interface WorkspaceCatalogItem extends WorkspaceInfo {
   lastOpenedAt: string;
 }
 
-export interface SemanticStatusSummary {
-  enabled: boolean;
-  provider: string | null;
-  model: string | null;
-  indexBackend: "sqlite" | "sqlite-vec";
-  configuredIndexBackend: "sqlite" | "sqlite-vec";
-  extensionStatus: "loaded" | "fallback" | "disabled";
-  extensionLoadError: string | null;
-  chunkEnabled: boolean;
-  lastBackfillAt: string | null;
-  counts: {
-    pending: number;
-    processing: number;
-    stale: number;
-    ready: number;
-    failed: number;
-  };
-}
-
-export interface SemanticIssueItem {
-  nodeId: string;
-  title: string | null;
-  embeddingStatus: 'pending' | 'processing' | 'stale' | 'ready' | 'failed';
-  staleReason: string | null;
-  updatedAt: string;
-}
-
-export interface SemanticIssuePage {
-  items: SemanticIssueItem[];
-  nextCursor: string | null;
-}
-
 export interface NodeRecord {
   id: string;
   type: NodeType;
@@ -313,22 +281,6 @@ export interface SearchMatchReason {
   matchedFields: string[];
 }
 
-export interface ContextBundleItem {
-  nodeId: string;
-  type: NodeType;
-  title: string | null;
-  summary: string | null;
-  reason: string;
-  relationId?: string;
-  relationType?: RelationType;
-  relationSource?: RelationSource;
-  relationStatus?: RelationStatus | InferredRelationStatus;
-  relationScore?: number;
-  retrievalRank?: number;
-  semanticSimilarity?: number;
-  generator?: string | null;
-}
-
 export interface NeighborhoodItem {
   node: NodeRecord;
   edge: {
@@ -354,7 +306,21 @@ export interface ContextBundle {
   mode: BundleMode;
   preset: BundlePreset;
   summary: string;
-  items: ContextBundleItem[];
+  items: Array<{
+    nodeId: string;
+    type: NodeType;
+    title: string | null;
+    summary: string | null;
+    reason: string;
+    relationId?: string;
+    relationType?: RelationType;
+    relationSource?: RelationSource;
+    relationStatus?: RelationStatus | InferredRelationStatus;
+    relationScore?: number;
+    retrievalRank?: number;
+    semanticSimilarity?: number;
+    generator?: string | null;
+  }>;
   activityDigest: string[];
   decisions: SearchResultItem[];
   openQuestions: SearchResultItem[];
@@ -362,14 +328,6 @@ export interface ContextBundle {
     nodeId: string;
     sourceLabel: string | null;
   }>;
-}
-
-export interface LandingInfo {
-  storedAs: "node" | "relation" | "activity";
-  canonicality?: Canonicality;
-  status: string;
-  governanceState: GovernanceState | null;
-  reason: string;
 }
 
 export type TelemetrySurface = "api" | "mcp" | "desktop";

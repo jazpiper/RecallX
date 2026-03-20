@@ -310,9 +310,10 @@ export function maybeCreatePromotionCandidate(
 function evaluateNodeGovernance(
   repository: MemforgeRepository,
   node: NodeRecord,
-  policy: GovernancePolicy
+  policy: GovernancePolicy,
+  feedback = repository.getSearchFeedbackSummaries("node", [node.id]).get(node.id),
+  previousState = repository.getGovernanceStateNullable("node", node.id)
 ): GovernanceEvaluation {
-  const feedback = repository.getSearchFeedbackSummaries("node", [node.id]).get(node.id);
   const contradictionCount = repository.countContradictionRelations(node.id);
   const reusable = Boolean(node.metadata.reusable || node.metadata.durable || node.metadata.promoteCandidate);
   let confidence = chooseNodeBaseConfidence(node, policy);
@@ -351,8 +352,6 @@ function evaluateNodeGovernance(
   const nextStatus: NodeStatus =
     contested ? "contested" : node.status === "contested" ? "active" : node.status === "archived" ? "archived" : "active";
   const nextState: GovernanceState = contested ? "contested" : confidence >= healthyThreshold ? "healthy" : "low_confidence";
-  const previousState = repository.getGovernanceStateNullable("node", node.id);
-
   return {
     entityType: "node",
     entityId: node.id,
@@ -373,9 +372,10 @@ function evaluateNodeGovernance(
 function evaluateRelationGovernance(
   repository: MemforgeRepository,
   relation: RelationRecord,
-  policy: GovernancePolicy
+  policy: GovernancePolicy,
+  usage = repository.getRelationUsageSummaries([relation.id]).get(relation.id),
+  previousState = repository.getGovernanceStateNullable("relation", relation.id)
 ): GovernanceEvaluation {
-  const usage = repository.getRelationUsageSummaries([relation.id]).get(relation.id);
   let confidence = chooseRelationBaseConfidence(relation, policy);
   const reasons = [`source:${relation.sourceType ?? "unknown"}`];
 
@@ -397,8 +397,6 @@ function evaluateRelationGovernance(
       ? "active"
       : "suggested";
   const nextState: GovernanceState = contested ? "contested" : confidence >= activeThreshold ? "healthy" : "low_confidence";
-  const previousState = repository.getGovernanceStateNullable("relation", relation.id);
-
   return {
     entityType: "relation",
     entityId: relation.id,
@@ -414,10 +412,19 @@ function evaluateRelationGovernance(
   };
 }
 
-function persistGovernanceEvaluation(repository: MemforgeRepository, evaluation: GovernanceEvaluation): GovernanceStateRecord {
-  const currentState = repository.getGovernanceStateNullable(evaluation.entityType, evaluation.entityId);
-  const beforeNode = evaluation.entityType === "node" ? repository.getNode(evaluation.entityId) : null;
-  const beforeRelation = evaluation.entityType === "relation" ? repository.getRelation(evaluation.entityId) : null;
+function persistGovernanceEvaluation(
+  repository: MemforgeRepository,
+  evaluation: GovernanceEvaluation,
+  options?: {
+    currentState?: GovernanceStateRecord | null;
+    beforeNode?: NodeRecord | null;
+    beforeRelation?: RelationRecord | null;
+  }
+): GovernanceStateRecord {
+  const currentState = options?.currentState ?? repository.getGovernanceStateNullable(evaluation.entityType, evaluation.entityId);
+  const beforeNode = options?.beforeNode ?? (evaluation.entityType === "node" ? repository.getNode(evaluation.entityId) : null);
+  const beforeRelation =
+    options?.beforeRelation ?? (evaluation.entityType === "relation" ? repository.getRelation(evaluation.entityId) : null);
 
   if (evaluation.entityType === "node") {
     if (evaluation.nextCanonicality && beforeNode && beforeNode.canonicality !== evaluation.nextCanonicality) {
@@ -439,7 +446,8 @@ function persistGovernanceEvaluation(repository: MemforgeRepository, evaluation:
     confidence: evaluation.confidence,
     reasons: evaluation.reasons,
     lastEvaluatedAt: nowIso(),
-    metadata: evaluation.metadata
+    metadata: evaluation.metadata,
+    previousState: currentState
   });
   repository.appendGovernanceEvent({
     entityType: evaluation.entityType,
@@ -471,26 +479,54 @@ export function recomputeAutomaticGovernance(
   const items: GovernanceStateRecord[] = [];
   let promotedCount = 0;
   let contestedCount = 0;
+  const nodes = targets.nodeIds.map((nodeId) => repository.getNode(nodeId));
+  const nodeFeedback = repository.getSearchFeedbackSummaries("node", nodes.map((node) => node.id));
+  const nodeStates = new Map(nodes.map((node) => [node.id, repository.getGovernanceStateNullable("node", node.id)] as const));
+  const relations = targets.relationIds.map((relationId) => repository.getRelation(relationId));
+  const relationUsage = repository.getRelationUsageSummaries(relations.map((relation) => relation.id));
+  const relationStates = new Map(
+    relations.map((relation) => [relation.id, repository.getGovernanceStateNullable("relation", relation.id)] as const)
+  );
 
-  for (const nodeId of targets.nodeIds) {
-    const node = repository.getNode(nodeId);
-    const evaluation = evaluateNodeGovernance(repository, node, policy);
+  for (const node of nodes) {
+    const evaluation = evaluateNodeGovernance(
+      repository,
+      node,
+      policy,
+      nodeFeedback.get(node.id),
+      nodeStates.get(node.id) ?? null
+    );
     if (evaluation.nextCanonicality === "canonical" && node.canonicality !== "canonical") {
       promotedCount += 1;
     }
     if (evaluation.state === "contested") {
       contestedCount += 1;
     }
-    items.push(persistGovernanceEvaluation(repository, evaluation));
+    items.push(
+      persistGovernanceEvaluation(repository, evaluation, {
+        currentState: nodeStates.get(node.id) ?? null,
+        beforeNode: node
+      })
+    );
   }
 
-  for (const relationId of targets.relationIds) {
-    const relation = repository.getRelation(relationId);
-    const evaluation = evaluateRelationGovernance(repository, relation, policy);
+  for (const relation of relations) {
+    const evaluation = evaluateRelationGovernance(
+      repository,
+      relation,
+      policy,
+      relationUsage.get(relation.id),
+      relationStates.get(relation.id) ?? null
+    );
     if (evaluation.state === "contested") {
       contestedCount += 1;
     }
-    items.push(persistGovernanceEvaluation(repository, evaluation));
+    items.push(
+      persistGovernanceEvaluation(repository, evaluation, {
+        currentState: relationStates.get(relation.id) ?? null,
+        beforeRelation: relation
+      })
+    );
   }
 
   return {

@@ -26,6 +26,12 @@ type GeneratedCandidate = {
   evidence: JsonMap;
 };
 
+type TargetInferenceContext = {
+  normalizedTags: string[];
+  projectIds: Set<string>;
+  artifactKeys: { exactPaths: string[]; baseNames: string[] };
+};
+
 function normalizeText(value: string | null | undefined): string {
   return (value ?? "").toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -97,8 +103,7 @@ function attachedArtifactKeys(repository: MemforgeRepository, nodeId: string): {
   };
 }
 
-function buildTagOverlapCandidate(target: NodeRecord, candidate: NodeRecord): GeneratedCandidate | null {
-  const targetTags = normalizeTags(target.tags);
+function buildTagOverlapCandidate(target: NodeRecord, candidate: NodeRecord, targetTags: string[]): GeneratedCandidate | null {
   const candidateTags = new Set(normalizeTags(candidate.tags));
   const sharedTags = targetTags.filter((tag) => candidateTags.has(tag));
   if (!sharedTags.length) {
@@ -167,9 +172,9 @@ function buildActivityReferenceCandidate(target: NodeRecord, candidate: NodeReco
 function buildProjectMembershipCandidate(
   repository: MemforgeRepository,
   target: NodeRecord,
-  candidate: NodeRecord
+  candidate: NodeRecord,
+  targetProjects: Set<string>
 ): GeneratedCandidate | null {
-  const targetProjects = new Set(activeProjectMembershipIds(repository, target));
   const candidateProjects = activeProjectMembershipIds(repository, candidate);
   const sharedProjectIds = candidateProjects.filter((projectId) => targetProjects.has(projectId));
 
@@ -193,9 +198,9 @@ function buildProjectMembershipCandidate(
 function buildSharedArtifactCandidate(
   repository: MemforgeRepository,
   target: NodeRecord,
-  candidate: NodeRecord
+  candidate: NodeRecord,
+  targetArtifacts: { exactPaths: string[]; baseNames: string[] }
 ): GeneratedCandidate | null {
-  const targetArtifacts = attachedArtifactKeys(repository, target.id);
   const candidateArtifacts = attachedArtifactKeys(repository, candidate.id);
   const candidateExact = new Set(candidateArtifacts.exactPaths);
   const candidateBase = new Set(candidateArtifacts.baseNames);
@@ -226,23 +231,21 @@ function collectGeneratedCandidates(
   trigger: "node-write" | "activity-append" | "reindex"
 ): GeneratedCandidate[] {
   const candidateMap = new Map<string, NodeRecord>();
+  const targetContext: TargetInferenceContext = {
+    normalizedTags: normalizeTags(target.tags),
+    projectIds: new Set(activeProjectMembershipIds(repository, target)),
+    artifactKeys: attachedArtifactKeys(repository, target.id)
+  };
   for (const candidate of repository.listInferenceCandidateNodes(target.id, MAX_CANDIDATES)) {
     candidateMap.set(candidate.id, candidate);
   }
-  for (const candidateId of repository.listSharedProjectMemberNodeIds(target.id, MAX_CANDIDATES)) {
-    if (!candidateMap.has(candidateId)) {
-      const candidate = repository.getNode(candidateId);
-      if (candidate.status === "active" || candidate.status === "contested") {
-        candidateMap.set(candidate.id, candidate);
-      }
-    }
-  }
-  for (const candidateId of repository.listNodesSharingArtifactPaths(target.id, MAX_CANDIDATES)) {
-    if (!candidateMap.has(candidateId)) {
-      const candidate = repository.getNode(candidateId);
-      if (candidate.status === "active" || candidate.status === "contested") {
-        candidateMap.set(candidate.id, candidate);
-      }
+  const extraCandidateIds = [
+    ...repository.listSharedProjectMemberNodeIds(target.id, MAX_CANDIDATES),
+    ...repository.listNodesSharingArtifactPaths(target.id, MAX_CANDIDATES)
+  ].filter((candidateId) => !candidateMap.has(candidateId));
+  for (const candidate of repository.getNodesByIds(extraCandidateIds).values()) {
+    if (candidate.status === "active" || candidate.status === "contested") {
+      candidateMap.set(candidate.id, candidate);
     }
   }
   const candidates = Array.from(candidateMap.values());
@@ -256,7 +259,7 @@ function collectGeneratedCandidates(
 
   return candidates.flatMap((candidate) => {
     const generated: GeneratedCandidate[] = [];
-    const tagOverlapCandidate = buildTagOverlapCandidate(target, candidate);
+    const tagOverlapCandidate = buildTagOverlapCandidate(target, candidate, targetContext.normalizedTags);
     if (tagOverlapCandidate) {
       generated.push(tagOverlapCandidate);
     }
@@ -270,11 +273,21 @@ function collectGeneratedCandidates(
         generated.push(activityReferenceCandidate);
       }
     }
-    const projectMembershipCandidate = buildProjectMembershipCandidate(repository, target, candidate);
+    const projectMembershipCandidate = buildProjectMembershipCandidate(
+      repository,
+      target,
+      candidate,
+      targetContext.projectIds
+    );
     if (projectMembershipCandidate) {
       generated.push(projectMembershipCandidate);
     }
-    const sharedArtifactCandidate = buildSharedArtifactCandidate(repository, target, candidate);
+    const sharedArtifactCandidate = buildSharedArtifactCandidate(
+      repository,
+      target,
+      candidate,
+      targetContext.artifactKeys
+    );
     if (sharedArtifactCandidate) {
       generated.push(sharedArtifactCandidate);
     }

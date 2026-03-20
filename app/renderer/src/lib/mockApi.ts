@@ -12,11 +12,7 @@ import type {
   NodeDetail,
   Node,
   Relation,
-  SearchResultItem,
   ContextBundlePreviewItem,
-  SemanticIssueItem,
-  SemanticIssuePage,
-  SemanticStatusSummary,
   Workspace,
   WorkspaceCatalogItem,
   WorkspaceSeed,
@@ -47,7 +43,6 @@ export interface BootstrapInfo {
   workspace: Workspace;
   authMode: Workspace['authMode'];
   hasToken: boolean;
-  semantic: SemanticStatusSummary;
 }
 
 export interface WorkspaceCatalog {
@@ -118,53 +113,6 @@ function mapWorkspaceCatalogResponse(payload: any): WorkspaceCatalog {
   return {
     current: mapWorkspace(data?.current),
     items: mapWorkspaceCatalogItems(data?.items),
-  };
-}
-
-function defaultSemanticStatus(): SemanticStatusSummary {
-  return {
-    enabled: false,
-    provider: 'disabled',
-    model: 'none',
-    indexBackend: 'sqlite',
-    configuredIndexBackend: 'sqlite-vec',
-    extensionStatus: 'fallback',
-    extensionLoadError: null,
-    chunkEnabled: false,
-    lastBackfillAt: null,
-    counts: {
-      pending: 0,
-      processing: 0,
-      stale: 0,
-      ready: 0,
-      failed: 0,
-    },
-  };
-}
-
-function mapSemanticStatus(raw: any): SemanticStatusSummary {
-  const fallback = defaultSemanticStatus();
-  const counts = raw?.counts ?? {};
-  return {
-    enabled: typeof raw?.enabled === 'boolean' ? raw.enabled : fallback.enabled,
-    provider: typeof raw?.provider === 'string' ? raw.provider : fallback.provider,
-    model: typeof raw?.model === 'string' ? raw.model : fallback.model,
-    indexBackend: raw?.indexBackend === 'sqlite-vec' ? 'sqlite-vec' : fallback.indexBackend,
-    configuredIndexBackend: raw?.configuredIndexBackend === 'sqlite' ? 'sqlite' : fallback.configuredIndexBackend,
-    extensionStatus:
-      raw?.extensionStatus === 'loaded' || raw?.extensionStatus === 'disabled' || raw?.extensionStatus === 'fallback'
-        ? raw.extensionStatus
-        : fallback.extensionStatus,
-    extensionLoadError: typeof raw?.extensionLoadError === 'string' ? raw.extensionLoadError : fallback.extensionLoadError,
-    chunkEnabled: typeof raw?.chunkEnabled === 'boolean' ? raw.chunkEnabled : fallback.chunkEnabled,
-    lastBackfillAt: typeof raw?.lastBackfillAt === 'string' ? raw.lastBackfillAt : fallback.lastBackfillAt,
-    counts: {
-      pending: typeof counts.pending === 'number' ? counts.pending : fallback.counts.pending,
-      processing: typeof counts.processing === 'number' ? counts.processing : fallback.counts.processing,
-      stale: typeof counts.stale === 'number' ? counts.stale : fallback.counts.stale,
-      ready: typeof counts.ready === 'number' ? counts.ready : fallback.counts.ready,
-      failed: typeof counts.failed === 'number' ? counts.failed : fallback.counts.failed,
-    },
   };
 }
 
@@ -486,68 +434,12 @@ export async function getBootstrap(): Promise<BootstrapInfo> {
         workspace,
         authMode: data.authMode === 'bearer' ? 'bearer' : workspace.authMode,
         hasToken: Boolean(getRendererToken()),
-        semantic: mapSemanticStatus(data.semantic),
       };
     },
     async () => ({
       workspace: fallbackState.workspace,
       authMode: 'optional',
       hasToken: false,
-      semantic: defaultSemanticStatus(),
-    }),
-  );
-}
-
-export async function getSemanticStatus(): Promise<SemanticStatusSummary> {
-  return withFallback(
-    async () => {
-      const payload = await requestJson('/semantic/status');
-      return mapSemanticStatus(payload?.data ?? payload);
-    },
-    async () => defaultSemanticStatus(),
-  );
-}
-
-export async function getSemanticIssues(options?: {
-  limit?: number;
-  cursor?: string | null;
-  statuses?: Array<'pending' | 'stale' | 'failed'>;
-}): Promise<SemanticIssuePage> {
-  return withFallback(
-    async () => {
-      const params = new URLSearchParams();
-      params.set('limit', String(Math.min(Math.max(options?.limit ?? 5, 1), 25)));
-      if (options?.cursor) {
-        params.set('cursor', options.cursor);
-      }
-      if (options?.statuses?.length) {
-        params.set('statuses', options.statuses.join(','));
-      }
-      const payload = await requestJson(`/semantic/issues?${params.toString()}`);
-      const items = readPayloadItems(payload)
-        .filter((item: any) => item && typeof item.nodeId === 'string')
-        .map((item: any) => ({
-          nodeId: item.nodeId,
-          title: typeof item.title === 'string' ? item.title : null,
-          embeddingStatus:
-            item.embeddingStatus === 'pending' ||
-            item.embeddingStatus === 'processing' ||
-            item.embeddingStatus === 'stale' ||
-            item.embeddingStatus === 'ready' ||
-            item.embeddingStatus === 'failed'
-              ? item.embeddingStatus
-              : 'pending',
-          staleReason: typeof item.staleReason === 'string' ? item.staleReason : null,
-          updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date().toISOString(),
-        }));
-      return {
-        items,
-        nextCursor: typeof payload?.data?.nextCursor === 'string' ? payload.data.nextCursor : null,
-      };
-    },
-    async () => ({
-      items: [],
-      nextCursor: null,
     }),
   );
 }
@@ -621,27 +513,6 @@ export async function appendRelationUsageEvent(input: {
   });
 }
 
-export async function queueSemanticReindex(limit = 250): Promise<{ queuedNodeIds: string[]; queuedCount: number }> {
-  const payload = await requestJson('/semantic/reindex', {
-    method: 'POST',
-    body: JSON.stringify({ limit }),
-  });
-  return {
-    queuedNodeIds: Array.isArray(payload?.data?.queuedNodeIds) ? payload.data.queuedNodeIds : [],
-    queuedCount: typeof payload?.data?.queuedCount === 'number' ? payload.data.queuedCount : 0,
-  };
-}
-
-export async function queueSemanticReindexForNode(nodeId: string): Promise<{ nodeId: string; queued: boolean }> {
-  const payload = await requestJson(`/semantic/reindex/${encodeURIComponent(nodeId)}`, {
-    method: 'POST',
-  });
-  return {
-    nodeId: typeof payload?.data?.nodeId === 'string' ? payload.data.nodeId : nodeId,
-    queued: Boolean(payload?.data?.queued),
-  };
-}
-
 export async function createWorkspace(input: { rootPath: string; workspaceName?: string }): Promise<WorkspaceCatalog> {
   const payload = await requestJson('/workspaces', {
     method: 'POST',
@@ -699,74 +570,6 @@ export async function getSnapshot(): Promise<WorkspaceSeed> {
   );
 }
 
-export async function searchWorkspace(query: string, scopes: Array<'nodes' | 'activities'> = ['nodes', 'activities']): Promise<SearchResultItem[]> {
-  return withFallback(
-    async () => {
-      const payload = await requestJson('/search', {
-        method: 'POST',
-        body: JSON.stringify({
-          query,
-          scopes,
-          limit: 20,
-          offset: 0,
-          sort: query.trim() ? 'smart' : 'updated_at',
-        }),
-      });
-      const items = Array.isArray(payload?.data?.items) ? payload.data.items : [];
-      return items.map((item: any) =>
-        item.resultType === 'activity'
-          ? {
-              resultType: 'activity' as const,
-              activity: {
-                ...mapActivity(item.activity),
-                targetNodeTitle: item.activity?.targetNodeTitle ?? item.activity?.target_title,
-                targetNodeType: item.activity?.targetNodeType ?? item.activity?.target_type,
-                targetNodeStatus: item.activity?.targetNodeStatus ?? item.activity?.target_status,
-                matchReason: item.activity?.matchReason,
-              },
-            }
-          : {
-              resultType: 'node' as const,
-              node: {
-                ...mapNode(item.node),
-                matchReason: item.node?.matchReason,
-              },
-            }
-      );
-    },
-    async () => {
-      const normalized = query.trim().toLowerCase();
-      const nodeItems = scopes.includes('nodes')
-        ? fallbackState.nodes
-            .filter((node) => {
-              if (!normalized) return node.status !== 'archived';
-              const haystack = [node.title, node.summary, node.body, node.tags.join(' '), node.sourceLabel, node.type]
-                .join(' ')
-                .toLowerCase();
-              return haystack.includes(normalized);
-            })
-            .map((node) => ({ resultType: 'node' as const, node }))
-        : [];
-      const activityItems = scopes.includes('activities')
-        ? fallbackState.activities
-            .filter((activity) => !normalized || activity.body.toLowerCase().includes(normalized))
-            .map((activity) => {
-              const targetNode = fallbackState.nodes.find((node) => node.id === activity.targetNodeId);
-              return {
-                resultType: 'activity' as const,
-                activity: {
-                  ...activity,
-                  targetNodeTitle: targetNode?.title,
-                  targetNodeType: targetNode?.type,
-                  targetNodeStatus: targetNode?.status,
-                },
-              };
-            })
-        : [];
-      return [...nodeItems, ...activityItems].slice(0, 20);
-    },
-  );
-}
 
 export async function getNodeDetail(id: string): Promise<NodeDetail | undefined> {
   return withFallback(

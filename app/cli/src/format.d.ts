@@ -3,7 +3,5 @@ export function renderText(value: unknown): string;
 export function renderNode(node: Record<string, unknown>): string;
 export function renderSearchResults(data: Record<string, unknown>): string;
 export function renderRelated(data: Record<string, unknown>): string;
-export function renderActivities(data: Record<string, unknown>): string;
 export function renderWorkspaces(data: Record<string, unknown>): string;
 export function renderBundleMarkdown(bundle: Record<string, unknown>): string;
-export function renderBundleText(bundle: Record<string, unknown>): string;

@@ -154,7 +154,6 @@ pre {
 .info-block p,
 .empty-state,
 .meta-row,
-.path-list strong,
 .note-reading-pane,
 .banner {
   color: var(--muted);
@@ -352,9 +351,6 @@ pre {
 
 .card,
 .page-card,
-.notes-side,
-.notes-list,
-.notes-preview,
 .auth-card {
   border: 1px solid var(--panel-border);
   border-radius: var(--radius-xl);
@@ -559,8 +555,7 @@ pre {
 .route-card span,
 .mini-card p,
 .result-card p,
-.graph-node p,
-.path-list code {
+.graph-node p {
   line-height: 1.55;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -837,12 +832,6 @@ pre {
   min-width: 150px;
 }
 
-.notes-layout {
-  display: grid;
-  grid-template-columns: minmax(250px, 0.85fr) minmax(320px, 1fr) minmax(360px, 1.1fr);
-  gap: 20px;
-}
-
 .notes-toolbar {
   display: grid;
   grid-template-columns: minmax(260px, 0.8fr) minmax(360px, 1.2fr);
@@ -946,22 +935,6 @@ pre {
   gap: 10px;
 }
 
-.notes-side,
-.notes-list,
-.notes-preview {
-  min-height: 620px;
-}
-
-.notes-list,
-.notes-preview {
-  display: grid;
-  align-content: start;
-}
-
-.notes-preview {
-  gap: 16px;
-}
-
 .note-reading-pane {
   min-height: 260px;
   padding: 18px;
@@ -984,24 +957,6 @@ pre {
   background: rgba(3, 8, 16, 0.82);
   color: #d6ebff;
   line-height: 1.6;
-}
-
-.path-list {
-  display: grid;
-  gap: 12px;
-  margin-top: 16px;
-}
-
-.path-list div {
-  display: grid;
-  gap: 6px;
-  padding-top: 12px;
-  border-top: 1px solid rgba(148, 174, 210, 0.1);
-}
-
-.path-list code {
-  color: var(--muted-strong);
-  word-break: break-all;
 }
 
 .graph-summary-grid {
@@ -1086,11 +1041,6 @@ pre {
   margin-top: 10px;
 }
 
-.graph-shell {
-  display: grid;
-  gap: 12px;
-}
-
 .graph-node {
   padding: 16px;
 }
@@ -1126,7 +1076,6 @@ pre {
 
   .two-column-grid,
   .guide-layout,
-  .notes-layout,
   .notes-toolbar,
   .graph-summary-grid,
   .graph-section-grid,
@@ -1142,12 +1091,6 @@ pre {
 
   .notes-capture-form {
     grid-template-columns: 1fr;
-  }
-
-  .notes-side,
-  .notes-list,
-  .notes-preview {
-    min-height: auto;
   }
 }
 

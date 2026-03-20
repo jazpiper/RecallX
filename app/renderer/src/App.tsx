@@ -9,34 +9,25 @@ import {
   getGovernanceIssues,
   getNodeDetail,
   getGraphNeighborhood,
-  getSemanticIssues,
-  getSemanticStatus,
   getSnapshot,
   getWorkspaceCatalog,
   getWorkspace,
   isAuthError,
   openWorkspace as openWorkspaceSession,
-  queueSemanticReindex,
-  queueSemanticReindexForNode,
   refreshNodeSummary as refreshNodeSummaryRequest,
   saveRendererToken,
-  searchWorkspace,
   subscribeWorkspaceEvents,
 } from './lib/mockApi';
 import type {
   Activity,
   Artifact,
   ContextBundlePreviewItem,
-  GovernanceEventRecord,
   GovernanceIssueItem,
   GovernancePayload,
   GraphConnection,
   NavView,
   NodeDetail,
   Node,
-  SearchResultItem,
-  SemanticIssueItem,
-  SemanticStatusSummary,
   WorkspaceCatalogItem,
   WorkspaceSeed,
 } from './lib/types';
@@ -50,9 +41,6 @@ type DetailPanel = {
   governance: GovernancePayload;
 };
 
-type SemanticIssueFilter = 'all' | 'failed' | 'stale' | 'pending';
-type SearchScope = 'nodes' | 'activities';
-
 const navigation: { id: NavView; label: string; hint: string }[] = [
   { id: 'home', label: 'Home', hint: 'landing' },
   { id: 'search', label: 'API', hint: 'local access' },
@@ -64,21 +52,6 @@ const navigation: { id: NavView; label: string; hint: string }[] = [
 const utilityNavigation: { id: NavView; label: string }[] = [
   { id: 'graph', label: 'Graph' },
   { id: 'governance', label: 'Governance' },
-];
-
-const DEFAULT_SEMANTIC_COUNTS = {
-  pending: 0,
-  processing: 0,
-  stale: 0,
-  ready: 0,
-  failed: 0,
-};
-
-const SEMANTIC_ISSUE_FILTERS: SemanticIssueFilter[] = ['all', 'failed', 'stale', 'pending'];
-const SEARCH_SCOPE_OPTIONS: Array<{ id: SearchScope | 'all'; label: string; scopes: SearchScope[] }> = [
-  { id: 'all', label: 'All', scopes: ['nodes', 'activities'] },
-  { id: 'nodes', label: 'Nodes', scopes: ['nodes'] },
-  { id: 'activities', label: 'Activities', scopes: ['activities'] },
 ];
 
 function badgeTone(status: string) {
@@ -122,195 +95,6 @@ function formatTime(iso: string) {
   }).format(new Date(iso));
 }
 
-function formatMaybeTime(iso: string | null) {
-  return iso ? formatTime(iso) : 'Not run yet';
-}
-
-function handleSearchSubmit(
-  event: React.FormEvent<HTMLFormElement>,
-  options: { query: string; onSelectSearch: () => void }
-) {
-  event.preventDefault();
-  if (!options.query.trim()) {
-    return;
-  }
-  options.onSelectSearch();
-}
-
-function semanticIssueFilterLabel(filter: SemanticIssueFilter) {
-  switch (filter) {
-    case 'failed':
-      return 'failed issues';
-    case 'stale':
-      return 'stale issues';
-    case 'pending':
-      return 'pending issues';
-    default:
-      return 'all issue buckets';
-  }
-}
-
-function semanticIssueEmptyState(filter: SemanticIssueFilter) {
-  switch (filter) {
-    case 'failed':
-      return 'No failed semantic issues in this workspace slice.';
-    case 'stale':
-      return 'No stale semantic issues in this workspace slice.';
-    case 'pending':
-      return 'No pending semantic issues in this workspace slice.';
-    default:
-      return 'No semantic issues to triage right now.';
-  }
-}
-
-function getSummaryLifecycle(node: Node | null) {
-  if (!node) {
-    return {
-      summaryUpdatedAt: null as string | null,
-      summarySource: null as string | null,
-      isStale: false,
-    };
-  }
-
-  const summaryUpdatedAt =
-    typeof node.metadata.summaryUpdatedAt === 'string' ? node.metadata.summaryUpdatedAt : null;
-  const summarySource = typeof node.metadata.summarySource === 'string' ? node.metadata.summarySource : null;
-  const isStale = summaryUpdatedAt
-    ? new Date(node.updatedAt).getTime() - new Date(summaryUpdatedAt).getTime() > 1000
-    : false;
-
-  return {
-    summaryUpdatedAt,
-    summarySource,
-    isStale,
-  };
-}
-
-function getSearchResultKey(item: SearchResultItem) {
-  return item.resultType === 'node' ? item.node?.id ?? 'node-unknown' : item.activity?.id ?? 'activity-unknown';
-}
-
-function getSearchResultNodeId(item: SearchResultItem) {
-  return item.resultType === 'node' ? item.node?.id ?? null : item.activity?.targetNodeId ?? null;
-}
-
-function getSearchResultTitle(item: SearchResultItem) {
-  if (item.resultType === 'node') {
-    return item.node?.title ?? 'Untitled node';
-  }
-  return item.activity?.targetNodeTitle ?? item.activity?.targetNodeId ?? 'Activity';
-}
-
-function getSearchResultSummary(item: SearchResultItem) {
-  if (item.resultType === 'node') {
-    return item.node?.summary ?? 'No summary yet.';
-  }
-  return item.activity?.body ?? 'No activity body available.';
-}
-
-function getSearchResultBadge(item: SearchResultItem) {
-  if (item.resultType === 'node') {
-    return item.node?.type ?? 'node';
-  }
-  return item.activity?.activityType ?? 'activity';
-}
-
-function getSearchResultStatus(item: SearchResultItem) {
-  if (item.resultType === 'node') {
-    return item.node?.status ?? 'draft';
-  }
-  return item.activity?.targetNodeStatus ?? 'draft';
-}
-
-function getSearchResultMeta(item: SearchResultItem) {
-  if (item.resultType === 'node') {
-    return {
-      source: item.node?.sourceLabel ?? 'unknown',
-      updatedAt: item.node?.updatedAt ?? item.node?.createdAt ?? new Date().toISOString(),
-    };
-  }
-  return {
-    source: item.activity?.sourceLabel ?? 'unknown',
-    updatedAt: item.activity?.createdAt ?? new Date().toISOString(),
-  };
-}
-
-function getSearchScopeMode(scopes: SearchScope[]) {
-  if (scopes.length === 2) {
-    return 'all';
-  }
-  return scopes[0] ?? 'nodes';
-}
-
-function getSearchScopeSummary(scopes: SearchScope[]) {
-  const mode = getSearchScopeMode(scopes);
-  if (mode === 'activities') {
-    return 'Activity recall over operational history and target-node context.';
-  }
-  if (mode === 'nodes') {
-    return 'Durable node retrieval over titles, summaries, bodies, and tags.';
-  }
-  return 'Mixed retrieval across durable nodes and recent activity trails.';
-}
-
-function getSearchResultEyebrow(item: SearchResultItem) {
-  return item.resultType === 'node' ? 'Durable node' : 'Activity trail';
-}
-
-function formatMatchedFieldLabel(field: string) {
-  switch (field) {
-    case 'targetNodeTitle':
-      return 'target title';
-    case 'activityType':
-      return 'activity type';
-    case 'sourceLabel':
-      return 'source';
-    default:
-      return field;
-  }
-}
-
-function getSearchResultMatchReason(item: SearchResultItem) {
-  const matchReason = item.resultType === 'node' ? item.node?.matchReason : item.activity?.matchReason;
-  if (!matchReason) {
-    return null;
-  }
-
-  if (matchReason.strategy === 'browse') {
-    return 'Browse mode';
-  }
-
-  const fields = matchReason.matchedFields.map(formatMatchedFieldLabel);
-  const suffix = fields.length ? ` via ${fields.join(', ')}` : '';
-
-  switch (matchReason.strategy) {
-    case 'fts':
-      return `Lexical match${suffix}`;
-    case 'like':
-      return `String match${suffix}`;
-    case 'fallback_token':
-      return `Fallback token match${suffix}`;
-    case 'semantic':
-      return 'Semantic fallback match';
-    default:
-      return null;
-  }
-}
-
-function getSearchResultSecondaryMeta(item: SearchResultItem) {
-  if (item.resultType === 'node') {
-    return [item.node?.type ?? 'node', item.node?.status ?? 'draft'].join(' · ');
-  }
-
-  return [
-    item.activity?.activityType ?? 'activity',
-    item.activity?.targetNodeTitle ? `target ${item.activity.targetNodeTitle}` : item.activity?.targetNodeId ?? 'unlinked',
-    item.activity?.createdAt ? formatTime(item.activity.createdAt) : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
-}
-
 function governanceStateRank(state: GovernanceIssueItem['state']) {
   switch (state) {
     case 'contested':
@@ -339,10 +123,6 @@ function getGovernanceStateSummary(state: GovernanceIssueItem['state']) {
 
 function getGovernanceActionLabel(item: GovernanceIssueItem) {
   return item.entityType === 'node' ? 'Inspect node' : 'Relation issue';
-}
-
-function getGovernanceEventLabel(event: GovernanceEventRecord) {
-  return [event.eventType, event.nextState, formatTime(event.createdAt)].join(' · ');
 }
 
 function getViewTitle(view: NavView) {
@@ -433,28 +213,6 @@ function emptyDetailPanel(): DetailPanel {
   };
 }
 
-function Section({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="card">
-      <div className="section-head">
-        <div>
-          <h2>{title}</h2>
-          {subtitle ? <p>{subtitle}</p> : null}
-        </div>
-      </div>
-      {children}
-    </section>
-  );
-}
-
 export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceSeed['workspace'] | null>(null);
   const [workspaceCatalog, setWorkspaceCatalog] = useState<WorkspaceCatalogItem[]>([]);
@@ -462,7 +220,6 @@ export default function App() {
   const [view, setView] = useState<NavView>('home');
   const [selectedNodeId, setSelectedNodeId] = useState<string>('node_memforge');
   const [query, setQuery] = useState('');
-  const [searchScopes, setSearchScopes] = useState<SearchScope[]>(['nodes', 'activities']);
   const deferredQuery = useDeferredValue(query);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -480,79 +237,27 @@ export default function App() {
   const [workspaceNameInput, setWorkspaceNameInput] = useState('');
   const [workspaceActionError, setWorkspaceActionError] = useState<string | null>(null);
   const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false);
+  const [isNotePreviewOpen, setIsNotePreviewOpen] = useState(false);
   const [apiGuideSectionId, setApiGuideSectionId] = useState('overview');
   const [mcpGuideSectionId, setMcpGuideSectionId] = useState('overview');
-  const [semanticStatus, setSemanticStatus] = useState<SemanticStatusSummary | null>(null);
-  const [semanticIssues, setSemanticIssues] = useState<SemanticIssueItem[]>([]);
-  const [semanticIssueFilter, setSemanticIssueFilter] = useState<SemanticIssueFilter>('all');
-  const [semanticIssuesNextCursor, setSemanticIssuesNextCursor] = useState<string | null>(null);
-  const [semanticNotice, setSemanticNotice] = useState<string | null>(null);
-  const [semanticError, setSemanticError] = useState<string | null>(null);
-  const [isReindexingSemantic, setIsReindexingSemantic] = useState(false);
-  const [isReindexingSelectedNode, setIsReindexingSelectedNode] = useState(false);
   const bundleUsageEventKeysRef = useRef(new Set<string>());
   const relationUsageSessionIdRef = useRef(
     globalThis.crypto?.randomUUID?.() ?? `memforge-renderer-${Date.now()}`
   );
 
-  function semanticIssueStatuses(filter: SemanticIssueFilter): Array<'pending' | 'stale' | 'failed'> | undefined {
-    if (filter === 'all') {
-      return undefined;
-    }
-    return [filter];
-  }
-
-  async function loadSemanticIssues(options?: {
-    filter?: SemanticIssueFilter;
-    cursor?: string | null;
-    append?: boolean;
-    refreshStatus?: boolean;
+  async function refreshWorkspaceState(options?: {
+    workspaceOverride?: WorkspaceSeed['workspace'];
+    catalogOverride?: { current: WorkspaceSeed['workspace']; items: WorkspaceCatalogItem[] };
   }) {
-    const filter = options?.filter ?? semanticIssueFilter;
-    const [page, nextStatus] = await Promise.all([
-      getSemanticIssues({
-        limit: 5,
-        cursor: options?.cursor ?? undefined,
-        statuses: semanticIssueStatuses(filter),
-      }),
-      options?.refreshStatus ? getSemanticStatus() : Promise.resolve(null),
-    ]);
-    setSemanticIssueFilter(filter);
-    setSemanticIssues((current) => {
-      if (!options?.append) {
-        return page.items;
-      }
-      const seen = new Set(current.map((item) => `${item.nodeId}:${item.embeddingStatus}:${item.updatedAt}`));
-      return [
-        ...current,
-        ...page.items.filter((item) => !seen.has(`${item.nodeId}:${item.embeddingStatus}:${item.updatedAt}`)),
-      ];
-    });
-    setSemanticIssuesNextCursor(page.nextCursor);
-    if (nextStatus) {
-      setSemanticStatus(nextStatus);
-    }
-    return page;
-  }
-
-  async function refreshWorkspaceState() {
-    const [workspaceResult, snapshotResult, catalog, nextSemanticStatus, nextSemanticIssues] = await Promise.all([
-      getWorkspace(),
+    const [workspaceResult, snapshotResult, catalog] = await Promise.all([
+      options?.workspaceOverride ? Promise.resolve(options.workspaceOverride) : getWorkspace(),
       getSnapshot(),
-      getWorkspaceCatalog(),
-      getSemanticStatus(),
-      getSemanticIssues({
-        limit: 5,
-        statuses: semanticIssueStatuses(semanticIssueFilter),
-      }),
+      options?.catalogOverride ? Promise.resolve(options.catalogOverride) : getWorkspaceCatalog(),
     ]);
-    setWorkspace(workspaceResult);
+    setWorkspace(options?.catalogOverride?.current ?? workspaceResult);
     setSnapshot(snapshotResult);
     setWorkspaceCatalog(catalog.items);
     setWorkspaceRootInput(catalog.current.rootPath);
-    setSemanticStatus(nextSemanticStatus);
-    setSemanticIssues(nextSemanticIssues.items);
-    setSemanticIssuesNextCursor(nextSemanticIssues.nextCursor);
     setLoadError(null);
     return snapshotResult;
   }
@@ -577,7 +282,6 @@ export default function App() {
         const bootstrap = await getBootstrap();
         if (!mounted) return;
         setWorkspace(bootstrap.workspace);
-        setSemanticStatus(bootstrap.semantic);
         if (bootstrap.authMode === 'bearer' && !bootstrap.hasToken) {
           setAuthRequired(true);
           setAuthError(null);
@@ -585,7 +289,7 @@ export default function App() {
           return;
         }
 
-        const snapshotResult = await refreshWorkspaceState();
+        await refreshWorkspaceState();
         if (!mounted) return;
         setAuthRequired(false);
         setAuthError(null);
@@ -710,6 +414,16 @@ export default function App() {
     return map;
   }, [snapshot]);
 
+  useEffect(() => {
+    if (!snapshot?.nodes.length) {
+      return;
+    }
+    if (!selectedNodeId || nodeMap.has(selectedNodeId)) {
+      return;
+    }
+    setSelectedNodeId(snapshot.nodes[0]?.id ?? '');
+  }, [nodeMap, selectedNodeId, snapshot]);
+
   const graphFocusableNodes = useMemo(
     () =>
       (snapshot?.nodes ?? [])
@@ -718,7 +432,8 @@ export default function App() {
     [snapshot],
   );
 
-  const selectedNode = nodeMap.get(selectedNodeId) ?? snapshot?.nodes[0] ?? null;
+  const selectedNode = selectedNodeId ? nodeMap.get(selectedNodeId) ?? null : null;
+  const selectedNodeKey = selectedNode?.id ?? null;
 
   const [detail, setDetail] = useState<DetailPanel>(emptyDetailPanel);
   const detailNode = detail.node?.id === selectedNode?.id ? detail.node : selectedNode;
@@ -732,8 +447,8 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
     const currentNode = selectedNode;
-    if (!currentNode) return undefined;
-    const nodeId = currentNode.id;
+    if (!currentNode || !selectedNodeKey) return undefined;
+    const nodeId = selectedNodeKey;
     setDetail({
       ...emptyDetailPanel(),
       node: currentNode,
@@ -772,13 +487,13 @@ export default function App() {
     return () => {
       mounted = false;
     };
-  }, [selectedNode]);
+  }, [selectedNodeKey]);
 
   useEffect(() => {
     let mounted = true;
     const currentNode = selectedNode;
-    if (!currentNode) return undefined;
-    const nodeId = currentNode.id;
+    if (!currentNode || !selectedNodeKey) return undefined;
+    const nodeId = selectedNodeKey;
 
     async function loadGraph() {
       setIsGraphLoading(true);
@@ -803,22 +518,12 @@ export default function App() {
     return () => {
       mounted = false;
     };
-  }, [graphRadius, selectedNode]);
+  }, [graphRadius, selectedNodeKey]);
 
-  const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
   const [governanceIssues, setGovernanceIssues] = useState<GovernanceIssueItem[]>([]);
-  const recentNodes = useMemo(
-    () => (snapshot ? snapshot.recentNodeIds.map((id) => nodeMap.get(id)).filter((node): node is Node => Boolean(node)) : []),
-    [nodeMap, snapshot],
-  );
-  const pinnedNodes = useMemo(
-    () =>
-      snapshot ? snapshot.pinnedProjectIds.map((id) => nodeMap.get(id)).filter((node): node is Node => Boolean(node)) : [],
-    [nodeMap, snapshot],
-  );
   const noteNodes = useMemo(() => {
     const candidates = snapshot?.nodes ?? [];
-    const normalizedQuery = query.trim().toLowerCase();
+    const normalizedQuery = deferredQuery.trim().toLowerCase();
     const filtered = normalizedQuery
       ? candidates.filter((node) =>
           [node.title, node.summary, node.body, node.tags.join(' ')]
@@ -831,22 +536,25 @@ export default function App() {
     return filtered
       .slice()
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.title.localeCompare(right.title));
-  }, [query, snapshot]);
-  const summaryLifecycle = useMemo(() => getSummaryLifecycle(detailNode), [detailNode]);
+  }, [deferredQuery, snapshot]);
   const activeNoteNode = useMemo(
     () => noteNodes.find((node) => node.id === selectedNodeId) ?? null,
     [noteNodes, selectedNodeId],
   );
-  const notePreviewNode = detail.node?.id === activeNoteNode?.id ? detail.node : activeNoteNode;
+  const notePreviewNode = isNotePreviewOpen
+    ? detail.node?.id === activeNoteNode?.id
+      ? detail.node
+      : activeNoteNode
+    : null;
 
   useEffect(() => {
-    if (!snapshot) return;
+    if (!snapshot || view !== 'governance') return;
 
     let mounted = true;
 
     async function loadLists() {
       try {
-        const [issues, results] = await Promise.all([getGovernanceIssues(), searchWorkspace(deferredQuery, searchScopes)]);
+        const issues = await getGovernanceIssues();
 
         if (!mounted) return;
         setGovernanceIssues(
@@ -858,7 +566,6 @@ export default function App() {
             return left.confidence - right.confidence || right.lastTransitionAt.localeCompare(left.lastTransitionAt);
           })
         );
-        setSearchResults(results);
         setLoadError(null);
       } catch (error) {
         if (!mounted) return;
@@ -871,7 +578,7 @@ export default function App() {
     return () => {
       mounted = false;
     };
-  }, [deferredQuery, searchScopes, snapshot]);
+  }, [snapshot, view]);
 
   useEffect(() => {
     if (!governanceIssues.length) {
@@ -888,9 +595,7 @@ export default function App() {
   const activeGovernanceIssue =
     governanceIssues.find((item) => item.entityId === selectedGovernanceId) ?? governanceIssues[0];
 
-  const homeActivities = detail.activities.slice(0, 3);
   const workspaceName = workspace?.name ?? 'Memforge';
-  const semanticCounts = semanticStatus?.counts ?? DEFAULT_SEMANTIC_COUNTS;
   const apiBase = desktopInfo?.apiBase ?? `http://${workspace?.apiBind ?? '127.0.0.1:8787'}/api/v1`;
   const workspaceHome = desktopInfo?.workspaceHome ?? '';
   const workspaceRoot = workspace?.rootPath ?? desktopInfo?.workspaceRoot ?? '';
@@ -1169,69 +874,9 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
   const activeGovernanceNode =
     activeGovernanceIssue?.entityType === 'node' ? nodeMap.get(activeGovernanceIssue.entityId) ?? null : null;
 
-  async function handleSemanticIssueFilterChange(nextFilter: SemanticIssueFilter) {
-    try {
-      setSemanticError(null);
-      await loadSemanticIssues({ filter: nextFilter });
-    } catch (error) {
-      setSemanticError(error instanceof Error ? error.message : 'Could not refresh semantic issues.');
-    }
-  }
-
-  async function handleLoadMoreSemanticIssues() {
-    if (!semanticIssuesNextCursor) {
-      return;
-    }
-
-    try {
-      setSemanticError(null);
-      await loadSemanticIssues({ cursor: semanticIssuesNextCursor, append: true });
-    } catch (error) {
-      setSemanticError(error instanceof Error ? error.message : 'Could not load more semantic issues.');
-    }
-  }
-
-  async function handleQueueSemanticReindex() {
-    setIsReindexingSemantic(true);
-    setSemanticError(null);
-    setSemanticNotice(null);
-    try {
-      const result = await queueSemanticReindex();
-      await loadSemanticIssues({ filter: semanticIssueFilter, refreshStatus: true });
-      setSemanticNotice(`Queued ${result.queuedCount} nodes for semantic reindex.`);
-      setLoadError(null);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to queue semantic reindex.';
-      setSemanticError(message);
-      handleRequestFailure(error, message);
-    } finally {
-      setIsReindexingSemantic(false);
-    }
-  }
-
-  async function handleQueueSelectedNodeSemanticReindex() {
-    if (!detailNode) {
-      return;
-    }
-    setIsReindexingSelectedNode(true);
-    setSemanticError(null);
-    setSemanticNotice(null);
-    try {
-      await queueSemanticReindexForNode(detailNode.id);
-      await loadSemanticIssues({ filter: semanticIssueFilter, refreshStatus: true });
-      setSemanticNotice(`Queued semantic reindex for "${detailNode.title}".`);
-      setLoadError(null);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to queue node reindex.';
-      setSemanticError(message);
-      handleRequestFailure(error, message);
-    } finally {
-      setIsReindexingSelectedNode(false);
-    }
-  }
-
   function resetWorkspaceSelection(nextSnapshot: WorkspaceSeed) {
     setSelectedNodeId(nextSnapshot.nodes[0]?.id ?? '');
+    setIsNotePreviewOpen(false);
     setDetail(emptyDetailPanel());
   }
 
@@ -1293,6 +938,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
       const node = result.node;
       await refreshWorkspaceState();
       focusNode(node.id);
+      setIsNotePreviewOpen(false);
       setView(node.type === 'project' ? 'projects' : 'recent');
       setCaptureTitle('');
       setCaptureBody('');
@@ -1377,11 +1023,14 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
     setWorkspaceActionError(null);
     setIsSwitchingWorkspace(true);
     try {
-      await createWorkspaceSession({
+      const catalog = await createWorkspaceSession({
         rootPath,
         workspaceName: workspaceNameInput.trim() || undefined,
       });
-      const nextSnapshot = await refreshWorkspaceState();
+      const nextSnapshot = await refreshWorkspaceState({
+        workspaceOverride: catalog.current,
+        catalogOverride: catalog,
+      });
       resetWorkspaceSelection(nextSnapshot);
       setWorkspaceNameInput('');
     } catch (error) {
@@ -1396,8 +1045,11 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
     setWorkspaceActionError(null);
     setIsSwitchingWorkspace(true);
     try {
-      await openWorkspaceSession(rootPath);
-      const nextSnapshot = await refreshWorkspaceState();
+      const catalog = await openWorkspaceSession(rootPath);
+      const nextSnapshot = await refreshWorkspaceState({
+        workspaceOverride: catalog.current,
+        catalogOverride: catalog,
+      });
       resetWorkspaceSelection(nextSnapshot);
     } catch (error) {
       handleRequestFailure(error, 'Failed to switch workspace.');
@@ -2104,7 +1756,10 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
                   key={node.id}
                   type="button"
                   className={`note-tile ${activeNoteNode?.id === node.id ? 'selected' : ''}`}
-                  onClick={() => focusNode(node.id, 'recent')}
+                  onClick={() => {
+                    focusNode(node.id, 'recent');
+                    setIsNotePreviewOpen(true);
+                  }}
                 >
                   <div className="result-card__top">
                     <span className={`pill ${badgeTone(node.status)}`}>{node.type}</span>
@@ -2137,7 +1792,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
             <div
               className="note-overlay"
               onClick={() => {
-                setSelectedNodeId('');
+                setIsNotePreviewOpen(false);
               }}
             >
               <section
@@ -2157,7 +1812,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
                       type="button"
                       className="ghost"
                       onClick={() => {
-                        setSelectedNodeId('');
+                        setIsNotePreviewOpen(false);
                       }}
                     >
                       Close

@@ -1,40 +1,27 @@
 #!/usr/bin/env node
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { MemforgeApiClient } from "./api-client.js";
 import { createMemforgeMcpServer } from "./server.js";
 
-async function requestJson(path: string) {
-  const baseUrl = process.env.MEMFORGE_API_URL ?? "http://127.0.0.1:8787/api/v1";
-  const url = new URL(path.replace(/^\/+/, ""), `${baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`}`);
-  const headers = new Headers({
-    accept: "application/json"
-  });
-
-  if (process.env.MEMFORGE_API_TOKEN) {
-    headers.set("authorization", `Bearer ${process.env.MEMFORGE_API_TOKEN}`);
-  }
-
-  const response = await fetch(url, {
-    method: "GET",
-    headers
-  });
-  if (!response.ok) {
-    throw new Error(`Failed to bootstrap MCP observability from ${url.toString()}: ${response.status}`);
-  }
-
-  return await response.json() as { data?: Record<string, any> };
+function createApiClient() {
+  return new MemforgeApiClient(
+    process.env.MEMFORGE_API_URL ?? "http://127.0.0.1:8787/api/v1",
+    process.env.MEMFORGE_API_TOKEN
+  );
 }
 
 async function resolveObservabilityState() {
   try {
+    const client = createApiClient();
     const [workspacePayload, settingsPayload] = await Promise.all([
-      requestJson("/workspace"),
-      requestJson(
+      client.get<Record<string, unknown>>("/workspace"),
+      client.get<{ values?: Record<string, unknown> }>(
         "/settings?keys=observability.enabled,observability.retentionDays,observability.slowRequestMs,observability.capturePayloadShape"
       )
     ]);
-    const workspace = workspacePayload.data ?? {};
-    const values = (settingsPayload.data?.values ?? {}) as Record<string, unknown>;
+    const workspace = workspacePayload ?? {};
+    const values = (settingsPayload.values ?? {}) as Record<string, unknown>;
 
     return {
       enabled: values["observability.enabled"] === true,

@@ -52,7 +52,11 @@ function encodeVectorBlob(vector: number[]): Uint8Array {
 }
 
 function decodeVectorBlob(blob: Uint8Array): Float32Array {
-  return new Float32Array(blob.buffer.slice(blob.byteOffset, blob.byteOffset + blob.byteLength));
+  return new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / Float32Array.BYTES_PER_ELEMENT);
+}
+
+function buildEmbeddingByOrdinal(embeddings: SemanticEmbeddingResult[]): Map<number, SemanticEmbeddingResult> {
+  return new Map(embeddings.map((embedding) => [embedding.chunkOrdinal, embedding] as const));
 }
 
 function computeCosineSimilarity(left: ArrayLike<number>, right: ArrayLike<number>): number {
@@ -85,9 +89,10 @@ class SqliteVectorIndexStore implements VectorIndexStore {
     chunks: SemanticChunkRecord[];
     embeddings: SemanticEmbeddingResult[];
   }): Promise<VectorLedgerRecord[]> {
+    const embeddingsByOrdinal = buildEmbeddingByOrdinal(input.embeddings);
     const ledgerRows: Array<VectorLedgerRecord | null> = input.chunks
       .map((chunk) => {
-        const embedding = input.embeddings.find((item) => item.chunkOrdinal === chunk.ordinal);
+        const embedding = embeddingsByOrdinal.get(chunk.ordinal);
         if (!embedding) {
           return null;
         }
@@ -166,9 +171,10 @@ class SqliteVecVectorIndexStore implements VectorIndexStore {
     chunks: SemanticChunkRecord[];
     embeddings: SemanticEmbeddingResult[];
   }): Promise<VectorLedgerRecord[]> {
+    const embeddingsByOrdinal = buildEmbeddingByOrdinal(input.embeddings);
     const ledgerRows: Array<VectorLedgerRecord | null> = input.chunks
       .map((chunk) => {
-        const embedding = input.embeddings.find((item) => item.chunkOrdinal === chunk.ordinal);
+        const embedding = embeddingsByOrdinal.get(chunk.ordinal);
         if (!embedding) {
           return null;
         }

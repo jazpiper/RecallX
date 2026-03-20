@@ -73,11 +73,7 @@ export class WorkspaceSessionManager {
     const previousState = this.currentState;
     this.currentState = nextState;
     this.remember(nextState);
-    if (previousState.workspaceRoot !== nextState.workspaceRoot) {
-      previousState.db.close();
-    } else {
-      previousState.db.close();
-    }
+    previousState.db.close();
     return this.getWorkspaceCatalogItem(nextState);
   }
 

@@ -154,15 +154,6 @@ function withReadOnlyAnnotations(config: any) {
   };
 }
 
-function registerReadOnlyTool(
-  server: McpServer,
-  name: string,
-  config: any,
-  handler: (...args: any[]) => any
-) {
-  server.registerTool(name, withReadOnlyAnnotations(config), handler);
-}
-
 function classifyMcpError(error: unknown) {
   if (error instanceof MemforgeApiError) {
     if (error.code === "NETWORK_ERROR") {
