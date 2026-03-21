@@ -119,7 +119,7 @@ After the top four, also review:
 ### UX
 - Is the 3-pane desktop UI the right human interface?
 - Is the graph correctly treated as secondary?
-- Is the review queue lightweight enough?
+- Are governance inspection and project-map exploration lightweight enough?
 
 ### API / schema
 - Are the current API primitives and schema boundaries clean and implementable?

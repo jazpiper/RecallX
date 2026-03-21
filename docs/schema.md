@@ -864,7 +864,7 @@ This rule, combined with the promotion table, guarantees the graph stays trustwo
   "actor_type": "human",
   "actor_label": "juhwan",
   "tool_name": "pnw-desktop",
-  "tool_version": "0.1.0",
+  "tool_version": "1.0.0",
   "timestamp": "2026-03-17T13:30:00Z"
 }
 ```

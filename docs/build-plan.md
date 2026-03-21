@@ -34,7 +34,7 @@ This plan follows the project guardrails:
 - Phase 4 append-first write-back originally landed with provenance plus review-aware curation hooks; shipped v2 now uses automatic governance instead.
 - Phase 5 review and curation was implemented in v1 through review queue endpoints and renderer review actions before the v2 governance replacement removed that surface.
 - Phase 6 real integrations now include documented `pnw`, raw HTTP bootstrap, and stdio MCP workflows in addition to the coding-agent path.
-- Phase 7 retrieval enhancement has started selectively through inferred-relation storage, deterministic inferred-link generation from tag/body/activity, project-membership, and shared-artifact signals, usage feedback capture, maintenance recompute, and relation-aware ranking. Semantic retrieval still remains deferred until real usage proves deterministic retrieval is insufficient.
+- Phase 7 retrieval enhancement has now shipped selectively through inferred-relation storage, deterministic inferred-link generation from tag/body/activity, project-membership, and shared-artifact signals, usage feedback capture, maintenance recompute, relation-aware ranking, and a bounded local semantic sidecar. The shipped built-in semantic provider is `local-ngram` / `chargram-v1` embedding version `2`, with version-aware lookup and automatic stale/requeue behavior when semantic configuration changes.
 
 ## 1.2 Current Plan (2026-03-19)
 
@@ -44,7 +44,7 @@ The next track is:
 - keep product docs aligned with the shipped renderer/API/MCP surfaces instead of future-state assumptions
 - dogfood the new Electron desktop shell and add distribution polish such as icons, signing, and notarization when needed
 - tune inferred-relation thresholds and explainability based on real workspace usage so stronger signals do not make the graph noisy
-- decide whether richer digest materialization is worth adding beyond the current deterministic summary + stale-cue baseline
+- decide whether richer digest materialization is worth adding beyond the current deterministic summary baseline
 
 ---
 

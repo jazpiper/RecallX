@@ -54,7 +54,7 @@ The quickest paths should stay clear:
 - quick capture
 - search
 - inspect in graph
-- review pending items
+- inspect contested governance items
 - reindex or diagnose semantic state when needed
 
 ---
@@ -67,16 +67,15 @@ Memforge currently ships as a 3-pane desktop shell.
 - workspace identity
 - top-level navigation
 - quick capture entry
-- pinned projects
 - recent nodes
 
 ### Center pane
 - Home
-- Search
-- Projects
+- Guide
 - Recent
-- Review
 - Graph
+- Project map
+- Governance
 - Settings
 
 ### Right pane
@@ -85,6 +84,7 @@ Memforge currently ships as a 3-pane desktop shell.
 - context bundle preview
 - recent activity
 - artifacts
+- governance summary
 
 This shape is correct for v1 because it keeps retrieval and inspection near each other without making graph or settings dominate the product.
 
@@ -94,15 +94,14 @@ This shape is correct for v1 because it keeps retrieval and inspection near each
 
 Top-level navigation stays intentionally small:
 - Home
-- Search
-- Projects
+- Guide
 - Recent
-- Review
 - Graph
+- Project map
+- Governance
 - Settings
 
 Supporting navigation stays lightweight:
-- pinned projects
 - recent nodes
 
 Do not add more top-level surfaces unless they clearly improve capture, retrieval, review, or context inspection.
@@ -123,7 +122,7 @@ It should answer:
 - how do I capture something quickly?
 
 ### Current sections
-- workspace / pinned / review summary cards
+- workspace / summary cards
 - API & MCP connection examples
 - semantic indexing status card
 - file and app path cards
@@ -140,52 +139,28 @@ Home should remain a compact re-entry surface, not expand into analytics or syst
 
 ---
 
-## 5.2 Search
+## 5.2 Guide
 
 ### Goal
-Search is the main retrieval surface.
+Guide is the human-readable integration surface.
 
 ### Current behavior
-- one query input
-- summary-first result cards
-- cards show title, type, summary, source label, and updated time
-- clicking a result updates the selected node and right-hand context rail
+- unified HTTP + MCP setup guidance
+- grouped sections for overview, base URL, starter routes, example requests, MCP connection, search flow, write path, and workspace paths
+- keeps operational setup in the renderer instead of forcing users to switch to external docs first
 
 ### Current non-goals
-- no advanced filters yet
-- no project-only toggle yet
-- no explicit “why relevant” explanation yet
+- not a full API reference replacement
+- not an interactive integration dashboard
+- not a substitute for the machine-readable service index
 
 ### Design rule
-Keep search fast and summary-first.
-If richer filters are added later, they should stay narrow and obviously useful.
+Keep this page text-first and immediately useful.
+It should lower setup friction without turning into a verbose control panel.
 
 ---
 
-## 5.3 Projects
-
-### Goal
-Projects is currently a lightweight project launcher, not a dedicated project dashboard.
-
-### Current behavior
-- pinned project list in the center pane
-- click-through into the shared node detail + context rail on the right
-
-### Important note
-There is no separate project detail layout yet.
-Until one exists, project understanding comes from:
-- project selection
-- node detail
-- context rail
-- graph inspection
-
-### Design rule
-Do not pretend there is a richer project surface than actually exists.
-Future project dashboards should only land if they are materially better than the current node-plus-context pattern.
-
----
-
-## 5.4 Recent
+## 5.3 Recent
 
 ### Goal
 Recent is the quickest way back to recently touched nodes.
@@ -201,31 +176,10 @@ It exists for continuity, not deep triage.
 
 ---
 
-## 5.5 Review
+## 5.4 Graph
 
 ### Goal
-Review protects trust without feeling heavy.
-
-### Current behavior
-- list of pending review items
-- basic metadata
-- approve / reject actions
-
-### Current non-goals
-- no edit-then-approve flow yet
-- no archive / dismiss controls yet
-- no dedicated review detail panel yet
-
-### Design rule
-The review queue should feel manageable.
-When richer actions are added later, they should still preserve the lightweight feel.
-
----
-
-## 5.6 Graph
-
-### Goal
-Graph is an inspection tool.
+Graph is a node-centric neighborhood inspection tool.
 
 ### Current behavior
 - selected focus node is explicit
@@ -240,6 +194,41 @@ It should never become the default landing page or imply that every visible edge
 
 ---
 
+## 5.5 Project Map
+
+### Goal
+Project map is the project-scoped graph exploration surface.
+
+### Current behavior
+- starts from a selected project node
+- renders a bounded project-scoped graph payload from `/api/v1/projects/:id/graph`
+- supports canonical/inferred source filters and relation-type filters
+- supports timeline emphasis playback and scrubbing without rebuilding the structural graph each tick
+- uses a lazy-loaded canvas stack so graph libraries do not inflate the main renderer bundle for every session
+
+### Design rule
+Keep this surface bounded and inspectable.
+It should explain project structure, not drift into an unbounded global graph browser.
+
+---
+
+## 5.6 Governance
+
+### Goal
+Governance protects trust without reviving the old review queue.
+
+### Current behavior
+- surfaced contested and low-confidence items
+- current state summary and confidence explanation
+- click-through into the affected node or relation context
+- bounded recompute/inspection flows backed by automatic governance state, not a manual approval inbox
+
+### Design rule
+Governance should feel operational and explainable.
+It should help the user inspect trust signals without creating heavy moderation ceremony.
+
+---
+
 ## 5.7 Settings
 
 ### Goal
@@ -248,12 +237,11 @@ Settings should stay practical and workspace-oriented.
 ### Current sections
 - workspace create/open controls
 - current workspace metadata
-- review policy
-- trusted source tools
+- semantic and operational settings routed through the local API
 - recent workspaces
 
 ### Important note
-Settings currently focus more on review policy and workspace switching than on import/export or integration-specific controls.
+Settings focus more on workspace switching and operational control than on speculative product preferences.
 
 ### Design rule
 Only expose settings users can actually act on.
@@ -362,10 +350,10 @@ If more fields are added later, they should remain optional by default.
 3. right rail shows surrounding context
 4. user optionally opens graph or acts on bundle preview
 
-## 9.2 Review flow
-1. tool or agent writes a suggestion
-2. item appears in review queue if needed
-3. user approves or rejects quickly
+## 9.2 Governance inspection flow
+1. tool or maintenance pass writes or updates state
+2. surfaced governance issues appear when confidence or trust needs inspection
+3. user inspects the issue and decides whether a follow-up action is needed
 
 ## 9.3 Context inspection flow
 1. user selects a node

@@ -1,12 +1,13 @@
 {
   "name": "memforge",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "main": "dist/server/app/desktop/main.js",
   "bin": {
     "memforge": "./app/cli/bin/pnw.js",
-    "pnw": "./app/cli/bin/pnw.js"
+    "pnw": "./app/cli/bin/pnw.js",
+    "memforge-mcp": "./app/cli/bin/memforge-mcp.js"
   },
   "description": "Local-first personal knowledge layer for humans and agents.",
   "scripts": {
@@ -25,7 +26,12 @@
     "start:run": "MEMFORGE_PORT=8787 node dist/server/app/server/index.js",
     "start:desktop": "npm run build && concurrently -n server,desktop -c blue,magenta \"npm:start:run\" \"npm:desktop:run\"",
     "mcp": "node dist/server/app/mcp/index.js",
-    "package:desktop": "npm run build && electron-builder && node scripts/repair-macos-artifacts.mjs",
+    "package:desktop": "npm run build && electron-builder --publish never",
+    "package:desktop:mac": "npm run build && electron-builder --publish never --mac zip dmg --arm64 && node scripts/repair-macos-artifacts.mjs",
+    "package:desktop:linux": "npm run build && electron-builder --publish never --linux AppImage deb",
+    "prepare:cli-package": "node scripts/prepare-cli-package.mjs",
+    "pack:cli": "npm run build && npm run prepare:cli-package && npm pack ./release/npm-cli",
+    "publish:cli": "npm run build && npm run prepare:cli-package && npm publish ./release/npm-cli",
     "start": "node dist/server/app/server/index.js",
     "test": "vitest run",
     "check": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
@@ -42,17 +48,16 @@
       "app/desktop/assets/**/*",
       "package.json"
     ],
-    "asarUnpack": [
-      "dist/server/**/*"
-    ],
+    "asarUnpack": ["dist/server/**/*"],
+    "afterSign": "scripts/notarize.cjs",
     "mac": {
       "icon": "app/desktop/assets/memforge.icns",
       "category": "public.app-category.productivity",
-      "target": [
-        "zip",
-        "dmg"
-      ],
-      "identity": "-"
+      "target": ["zip", "dmg"]
+    },
+    "linux": {
+      "category": "Office",
+      "target": ["AppImage", "deb"]
     }
   },
   "dependencies": {

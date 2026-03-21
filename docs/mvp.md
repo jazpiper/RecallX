@@ -143,9 +143,9 @@ The workspace should be optimized so external tools can retrieve useful context 
 #### 1) Workspace home
 - recent nodes
 - recent activity
-- quick search entry
-- pinned projects or notes
-- local integration and semantic status surface
+- quick guide entry
+- current integration and semantic status surface
+- fast links into graph and project-map inspection
 
 #### 2) Node detail
 - node content
@@ -155,20 +155,20 @@ The workspace should be optimized so external tools can retrieve useful context 
 - artifacts
 - context bundle preview
 
-#### 3) Search
-- keyword search
-- semantic search later if feasible
-- filters by type/tag/source later if the simple query-only flow proves insufficient
+#### 3) Guide
+- keyword-first retrieval surface for nodes, activities, and bundles
+- semantic augmentation when local semantic status is healthy
+- lightweight filters only when the simple query-first flow is insufficient
 
 #### 4) Graph view
 - limited graph visualization
 - centered around the selected node or project
 - not intended to be the main workflow
 
-#### 5) Review queue
-- incoming agent-created notes or suggested links
-- approve / reject flow first
-- edit / dismiss later if the lightweight queue becomes a bottleneck
+#### 5) Governance
+- surfaced automatic-governance issues
+- operational inspection rather than manual queue triage
+- explainable issue details without reintroducing a human review queue
 
 ---
 
@@ -306,7 +306,7 @@ The priority is making integrations easy for tools that already work via termina
 - append activity
 - create node from tools
 - provenance tracking
-- review queue
+- promotion/governance checks for higher-risk writes
 
 ### Phase 3 — Better retrieval
 - semantic search

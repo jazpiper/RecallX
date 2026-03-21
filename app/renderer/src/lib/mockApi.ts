@@ -17,6 +17,7 @@ import type {
   WorkspaceCatalogItem,
   WorkspaceSeed,
 } from './types';
+import { MEMFORGE_VERSION } from '../../../shared/version';
 
 type LandingInfo = {
   storedAs: 'node' | 'relation' | 'activity';
@@ -32,7 +33,7 @@ const DEFAULT_SOURCE = {
   actorType: 'human',
   actorLabel: 'memforge-renderer',
   toolName: 'memforge-renderer',
-  toolVersion: '0.1.0',
+  toolVersion: MEMFORGE_VERSION,
 } as const;
 let rendererToken: string | null = null;
 

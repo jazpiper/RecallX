@@ -148,7 +148,7 @@ Add compound indexes matching actual access patterns, especially for:
 - relations by endpoint + status + recency
 - activities by target + recency
 - artifacts by node + recency
-- review queue by status + recency
+- governance issue scans and promotion/state checks by status + recency
 
 ### Finding 5 — Chunking and embeddings should remain secondary
 

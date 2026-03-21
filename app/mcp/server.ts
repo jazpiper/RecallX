@@ -19,6 +19,7 @@ import {
   sourceTypes
 } from "../shared/contracts.js";
 import type { Source } from "../shared/contracts.js";
+import { MEMFORGE_VERSION } from "../shared/version.js";
 import { createObservabilityWriter, summarizePayloadShape } from "../server/observability.js";
 import { MemforgeApiClient, MemforgeApiError } from "./api-client.js";
 
@@ -388,7 +389,7 @@ export function createMemforgeMcpServer(params?: {
     actorType: "agent",
     actorLabel: process.env.MEMFORGE_MCP_SOURCE_LABEL ?? "Memforge MCP",
     toolName: process.env.MEMFORGE_MCP_TOOL_NAME ?? "memforge-mcp",
-    toolVersion: params?.serverVersion ?? "0.1.0"
+    toolVersion: params?.serverVersion ?? MEMFORGE_VERSION
   };
   const sourceSchema = buildSourceSchema(defaultSource).describe(sourceDescription);
   const defaultObservabilityState = {
@@ -420,7 +421,7 @@ export function createMemforgeMcpServer(params?: {
   const server = new McpServer(
     {
       name: "memforge-mcp",
-      version: params?.serverVersion ?? "0.1.0"
+      version: params?.serverVersion ?? MEMFORGE_VERSION
     },
     {
       instructions:

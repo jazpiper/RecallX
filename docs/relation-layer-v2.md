@@ -9,7 +9,8 @@ The core idea:
 - add a separate auto-derived relation layer
 - let retrieval and agent usage continuously adjust the usefulness of those derived links
 
-This document is intentionally a v2 design note. It does not replace the current v1 relation rules.
+This document is intentionally a v2 design note. It does not replace the current shipped relation and governance rules.
+For current behavior, prefer `README.md`, `docs/api.md`, `docs/schema.md`, and `docs/promotion-rules.md`.
 
 ## 1.1 Status snapshot (2026-03-18)
 
@@ -33,10 +34,10 @@ What is still not implemented:
 
 ## 2. Problem
 
-The current v1 model assumes relations are mainly created explicitly:
+The current v1 model originally assumed relations were mainly created explicitly:
 - human creates an active relation
 - agent creates a suggested relation
-- review queue decides whether that relation becomes active
+- governance or promotion rules decide whether that relation becomes active
 
 That is safe, but it does not scale well for high-volume memory capture.
 
@@ -63,7 +64,7 @@ Auto-derived links should not be treated as the same kind of truth as:
 
 ### 3.2 Do not make humans approve graph exhaust
 
-High-volume inferred links should not flow through the same review queue used for higher-risk durable writes.
+High-volume inferred links should not flow through the same promotion/governance path used for higher-risk durable writes.
 
 Instead:
 - canonical edits remain reviewable where needed
@@ -416,9 +417,9 @@ This prevents the graph from looking more trustworthy than it actually is.
 
 ## 10. Guardrails
 
-## 10.1 No review queue flood
+## 10.1 No governance flood
 
-Inferred relations should not create standard review queue items by default.
+Inferred relations should not create standard governance issue floods or manual review items by default.
 
 ## 10.2 No canonical auto-promotion
 

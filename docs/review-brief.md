@@ -141,7 +141,7 @@ A reviewer can use these questions to critique the system.
 ### UX
 - Is the 3-pane model the right fit?
 - Is the graph correctly demoted to inspection role?
-- Is the review queue lightweight enough?
+- Are governance inspection and project-map exploration lightweight enough?
 
 ### Guardrails
 - Are the anti-bloat constraints strong enough to actually protect the product?
@@ -177,17 +177,17 @@ If they have even less time, the most important docs are probably:
 
 ## 9. Overall status
 
-The project has moved beyond a docs-only concept into a working local implementation scaffold.
+The project has moved beyond a docs-only concept into a working local implementation.
 
 What is now real:
 - local Node/TypeScript service with SQLite-backed workspaces
 - loopback HTTP API and thin `pnw` CLI
 - runtime workspace create/open switching without restarting the service
 - workspace update events over SSE
-- append-first governance and review queue behavior
-- provenance-aware renderer detail flows and explicit graph focus UX
+- append-first governance and surfaced governance issue behavior
+- provenance-aware renderer detail flows, explicit graph focus, and bounded project-map UX
 - inferred-relation storage plus usage-feedback-driven score maintenance
-- React renderer with live API-first loading and first-pass review/search/settings flows
+- React renderer with live API-first loading and current Home/Guide/Recent/Graph/Project map/Governance/Settings flows
 - stdio MCP bridge for coding-agent tool calls over the existing local API
 - workspace switching and inspection from terminal-native tooling through the `pnw` wrapper
 

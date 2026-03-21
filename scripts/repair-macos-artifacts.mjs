@@ -21,8 +21,7 @@ if (process.platform !== "darwin") {
   process.exit(0);
 }
 
-run("codesign", ["--force", "--deep", "--sign", "-", appPath]);
-run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath]);
+run("xattr", ["-cr", appPath]);
 
 rmIfExists(zipPath);
 run("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", appPath, zipPath]);

@@ -120,9 +120,11 @@ The scout is optimized for:
 - deterministic retrieval remains first
 - semantic augmentation is bounded and optional, with `sqlite-vec` preferred and `sqlite` as the automatic fallback backend
 - `provider` still refers to embedding generation; `local-ngram` / `chargram-v1` remains the built-in validation provider
+- the shipped built-in provider is currently embedding version `2`, and candidate lookup now requires provider/model/version compatibility
 - request-time tuning is limited to `search.semantic.augmentation.minSimilarity`, `search.semantic.augmentation.maxBonus`, and `search.semantic.chunk.aggregation`
 - semantic bonuses are skipped when there is already a strong lexical exact match
 - mixed workspace search may optionally do a final bounded semantic retry only after deterministic search and token fallback both return `0` results; this is off by default and node-only
+- semantic configuration changes can automatically stale and requeue ready rows so old vectors are rebuilt instead of being reused under a new signature
 
 ### Scout non-goals
 The scout should not:
@@ -455,7 +457,8 @@ Summaries are the foundation of fast retrieval, but maintenance must never slow 
 - bundle assembly falls back to simple placeholders such as `No summary yet.` when a richer digest does not exist
 
 ### What is not implemented yet
-- no dedicated `refresh summaries` CLI/API command
+- no dedicated bulk `refresh summaries` CLI/API command
+- summary refresh currently exists as an explicit per-node API action, not as a scheduled maintenance pipeline
 - no stale-summary age tracking or UI warning yet
 - no nightly regeneration job
 - no richer `key_points` / `decision_digest` materialization beyond the current lightweight activity and node-summary helpers

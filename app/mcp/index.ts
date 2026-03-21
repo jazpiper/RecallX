@@ -3,6 +3,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { MemforgeApiClient } from "./api-client.js";
 import { createMemforgeMcpServer } from "./server.js";
+import { MEMFORGE_VERSION } from "../shared/version.js";
 
 type ObservabilityState = {
   enabled: boolean;
@@ -89,6 +90,7 @@ Usage:
   npm run mcp
   npm run dev:mcp
   node dist/server/app/mcp/index.js --api http://127.0.0.1:8787/api/v1
+  memforge-mcp --api http://127.0.0.1:8787/api/v1
 
 Environment:
   MEMFORGE_API_URL            Local Memforge API base URL (default: http://127.0.0.1:8787/api/v1)
@@ -130,6 +132,9 @@ async function main() {
   if (typeof args.api === "string") {
     process.env.MEMFORGE_API_URL = args.api;
   }
+  if (typeof args.token === "string") {
+    process.env.MEMFORGE_API_TOKEN = args.token;
+  }
   if (typeof args["source-label"] === "string") {
     process.env.MEMFORGE_MCP_SOURCE_LABEL = args["source-label"];
   }
@@ -139,6 +144,7 @@ async function main() {
 
   const readObservabilityState = createObservabilityStateReader();
   const server = createMemforgeMcpServer({
+    serverVersion: MEMFORGE_VERSION,
     observabilityState: await readObservabilityState(),
     getObservabilityState: readObservabilityState
   });

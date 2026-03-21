@@ -1,5 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { getApiBase, getAuthToken, requestJson } from "./http.js";
+import { MEMFORGE_VERSION } from "../../shared/version.js";
 import {
   renderActivitySearchResults,
   renderBundleMarkdown,
@@ -19,8 +23,9 @@ const DEFAULT_SOURCE = {
   actorType: "human",
   actorLabel: "memforge-cli",
   toolName: "memforge-cli",
-  toolVersion: "0.1.0",
+  toolVersion: MEMFORGE_VERSION,
 };
+const DEFAULT_MCP_LAUNCHER_PATH = path.join(os.homedir(), ".memforge", "bin", "memforge-mcp");
 
 export async function runCli(argv) {
   const { command, args, options, positionals } = parseArgv(argv.slice(2));
@@ -36,6 +41,8 @@ export async function runCli(argv) {
   switch (command) {
     case "health":
       return runHealth(apiBase, token, format);
+    case "mcp":
+      return runMcp(apiBase, token, format, args, positionals);
     case "search":
       return runSearch(apiBase, token, format, args, positionals);
     case "get":
@@ -69,6 +76,42 @@ export async function runCli(argv) {
 async function runHealth(apiBase, token, format) {
   const data = await requestJson(apiBase, "/health", { token });
   outputData(data, format, "health");
+}
+
+async function runMcp(apiBase, token, format, args, positionals) {
+  const action = positionals[0] || args.action || "config";
+  const launcherPath = args.path || args.launcher || DEFAULT_MCP_LAUNCHER_PATH;
+  const commandParts = buildMcpCommandParts(apiBase, token);
+
+  switch (action) {
+    case "path": {
+      outputData({ path: launcherPath }, format, "mcp-path");
+      return;
+    }
+    case "command": {
+      outputData({ command: commandParts.map(quoteShellArg).join(" ") }, format, "mcp-command");
+      return;
+    }
+    case "config": {
+      outputData(buildMcpConfigPayload(launcherPath), format, "mcp-config");
+      return;
+    }
+    case "install": {
+      await installMcpLauncher(launcherPath, commandParts);
+      outputData(
+        {
+          path: launcherPath,
+          command: commandParts.map(quoteShellArg).join(" "),
+          config: buildMcpConfigPayload(launcherPath),
+        },
+        format,
+        "mcp-install",
+      );
+      return;
+    }
+    default:
+      throw new Error(`Unknown mcp action: ${action}`);
+  }
 }
 
 async function runSearch(apiBase, token, format, args, positionals) {
@@ -559,6 +602,30 @@ function outputData(data, format, command) {
     case "health":
       writeStdout(renderText(payload));
       return;
+    case "mcp-path":
+      writeStdout(`${payload.path}\n`);
+      return;
+    case "mcp-command":
+      writeStdout(`${payload.command}\n`);
+      return;
+    case "mcp-config":
+      if (format === "markdown") {
+        writeStdout(`\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\`\n`);
+        return;
+      }
+      writeStdout(`${JSON.stringify(payload, null, 2)}\n`);
+      return;
+    case "mcp-install":
+      writeStdout(
+        [
+          `Installed launcher: ${payload.path}`,
+          `Direct command: ${payload.command}`,
+          "",
+          JSON.stringify(payload.config, null, 2),
+          "",
+        ].join("\n"),
+      );
+      return;
     default:
       writeStdout(renderText(payload));
   }
@@ -646,6 +713,10 @@ function renderHelp() {
 
 Usage:
   pnw health
+  pnw mcp config
+  pnw mcp install [--path ~/.memforge/bin/memforge-mcp]
+  pnw mcp path
+  pnw mcp command
   pnw search "agent memory" [--type project] [--limit 5]
   pnw search activities "what changed" [--activity-type agent_run_summary]
   pnw search workspace "cleanup" [--scopes nodes,activities]
@@ -673,6 +744,43 @@ Global flags:
   --token <token>    Override bearer token
   --format <text|json|markdown>
 `;
+}
+
+function resolveMcpEntryScript() {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../bin/memforge-mcp.js");
+}
+
+function buildMcpCommandParts(apiBase, token) {
+  const parts = [process.execPath, resolveMcpEntryScript(), "--api", apiBase];
+  if (token) {
+    parts.push("--token", token);
+  }
+  return parts;
+}
+
+function buildMcpConfigPayload(launcherPath) {
+  return {
+    mcpServers: {
+      memforge: {
+        command: launcherPath,
+        args: [],
+      },
+    },
+  };
+}
+
+async function installMcpLauncher(launcherPath, commandParts) {
+  await mkdir(path.dirname(launcherPath), { recursive: true });
+  await writeFile(
+    launcherPath,
+    `#!/bin/sh\nexec ${commandParts.map(quoteShellArg).join(" ")} "$@"\n`,
+    "utf8",
+  );
+  await chmod(launcherPath, 0o755);
+}
+
+function quoteShellArg(value) {
+  return `"${String(value).replace(/"/g, '\\"')}"`;
 }
 
 function splitList(value) {

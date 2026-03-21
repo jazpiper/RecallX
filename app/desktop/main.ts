@@ -3,12 +3,13 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { app, BrowserWindow, Menu, Tray, clipboard, nativeImage, shell } from "electron";
+import { app, BrowserWindow, Menu, Tray, clipboard, ipcMain, nativeImage, shell } from "electron";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createMemforgeMcpServer } from "../mcp/server.js";
 import { openDatabase } from "../server/db.js";
 import { createObservabilityWriter } from "../server/observability.js";
 import { MemforgeRepository } from "../server/repositories.js";
+import { MEMFORGE_VERSION } from "../shared/version.js";
 import { memforgeHomeDir, resolveWorkspaceRoot } from "../server/workspace.js";
 import { ensureWorkspace } from "../server/workspace.js";
 
@@ -17,7 +18,7 @@ type CliOptions = {
   api: string | null;
 };
 
-type DesktopAction = "quick-capture" | "open-search";
+type DesktopAction = "quick-capture" | "open-search" | "open-settings" | "open-server-status" | "open-workspace-status";
 type DesktopServiceStatus = "starting" | "running" | "stopped" | "error";
 type DesktopRuntimeState = {
   serviceStatus: DesktopServiceStatus;
@@ -314,6 +315,24 @@ function syncTray(): void {
         void dispatchDesktopAction("open-search");
       }
     },
+    {
+      label: "Open Settings",
+      click: () => {
+        void dispatchDesktopAction("open-settings");
+      }
+    },
+    {
+      label: "Server Status...",
+      click: () => {
+        void dispatchDesktopAction("open-server-status");
+      }
+    },
+    {
+      label: "Workspace Status...",
+      click: () => {
+        void dispatchDesktopAction("open-workspace-status");
+      }
+    },
     { type: "separator" },
     {
       label: "Copy API URL",
@@ -327,6 +346,12 @@ function syncTray(): void {
       label: "Copy MCP Command",
       click: () => {
         clipboard.writeText(buildMcpCommand());
+      }
+    },
+    {
+      label: "Copy MCP Launcher Path",
+      click: () => {
+        clipboard.writeText(MCP_LAUNCHER_PATH);
       }
     },
     {
@@ -943,7 +968,8 @@ async function createMainWindow(): Promise<void> {
         `--memforge-mcp-launcher-path=${MCP_LAUNCHER_PATH}`,
         `--memforge-mcp-command=${buildMcpCommand()}`,
         `--memforge-app-executable=${process.execPath}`,
-        `--memforge-is-packaged=${app.isPackaged ? "1" : "0"}`
+        `--memforge-is-packaged=${app.isPackaged ? "1" : "0"}`,
+        `--memforge-app-version=${MEMFORGE_VERSION}`
       ]
     }
   });
@@ -1065,6 +1091,18 @@ if (!cliOptions.mcpStdio) {
     });
   }
 }
+
+ipcMain.handle("memforge-desktop-runtime-state", async () => ({
+  ...desktopState,
+  appVersion: MEMFORGE_VERSION,
+  workspaceHome: memforgeHomeDir(),
+  commandShimPath: DESKTOP_COMMAND_SHIM_PATH,
+  mcpLauncherPath: MCP_LAUNCHER_PATH,
+  mcpCommand: buildMcpCommand(),
+  keepRunningInBackground,
+  launchAtLoginEnabled: app.isPackaged ? app.getLoginItemSettings().openAtLogin : false,
+  isPackaged: app.isPackaged
+}));
 
 app.whenReady().then(async () => {
   try {

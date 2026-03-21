@@ -195,10 +195,29 @@ type DesktopIntegrationInfo = {
   workspaceDbPath: string | null;
   artifactsPath: string | null;
   isPackaged: boolean;
+  appVersion?: string;
 };
 
 type DesktopActionPayload = {
-  type: 'quick-capture' | 'open-search';
+  type: 'quick-capture' | 'open-search' | 'open-settings' | 'open-server-status' | 'open-workspace-status';
+};
+
+type DesktopRuntimeState = {
+  serviceStatus: 'starting' | 'running' | 'stopped' | 'error';
+  apiBase: string | null;
+  workspaceName: string;
+  workspaceRoot: string;
+  authMode: string;
+  lastHealthAt: string | null;
+  lastError: string | null;
+  appVersion: string;
+  workspaceHome: string;
+  commandShimPath: string;
+  mcpLauncherPath: string;
+  mcpCommand: string;
+  keepRunningInBackground: boolean;
+  launchAtLoginEnabled: boolean;
+  isPackaged: boolean;
 };
 
 type GuideSection = {
@@ -232,6 +251,7 @@ function getDesktopActionBridge() {
   return (
     window as Window & {
       __MEMFORGE_DESKTOP_ACTIONS__?: {
+        getRuntimeState: () => Promise<DesktopRuntimeState>;
         onAction: (callback: (payload: DesktopActionPayload) => void) => (() => void) | void;
       };
     }
@@ -376,6 +396,24 @@ export default function App() {
           return;
         }
 
+        if (payload.type === 'open-settings') {
+          setView('settings');
+          focusAfterPaint('#workspace-settings-card');
+          return;
+        }
+
+        if (payload.type === 'open-server-status') {
+          setView('settings');
+          focusAfterPaint('#server-status-card');
+          return;
+        }
+
+        if (payload.type === 'open-workspace-status') {
+          setView('settings');
+          focusAfterPaint('#workspace-status-card');
+          return;
+        }
+
         if (payload.type === 'quick-capture') {
           setView('recent');
           setCaptureType('note');
@@ -390,6 +428,35 @@ export default function App() {
       unsubscribe?.();
     };
   }, []);
+
+  useEffect(() => {
+    const bridge = getDesktopActionBridge();
+    if (!bridge) {
+      return;
+    }
+    const runtimeBridge = bridge;
+
+    let cancelled = false;
+
+    async function loadDesktopRuntimeState() {
+      try {
+        const nextState = await runtimeBridge.getRuntimeState();
+        if (!cancelled) {
+          setDesktopRuntimeState(nextState);
+        }
+      } catch {
+        if (!cancelled) {
+          setDesktopRuntimeState(null);
+        }
+      }
+    }
+
+    void loadDesktopRuntimeState();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [view]);
 
   useEffect(() => {
     if (isLoading || authRequired || view !== 'recent') {
@@ -500,6 +567,7 @@ export default function App() {
   const [graphError, setGraphError] = useState<string | null>(null);
   const [isGraphLoading, setIsGraphLoading] = useState(false);
   const [isRefreshingSummary, setIsRefreshingSummary] = useState(false);
+  const [desktopRuntimeState, setDesktopRuntimeState] = useState<DesktopRuntimeState | null>(null);
   const desktopInfo = getDesktopIntegrationInfo();
 
   useEffect(() => {
@@ -718,6 +786,17 @@ export default function App() {
   const mcpLauncherPath = desktopInfo?.mcpLauncherPath ?? '';
   const defaultMcpCommand = `node dist/server/app/mcp/index.js --api ${apiBase}`;
   const mcpCommand = desktopInfo?.mcpCommand ?? defaultMcpCommand;
+  const runtimeServiceStatus = desktopRuntimeState?.serviceStatus ?? (desktopInfo ? 'running' : 'stopped');
+  const runtimeLastHealthAt = desktopRuntimeState?.lastHealthAt ?? null;
+  const runtimeLastError = desktopRuntimeState?.lastError ?? null;
+  const runtimeWorkspaceHome = desktopRuntimeState?.workspaceHome ?? desktopInfo?.workspaceHome ?? '';
+  const runtimeCommandShimPath = desktopRuntimeState?.commandShimPath ?? desktopInfo?.commandShimPath ?? '';
+  const runtimeMcpLauncherPath = desktopRuntimeState?.mcpLauncherPath ?? mcpLauncherPath;
+  const runtimeMcpCommand = desktopRuntimeState?.mcpCommand ?? mcpCommand;
+  const runtimeVersion = desktopRuntimeState?.appVersion ?? desktopInfo?.appVersion ?? '1.0.0';
+  const runtimeLaunchAtLogin = desktopRuntimeState?.launchAtLoginEnabled ?? false;
+  const runtimeKeepRunning = desktopRuntimeState?.keepRunningInBackground ?? Boolean(desktopInfo?.isPackaged);
+  const runtimeIsPackaged = desktopRuntimeState?.isPackaged ?? Boolean(desktopInfo?.isPackaged);
   const genericMcpConfig = mcpLauncherPath
     ? `{
   "mcpServers": {
@@ -1854,7 +1933,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
             <h2>Scope management, not clutter.</h2>
           </div>
           <div className="two-column-grid">
-            <section className="card page-card">
+            <section id="workspace-settings-card" tabIndex={-1} className="card page-card">
               <div className="info-grid three">
                 <article className="info-block">
                   <span className="info-label">Active</span>
@@ -1931,6 +2010,102 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
                 ))}
               </div>
             </aside>
+          </div>
+          <div className="two-column-grid">
+            <section id="server-status-card" tabIndex={-1} className="card page-card">
+              <div className="page-copy">
+                <span className="eyebrow">Server status</span>
+                <h3>Managed API and runtime health</h3>
+              </div>
+              <div className="info-grid three">
+                <article className="info-block">
+                  <span className="info-label">Status</span>
+                  <strong>{runtimeServiceStatus}</strong>
+                  <p>{runtimeLastError ? runtimeLastError : 'The desktop-managed API is available for renderer, CLI, and MCP access.'}</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">API base</span>
+                  <strong>{apiBase}</strong>
+                  <p>Loopback base URL used by the packaged desktop shell and HTTP tooling.</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">Auth mode</span>
+                  <strong>{desktopRuntimeState?.authMode ?? workspace?.authMode ?? 'optional'}</strong>
+                  <p>{runtimeLastHealthAt ? `Last checked ${formatTime(runtimeLastHealthAt)}.` : 'Desktop runtime state is loaded on demand when this view opens.'}</p>
+                </article>
+              </div>
+            </section>
+            <section id="workspace-status-card" tabIndex={-1} className="card page-card">
+              <div className="page-copy">
+                <span className="eyebrow">Workspace status</span>
+                <h3>Paths and local storage layout</h3>
+              </div>
+              <div className="info-grid three">
+                <article className="info-block">
+                  <span className="info-label">Root</span>
+                  <strong>{workspaceRoot || 'Unavailable'}</strong>
+                  <p>Current workspace boundary for nodes, artifacts, and runtime settings.</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">Database</span>
+                  <strong>{workspaceDbPath || 'Unavailable'}</strong>
+                  <p>SQLite source of truth for the active memory field.</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">Artifacts</span>
+                  <strong>{artifactsPath || 'Unavailable'}</strong>
+                  <p>Filesystem storage for attachments and export-friendly files inside the workspace root.</p>
+                </article>
+              </div>
+            </section>
+          </div>
+          <div className="two-column-grid">
+            <section id="desktop-launcher-card" tabIndex={-1} className="card page-card">
+              <div className="page-copy">
+                <span className="eyebrow">Launchers</span>
+                <h3>Stable commands and MCP paths</h3>
+              </div>
+              <div className="info-grid three">
+                <article className="info-block">
+                  <span className="info-label">MCP launcher</span>
+                  <strong>{runtimeMcpLauncherPath || 'Unavailable'}</strong>
+                  <p>Stable launcher path for editor MCP configs and agent setup.</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">Desktop command</span>
+                  <strong>{runtimeCommandShimPath || 'Unavailable'}</strong>
+                  <p>PATH-friendly launcher written by the packaged desktop app for local shell usage.</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">MCP command</span>
+                  <strong>{runtimeMcpCommand}</strong>
+                  <p>Direct command for testing the MCP server outside editor integration.</p>
+                </article>
+              </div>
+            </section>
+            <section className="card page-card">
+              <div className="page-copy">
+                <span className="eyebrow">Packaged behavior</span>
+                <h3>What a new desktop install should expect</h3>
+              </div>
+              <div className="info-grid three">
+                <article className="info-block">
+                  <span className="info-label">Version</span>
+                  <strong>{runtimeVersion}</strong>
+                  <p>{runtimeIsPackaged ? 'Packaged desktop runtime is active.' : 'Renderer is currently running in development/browser mode.'}</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">Background mode</span>
+                  <strong>{runtimeKeepRunning ? 'Enabled' : 'Disabled'}</strong>
+                  <p>Closing the window can keep Memforge available in the tray/menu bar for fast reopen and MCP access.</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">Launch at login</span>
+                  <strong>{runtimeLaunchAtLogin ? 'Enabled' : 'Disabled'}</strong>
+                  <p>{runtimeWorkspaceHome ? `Desktop support files live under ${runtimeWorkspaceHome}.` : 'Desktop support files are created on first packaged run.'}</p>
+                </article>
+              </div>
+            </section>
           </div>
         </section>
       );

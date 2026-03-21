@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - run: npm run prepare:cli-package
+      - run: npm pack ./release/npm-cli
+
+  package-macos:
+    needs: validate
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+      - run: npm ci
+      - run: npm run package:desktop:mac
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memforge-desktop-macos
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/latest-mac.yml
+
+  package-linux:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+      - run: npm ci
+      - run: npm run package:desktop:linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memforge-desktop-linux
+          path: |
+            release/*.AppImage
+            release/*.deb
+
+  publish-cli:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run build
+      - run: npm run prepare:cli-package
+      - run: npm publish ./release/npm-cli --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  github-release:
+    needs:
+      - package-macos
+      - package-linux
+      - publish-cli
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/memforge-desktop-macos/*
+            artifacts/memforge-desktop-linux/*

@@ -1,12 +1,13 @@
 {
-  "name": "memforge-cli",
+  "name": "memforge-cli-source",
   "private": true,
   "type": "module",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Thin local CLI wrapper for the Memforge API.",
   "bin": {
     "memforge": "./bin/pnw.js",
-    "pnw": "./bin/pnw.js"
+    "pnw": "./bin/pnw.js",
+    "memforge-mcp": "./bin/memforge-mcp.js"
   },
   "engines": {
     "node": ">=20"

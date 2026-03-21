@@ -131,9 +131,9 @@ Store:
 - activities
 - provenance
 - settings
-- review queue entries
+- governance state and audit entries
 - integration registrations
-- optional embeddings metadata later
+- rebuildable embedding metadata and index-state sidecar data
 
 ### Filesystem storage
 Use the local filesystem for:
@@ -624,18 +624,18 @@ Then add stronger write capabilities later if real workflows require them.
 
 ---
 
-## 13. Review queue design
+## 13. Review and governance design
 
-Since multiple agents may write into the workspace, the system needs a review mechanism.
+Since multiple agents may write into the workspace, the system needs a trust and escalation mechanism.
 
-### What should enter review
+### What should enter review or governance escalation
 - suggested relations
 - proposed canonical edits
 - duplicate-merge proposals
 - promoted summaries
 - high-impact agent-generated knowledge
 
-### What may bypass review
+### What may bypass manual review
 - low-risk activity logs
 - clearly labeled append-only notes
 - artifacts attached with provenance
@@ -773,7 +773,7 @@ If the system is a memory layer, users must trust they can preserve and move it.
 - node detail
 - search
 - graph inspection
-- review queue
+- governance inspection
 
 ### Step 3 — Local API
 - read endpoints

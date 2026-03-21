@@ -279,7 +279,7 @@ Success criteria:
 - add clearer status icon states
 - add service error recovery messaging
 - add `Stop Local Service` and explicit `Start Local Service`
-- add optional review queue count or stale-status hints
+- add optional governance issue count or stale-status hints
 
 Success criteria:
 

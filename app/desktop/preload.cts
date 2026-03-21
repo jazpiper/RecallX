@@ -15,6 +15,7 @@ const mcpLauncherPath = readArgument("--memforge-mcp-launcher-path=");
 const mcpCommand = readArgument("--memforge-mcp-command=");
 const executablePath = readArgument("--memforge-app-executable=") ?? process.execPath;
 const isPackaged = readArgument("--memforge-is-packaged=") === "1";
+const appVersion = readArgument("--memforge-app-version=") ?? "1.0.0";
 
 const desktopInfo = {
   apiBase,
@@ -28,12 +29,16 @@ const desktopInfo = {
   workspaceRoot,
   workspaceDbPath: workspaceRoot ? path.join(workspaceRoot, "workspace.db") : null,
   artifactsPath: workspaceRoot ? path.join(workspaceRoot, "artifacts") : null,
-  isPackaged
+  isPackaged,
+  appVersion
 };
 
 contextBridge.exposeInMainWorld("__MEMFORGE_API_BASE__", apiBase);
 contextBridge.exposeInMainWorld("__MEMFORGE_DESKTOP_INFO__", desktopInfo);
 contextBridge.exposeInMainWorld("__MEMFORGE_DESKTOP_ACTIONS__", {
+  getRuntimeState() {
+    return ipcRenderer.invoke("memforge-desktop-runtime-state");
+  },
   onAction(callback: (payload: { type: string }) => void) {
     const listener = (_event: unknown, payload: { type: string }) => {
       callback(payload);

@@ -92,7 +92,7 @@ Authorization: Bearer <local-token>
 ```
 
 ### Public endpoints in bearer mode
-The current scaffold keeps these endpoints public even when bearer auth is enabled:
+The current implementation keeps these endpoints public even when bearer auth is enabled:
 - `GET /api/v1/health`
 - `GET /api/v1/workspace`
 - `GET /api/v1/bootstrap`
@@ -184,6 +184,7 @@ The API centers around these resource groups:
 - workspace
 - nodes
 - relations
+- project graphs
 - inferred relations
 - relation usage events
 - activities
@@ -409,6 +410,18 @@ High-trust or governed-write only for canonical changes.
 ### Request note
 The current implementation expects a `source` object on this durable write so the update is attributable in provenance.
 
+## 9.4a Refresh node summary
+### HTTP
+`POST /api/v1/nodes/:id/refresh-summary`
+
+### Purpose
+Recompute a node summary on demand using the current cheap local summary helper.
+
+### Notes
+- this is an explicit maintenance action, not a background job
+- the endpoint returns the updated node payload after the summary is refreshed
+- this supports the renderer `Refresh summary` action without introducing heavyweight summary pipelines
+
 ## 9.5 Create nodes in batch
 ### HTTP
 `POST /api/v1/nodes/batch`
@@ -483,6 +496,63 @@ Return local graph neighborhood.
 - `GET /api/v1/nodes/:id/related` remains as a legacy compatibility alias over the same neighborhood implementation
 - depth should default to 1
 - keep depth limited in hot path
+
+## 10.1a Get project graph
+### HTTP
+`GET /api/v1/projects/:id/graph?include_inferred=1&max_inferred=60&member_limit=120&activity_limit=200`
+
+### Purpose
+Return a bounded project-scoped graph payload for the renderer project-map view.
+
+### Query parameters
+- `include_inferred` — defaults to `true`
+- `max_inferred` — clamped to `0..200`
+- `member_limit` — clamped to `1..300`
+- `activity_limit` — clamped to `0..400`
+
+### Response fields
+- `nodes[]`
+  - `id`
+  - `title`
+  - `type`
+  - `status`
+  - `canonicality`
+  - `summary`
+  - `createdAt`
+  - `updatedAt`
+  - `degree`
+  - `isFocus`
+  - `projectRole`
+- `edges[]`
+  - `id`
+  - `source`
+  - `target`
+  - `relationType`
+  - `relationSource`
+  - `status`
+  - `score`
+  - `generator`
+  - `createdAt`
+  - `evidence`
+- `timeline[]`
+  - `id`
+  - `kind`
+  - `at`
+  - `nodeId`
+  - `edgeId`
+  - `label`
+- `meta.focusProjectId`
+- `meta.nodeCount`
+- `meta.edgeCount`
+- `meta.inferredEdgeCount`
+- `meta.timeRange.start`
+- `meta.timeRange.end`
+
+### Notes
+- membership is project-bounded and intentionally capped
+- inferred edges are optional and bounded
+- an empty project may receive a tiny inferred fallback seed set so the renderer still has exploratory context
+- this endpoint is for project inspection, not for global graph traversal
 
 ## 10.2 Create relation
 ### HTTP
@@ -1046,12 +1116,15 @@ Semantic indexing is optional and currently operates as a background-maintained 
 Notes:
 - `provider=disabled` keeps semantic work in chunk-only mode
 - `provider=local-ngram` is the built-in local provider for end-to-end validation without an external API
+- the shipped local provider surface is currently `local-ngram` / `chargram-v1` with embedding version `2`
+- semantic search now requires `embedding_provider + embedding_model + embedding_version` compatibility
 - `configuredIndexBackend=sqlite-vec` is the default local-first preference
 - `indexBackend=sqlite-vec` means the extension loaded and bounded vector math is running inside SQLite
 - `indexBackend=sqlite` means Memforge is using the fallback app-calculated similarity path
 - `extensionStatus=loaded` means `sqlite-vec` is active, `fallback` means Memforge downgraded to `sqlite`, and `disabled` means the workspace is explicitly configured to stay on plain `sqlite`
 - `search.semantic.chunk.aggregation=max` remains the default request-time chunk aggregation strategy
 - `search.semantic.chunk.aggregation=topk_mean` averages the top semantic chunk matches for each node without changing write-time indexing
+- semantic configuration changes may automatically mark ready rows as `stale` and queue affected active/draft nodes for rebuild
 
 ## 18.2 Queue workspace semantic reindex
 ### HTTP
@@ -1071,6 +1144,9 @@ Notes:
   "queuedCount": 2
 }
 ```
+
+### Current behavior note
+- manual reindex queueing now batch-loads nodes before marking them pending so workspace-wide queueing does not degrade into one-by-one node hydration
 
 ## 18.3 Get semantic indexing issues
 ### HTTP

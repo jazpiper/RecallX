@@ -25,6 +25,7 @@ This document defines the current local-first semantic retrieval design for Memf
 - turns text into vectors
 - is still configured by `search.semantic.provider` and `search.semantic.model`
 - defaults to the built-in `local-ngram` / `chargram-v1` validation path for local development
+- the shipped built-in provider is currently embedding version `2` and uses a 384-dimensional local n-gram vector
 
 ### sqlite-vec
 
@@ -43,6 +44,12 @@ Semantic indexing stays background-maintained:
 5. If `sqlite-vec` is loaded, bounded semantic search uses SQLite extension functions.
 6. If `sqlite-vec` is unavailable, the same ledger is still searched through the legacy app-side cosine path.
 
+Compatibility rules:
+
+- semantic lookup requires `embedding_provider`, `embedding_model`, and `embedding_version` to all match
+- changing semantic configuration or upgrading the built-in provider version can mark prior ready rows as `stale`
+- affected active/draft nodes are automatically requeued so old vectors are rebuilt instead of being silently mixed with new query embeddings
+
 State transitions stay:
 
 - `pending`
@@ -57,6 +64,7 @@ State transitions stay:
 - `searchWorkspace()` stays deterministic-only in the hot path
 - `context bundle` and `retrieval/rank-candidates` are the semantic bonus surfaces
 - semantic search is bounded to the provided candidate set, not a global full-corpus recall pass
+- strong exact lexical candidate matches still short-circuit semantic bonus application
 
 ## Runtime behavior
 
@@ -73,6 +81,7 @@ Status fields:
   - `fallback` when `sqlite-vec` was requested but Memforge downgraded to `sqlite`
   - `disabled` when the workspace explicitly uses plain `sqlite`
 - `extensionLoadError` exposes the startup load failure message when fallback is active
+- `embedding_version` is part of the stored semantic ledger and is used for compatibility filtering
 
 ## Local development
 
