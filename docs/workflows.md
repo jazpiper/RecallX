@@ -54,6 +54,7 @@ Operational guidance:
 
 - keep the current workspace as the default MCP scope unless the user explicitly asks to switch workspaces
 - use `memforge_search_workspace` for broad mixed recall when the request shape is still unclear
+- when calling `memforge_search_workspace`, pass `scopes: ["nodes", "activities"]` for mixed recall instead of a comma-separated string
 - use `memforge_search_nodes` for durable-only lookups, especially `type=project` when checking whether a project already exists
 - use `memforge_search_activities` for recent logs, change history, and "what happened recently" questions
 - when work is clearly project-shaped, search for an existing project inside the current workspace before creating a new project node

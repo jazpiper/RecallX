@@ -25,6 +25,21 @@ import { MemforgeApiClient, MemforgeApiError } from "./api-client.js";
 
 const jsonRecordSchema = z.record(z.string(), z.any()).default({});
 const stringOrStringArraySchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
+const workspaceSearchScopes = ["nodes", "activities"] as const;
+const workspaceScopeSchema = z.enum(workspaceSearchScopes);
+const workspaceScopeInputSchema = z.preprocess((value) => {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const parts = value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length) {
+    return value;
+  }
+  return parts.length === 1 ? parts[0] : parts;
+}, z.union([workspaceScopeSchema, z.array(workspaceScopeSchema).min(1)]));
 
 function parseIntegerLike(value: unknown): unknown {
   if (typeof value !== "string") {
@@ -212,6 +227,20 @@ function mergeStringLists(...values: unknown[]): string[] | undefined {
   return merged.length ? Array.from(new Set(merged)) : undefined;
 }
 
+function normalizeCommaSeparatedList(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const parts = value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length) {
+    return value;
+  }
+  return parts.length === 1 ? parts[0] : parts;
+}
+
 function assertSupportedEnumValues<T extends string>(
   toolName: string,
   fieldName: string,
@@ -310,9 +339,9 @@ function normalizeWorkspaceSearchInput(input: Record<string, unknown>) {
     assertSupportedEnumValues(
       "memforge_search_workspace",
       "scope",
-      mergeStringLists(input.scope, input.scopes),
-      ["nodes", "activities"] as const
-    ) ?? ["nodes", "activities"];
+      mergeStringLists(normalizeCommaSeparatedList(input.scope), normalizeCommaSeparatedList(input.scopes)),
+      workspaceSearchScopes
+    ) ?? [...workspaceSearchScopes];
   const nodeFilters = {
     types: assertSupportedEnumValues(
       "memforge_search_workspace",
@@ -678,12 +707,12 @@ export function createMemforgeMcpServer(params?: {
     {
       title: "Search Workspace",
       description:
-        "Search nodes, activities, or both through one workspace-wide endpoint. This is the preferred broad entry point when the target node or request shape is still unclear, or when you need both node and activity recall in the current workspace. Accepts `scope` or `scopes`, for example `activities`.",
+        "Search nodes, activities, or both through one workspace-wide endpoint. This is the preferred broad entry point when the target node or request shape is still unclear, or when you need both node and activity recall in the current workspace. Use `scopes` as an array such as `[\"nodes\", \"activities\"]`, or use `scope: \"activities\"` for a single scope. Do not pass a comma-separated string like `\"nodes,activities\"`.",
       inputSchema: {
         query: z.string().default("").describe("Keyword or phrase query."),
         allowEmptyQuery: coerceBooleanSchema(false).describe("Set true to browse mixed recent results without a query."),
-        scope: stringOrStringArraySchema.optional().describe("Alias for scopes."),
-        scopes: stringOrStringArraySchema.optional(),
+        scope: workspaceScopeInputSchema.optional().describe("Alias for scopes. Use a single scope like `activities`, not a comma-separated string."),
+        scopes: workspaceScopeInputSchema.optional().describe("Array of scopes such as `[\"nodes\", \"activities\"]`."),
         nodeFilters: z
           .object({
             types: stringOrStringArraySchema.optional(),

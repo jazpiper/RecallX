@@ -115,6 +115,7 @@ Rules:
 - Usage feedback is intentionally a separate write. Do not append a relation usage event for every read; reserve it for cases where a canonical or inferred relation actually helped retrieval or final output.
 - Score recomputation is also explicit. Use `memforge_recompute_inferred_relations` in maintenance flows or automations, not in the latency-sensitive request path.
 - The search tools normalize common alias mistakes such as `type`, `activityType`, `targetNodeId`, `scope`, and single-string arrays before forwarding to HTTP.
+- For `memforge_search_workspace`, prefer `scopes: ["nodes", "activities"]` for mixed search, or `scope: "activities"` for a single scope. Do not send `"nodes,activities"` as one string.
 - When you do not already know the target node, prefer `memforge_search_workspace` as the default entry point. Use `memforge_search_nodes` for durable-only narrowing and `memforge_search_activities` for recent operational narrowing.
 
 ### Workspace vs project

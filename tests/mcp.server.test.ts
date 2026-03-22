@@ -107,6 +107,8 @@ describe("Memforge MCP server", () => {
 
     expect(findToolDescription(toolList, "memforge_search_workspace")).toContain("preferred broad entry point");
     expect(findToolDescription(toolList, "memforge_search_workspace")).toContain("current workspace");
+    expect(findToolDescription(toolList, "memforge_search_workspace")).toContain('["nodes", "activities"]');
+    expect(findToolDescription(toolList, "memforge_search_workspace")).toContain('comma-separated string like `"nodes,activities"`');
 
     expect(findToolDescription(toolList, "memforge_search_nodes")).toContain("type=project");
     expect(findToolDescription(toolList, "memforge_search_nodes")).toContain("current workspace");
@@ -430,7 +432,7 @@ describe("Memforge MCP server", () => {
       name: "memforge_search_workspace",
       arguments: {
         query: "cleanup",
-        scope: "activities",
+        scope: "nodes,activities",
         limit: "4"
       }
     });
@@ -450,7 +452,7 @@ describe("Memforge MCP server", () => {
       2,
       "/search",
       expect.objectContaining({
-        scopes: ["activities"],
+        scopes: ["nodes", "activities"],
         limit: 4
       })
     );
