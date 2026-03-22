@@ -2067,7 +2067,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
                 <article className="info-block">
                   <span className="info-label">API base</span>
                   <strong>{apiBase}</strong>
-                  <p>Loopback base URL used by the packaged desktop shell and HTTP tooling.</p>
+                  <p>Loopback base URL used by the desktop shell and HTTP tooling.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Auth mode</span>
@@ -2115,7 +2115,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
                 <article className="info-block">
                   <span className="info-label">Desktop command</span>
                   <strong>{runtimeCommandShimPath || 'Unavailable'}</strong>
-                  <p>PATH-friendly launcher written by the packaged desktop app for local shell usage.</p>
+                  <p>PATH-friendly launcher written by the desktop app for local shell usage.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">MCP command</span>
@@ -2126,14 +2126,14 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
             </section>
             <section className="card page-card">
               <div className="page-copy">
-                <span className="eyebrow">Packaged behavior</span>
-                <h3>What a new desktop install should expect</h3>
+                <span className="eyebrow">Desktop behavior</span>
+                <h3>What the desktop runtime should expect</h3>
               </div>
               <div className="info-grid three">
                 <article className="info-block">
                   <span className="info-label">Version</span>
                   <strong>{runtimeVersion}</strong>
-                  <p>{runtimeIsPackaged ? 'Packaged desktop runtime is active.' : 'Renderer is currently running in development/browser mode.'}</p>
+                  <p>{runtimeIsPackaged ? 'Desktop runtime is active.' : 'Renderer is currently running in development/browser mode.'}</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Background mode</span>
@@ -2143,7 +2143,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
                 <article className="info-block">
                   <span className="info-label">Launch at login</span>
                   <strong>{runtimeLaunchAtLogin ? 'Enabled' : 'Disabled'}</strong>
-                  <p>{runtimeWorkspaceHome ? `Desktop support files live under ${runtimeWorkspaceHome}.` : 'Desktop support files are created on first packaged run.'}</p>
+                  <p>{runtimeWorkspaceHome ? `Desktop support files live under ${runtimeWorkspaceHome}.` : 'Desktop support files are created on first desktop run.'}</p>
                 </article>
               </div>
             </section>

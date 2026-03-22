@@ -7,7 +7,7 @@
 ## Status snapshot (2026-03-19)
 
 Implemented today:
-- single-instance packaged desktop shell
+- single-instance desktop shell
 - background mode after window close
 - menu bar item
 - `Open Memforge`
@@ -32,7 +32,7 @@ Still planned, not implemented:
 
 Let Memforge behave like a local memory utility instead of only a foreground windowed app.
 
-The packaged desktop app should be able to:
+The desktop app should be able to:
 
 - keep the local Memforge API alive in the background
 - remain discoverable from the macOS menu bar

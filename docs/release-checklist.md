@@ -12,20 +12,6 @@
 - run `npm run prepare:cli-package`
 - confirm `npm pack ./release/npm-cli` succeeds
 - confirm `npm run verify:cli-package` succeeds after packing the tarball
-- confirm `npm run verify:desktop:mac-release` succeeds on macOS
-- confirm desktop packaging smoke tests on macOS
-
-## Desktop release
-
-- macOS arm64 artifacts generated: `.dmg`, `.zip`, `latest-mac.yml`
-- macOS codesign verification passes
-- macOS notarization succeeds
-- macOS artifact verification checks the rebuilt `.zip`, `.dmg`, and `latest-mac.yml`
-- tray actions work in packaged mode:
-  - `Open Settings`
-  - `Server Status...`
-  - `Workspace Status...`
-  - `Copy MCP Launcher Path`
 
 ## npm release
 
@@ -39,7 +25,7 @@
 
 ## Release notes and docs
 
-- `CHANGELOG.md` contains the release entry
-- `README.md` install section matches the shipped artifacts
+- `CHANGELOG.md` contains the release entry when a release note is needed
+- `README.md` matches the two supported distribution paths: Git source-run and npm terminal-only
 - `app/cli/README.md` matches the npm package behavior
 - historical docs remain marked historical

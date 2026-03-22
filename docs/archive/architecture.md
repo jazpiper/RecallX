@@ -103,7 +103,7 @@ There are two realistic paths.
 ### Option B — Tauri
 **Pros**
 - lighter app footprint
-- native-feeling desktop packaging
+- native-feeling desktop shell
 - strong local-app story
 
 **Cons**

@@ -5,7 +5,7 @@
 - This package is the npm-distributed terminal-only product for Memforge.
 - It provides the `memforge`, `pnw`, and `memforge-mcp` commands.
 - The CLI stays intentionally thin and maps back to the local Memforge HTTP API.
-- It does not include the renderer or a packaged desktop UI.
+- It does not include the renderer or desktop release artifacts.
 
 It defers behavior to the local Memforge API contract in [`docs/api.md`](../../docs/api.md).
 
@@ -34,7 +34,7 @@ pnw mcp install
 
 If the API is running in bearer mode, set `MEMFORGE_API_TOKEN` in the MCP client environment. The launcher intentionally does not persist tokens to disk.
 
-The npm package expects a running local Memforge API and does not ship renderer pages or a packaged desktop app.
+The npm package expects a running local Memforge API and does not ship renderer pages or desktop release artifacts.
 
 You can also print the direct MCP command or a config snippet:
 

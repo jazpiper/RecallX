@@ -86,7 +86,7 @@ The npm package includes:
 The npm package does not include:
 
 - renderer pages
-- packaged desktop UI
+- desktop release artifacts
 
 `pnw mcp install` writes a stable launcher to `~/.memforge/bin/memforge-mcp`, which is the recommended command path for editor MCP configs.
 

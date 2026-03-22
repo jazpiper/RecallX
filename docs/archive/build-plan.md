@@ -42,7 +42,7 @@ The near-term backlog from the 2026-03-18 snapshot is closed in the current work
 The next track is:
 
 - keep product docs aligned with the shipped renderer/API/MCP surfaces instead of future-state assumptions
-- dogfood the new Electron desktop shell and add distribution polish such as icons, signing, and notarization when needed
+- dogfood the new Electron desktop shell and improve source-run developer ergonomics when needed
 - tune inferred-relation thresholds and explainability based on real workspace usage so stronger signals do not make the graph noisy
 - decide whether richer digest materialization is worth adding beyond the current deterministic summary baseline
 
