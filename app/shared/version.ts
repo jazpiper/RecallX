@@ -1,1 +1,1 @@
-export const RECALLX_VERSION = "1.0.6";
+export const RECALLX_VERSION = "1.0.7";
