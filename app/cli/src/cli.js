@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { getApiBase, getAuthToken, requestJson } from "./http.js";
 import { RECALLX_VERSION } from "../../shared/version.js";
+import { applyCliUpdate, getCliUpdatePlan } from "./update.js";
 import {
   renderActivitySearchResults,
   renderBundleMarkdown,
@@ -16,6 +17,7 @@ import {
   renderTelemetryErrors,
   renderTelemetrySummary,
   renderText,
+  renderUpdateResult,
   renderWorkspaceSearchResults,
   renderWorkspaces,
 } from "./format.js";
@@ -44,6 +46,8 @@ export async function runCli(argv) {
       return runHealth(apiBase, token, format);
     case "serve":
       return runServe(args);
+    case "update":
+      return runUpdate(format, args);
     case "mcp":
       return runMcp(apiBase, token, format, args, positionals);
     case "search":
@@ -104,6 +108,17 @@ async function runServe(args) {
   }
 
   await import(pathToFileURL(resolveServerEntryScript()).href);
+}
+
+export async function runUpdate(format, args, dependencies = {}) {
+  const plan = await (dependencies.getCliUpdatePlan ?? getCliUpdatePlan)();
+  if (parseBooleanFlag(args.apply, false)) {
+    const result = await (dependencies.applyCliUpdate ?? applyCliUpdate)(plan);
+    outputData(result, format, "update");
+    return;
+  }
+
+  outputData(plan, format, "update");
 }
 
 async function runMcp(apiBase, token, format, args, positionals) {
@@ -663,6 +678,9 @@ function outputData(data, format, command) {
         ].join("\n"),
       );
       return;
+    case "update":
+      writeStdout(renderUpdateResult(payload));
+      return;
     default:
       writeStdout(renderText(payload));
   }
@@ -753,6 +771,7 @@ Usage:
   recallx serve [--workspace-name Personal] [--api-token secret]
   recallx serve [--renderer-dist /path/to/dist/renderer]
   recallx health
+  recallx update [--apply]
   recallx mcp config
   recallx mcp install [--path ~/.recallx/bin/recallx-mcp]
   recallx mcp path

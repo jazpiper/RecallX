@@ -8,7 +8,7 @@ This document defines the current local-first semantic retrieval design for Reca
 - keep semantic indexing optional and rebuildable
 - prefer `sqlite-vec` for bounded vector math when available
 - automatically fall back to the existing `sqlite` + app-side cosine path when the extension cannot be loaded
-- require no external vector database for desktop or npm distribution
+- require no external vector database for local source-run or npm-distributed runtimes
 
 ## Component roles
 

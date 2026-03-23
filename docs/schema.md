@@ -12,7 +12,7 @@
 This schema defines the initial durable data model for a local-first personal knowledge layer shared by:
 
 - human users
-- local desktop UI
+- local UI
 - external tools and agents
 - integration bridges such as Claude Code, Codex, Gemini CLI, OpenClaw, and future adapters
 
@@ -871,7 +871,7 @@ This rule, combined with the promotion table, guarantees the graph stays trustwo
   "operation_type": "create",
   "actor_type": "human",
   "actor_label": "juhwan",
-  "tool_name": "recallx-desktop",
+  "tool_name": "recallx-ui",
   "tool_version": "1.0.0",
   "timestamp": "2026-03-17T13:30:00Z"
 }

@@ -144,6 +144,36 @@ export function renderWorkspaces(data) {
     .join("\n\n")}\n`;
 }
 
+export function renderUpdateResult(data) {
+  const lines = [
+    `package: ${data?.packageName || ""}`,
+    `current: ${data?.currentVersion || ""}`,
+    `latest: ${data?.latestVersion || ""}`,
+  ];
+
+  if (data?.status === "updated") {
+    lines.push("status: updated");
+  } else if (data?.status === "up_to_date") {
+    lines.push("status: up to date");
+  } else {
+    lines.push("status: update available");
+  }
+
+  if (data?.installCommand) {
+    lines.push(`command: ${data.installCommand}`);
+  }
+
+  if (data?.status === "update_available" && data?.applied !== true) {
+    lines.push("hint: re-run with `recallx update --apply` to install the latest npm package from this shell.");
+  }
+
+  if (data?.packageRoot) {
+    lines.push(`packageRoot: ${data.packageRoot}`);
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
 export function renderBundleMarkdown(bundle) {
   const lines = [];
   lines.push(`# ${bundle.target?.title || bundle.target?.id || "Context bundle"}`);

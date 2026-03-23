@@ -2,7 +2,7 @@
 
 ## At A Glance
 
-- RecallX exposes one local HTTP API for the desktop app, CLI, and external agent tools.
+- RecallX exposes one local HTTP API for the local UI, CLI, and external agent tools.
 - The current base path is `/api/v1`.
 - The most important bootstrap endpoints are `GET /api/v1/health` and `GET /api/v1/bootstrap`.
 - `GET /api/v1` and `GET /api/v1/workspace` are available after auth or in optional mode.
@@ -14,7 +14,7 @@
 This document defines the first concrete API contract for RecallX.
 
 The API exists to let:
-- the desktop UI
+- the local UI
 - local CLI commands
 - external tools and agents
 
@@ -484,7 +484,7 @@ Archive without hard deletion.
   "source": {
     "actorType": "human",
     "actorLabel": "juhwan",
-    "toolName": "recallx-desktop"
+    "toolName": "recallx-ui"
   }
 }
 ```

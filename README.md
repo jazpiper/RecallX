@@ -41,7 +41,6 @@ Use the public repo when you want the full source-run surface:
 
 - local API under `/api/v1`
 - source-run renderer workflow through `npm run dev`
-- source-run desktop workflow through `npm run dev:desktop`
 - stdio MCP bridge through `npm run mcp`
 - runtime workspace create/open switching without restarting the service
 
@@ -50,12 +49,6 @@ git clone https://github.com/jazpiper/RecallX.git RecallX
 cd RecallX
 npm install
 npm run dev
-```
-
-Desktop runtime from source:
-
-```bash
-npm run dev:desktop
 ```
 
 MCP from source:
@@ -94,6 +87,7 @@ In another shell:
 
 ```bash
 recallx health
+recallx update
 recallx mcp install
 recallx-mcp --help
 ```
@@ -107,8 +101,6 @@ The full npm package includes:
 - `recallx-mcp`
 
 The full npm package does not include:
-
-- desktop release artifacts
 
 `recallx mcp install` writes a stable launcher to `~/.recallx/bin/recallx-mcp`, which is the recommended command path for Codex and other editor MCP configs.
 
@@ -128,6 +120,15 @@ recallx serve --workspace-root /Users/name/Documents/RecallX
 recallx serve --api-token secret-token
 ```
 
+To update an npm-installed full runtime:
+
+```bash
+recallx update
+recallx update --apply
+```
+
+`recallx update` currently supports npm global installs of `recallx` and `recallx-headless`. Source checkouts should keep using their package manager directly.
+
 ## 3. npm Headless Runtime (`recallx-headless`)
 
 Use the headless npm package when you want the local API, CLI, and MCP entrypoint without shipping the renderer bundle:
@@ -141,6 +142,7 @@ In another shell:
 
 ```bash
 recallx health
+recallx update
 recallx-mcp --help
 ```
 
@@ -154,9 +156,15 @@ The headless npm package includes:
 The headless npm package does not include:
 
 - renderer pages
-- desktop release artifacts
 
 At `/`, the headless runtime returns a small runtime notice instead of the renderer.
+
+To update an npm-installed headless runtime:
+
+```bash
+recallx update
+recallx update --apply
+```
 
 Node requirements:
 

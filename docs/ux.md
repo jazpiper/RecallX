@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-This document describes the current RecallX desktop UX and the product rules that should guide future UI changes.
+This document describes the current RecallX local UI and renderer UX and the product rules that should guide future UI changes.
 
 RecallX should feel:
 - fast
@@ -61,7 +61,7 @@ The quickest paths should stay clear:
 
 ## 3. Current app shape
 
-RecallX currently ships as a 3-pane desktop shell.
+RecallX currently ships a 3-pane local UI shell.
 
 ### Left sidebar
 - workspace identity
