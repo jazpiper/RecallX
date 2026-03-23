@@ -68,3 +68,4 @@ npm run release:publish
 - `npm run release:verify` is the same validation path used by CI before publish.
 - `npm run release:publish` is idempotent for already-published versions.
 - `workflow_dispatch` on the publish workflow can target another ref if you need to rerun a publish from a release commit.
+- GitHub Actions workflow pins should stay on Node 24 compatible releases for JavaScript actions such as `actions/checkout` and `actions/setup-node`.
