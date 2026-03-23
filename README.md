@@ -69,9 +69,23 @@ npm start
 Checks:
 
 ```bash
+npm run branch:check
+npm run version:check
 npm run check
 npm test
 npm run build
+```
+
+Start unrelated work in a separate branch/worktree instead of stacking it on the current checkout:
+
+```bash
+npm run branch:new -- fix-short-name
+```
+
+When you are preparing a release, bump from the highest known version instead of whatever the current branch happens to say:
+
+```bash
+npm run version:bump -- patch
 ```
 
 If you want an installable runtime instead of source-run workflows, use one of the npm distribution paths below.

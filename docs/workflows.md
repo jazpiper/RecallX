@@ -15,6 +15,27 @@ Use the `recallx` wrapper to inspect and switch workspaces against the running l
 - `recallx workspace create --root /path/to/workspace [--name "Personal"]`
 - `recallx workspace open --root /path/to/workspace`
 
+## 1a. Repo branch hygiene
+
+Use the repo helpers before starting unrelated work:
+
+- `npm run branch:check`
+- `npm run branch:new -- <short-task-name>`
+
+Recommended flow:
+
+- run `npm run branch:check` in the current checkout
+- if it reports a dirty tree, open PR, or existing task branch, do not keep working there
+- create a fresh worktree from `origin/main` with `npm run branch:new -- fix-short-name`
+- do the new task in the created sibling checkout instead of stacking commits on the current branch
+
+Versioning flow for releases:
+
+- run `npm run version:check`
+- this compares the local package versions against `origin/main`, npm latest, and internal version files
+- when you are ready to release, run `npm run version:bump -- patch|minor|major`
+- the bump script advances from the highest known baseline and then syncs internal package/version files
+
 ## 2. Raw HTTP client workflow
 
 A non-agent client can bootstrap from health and bootstrap, then use the API directly:

@@ -35,6 +35,19 @@ for (const lockFile of lockFiles) {
   writeJson(lockFile, lockJson);
 }
 
+const sharedVersionFile = path.join(rootDir, "app", "shared", "version.ts");
+const sharedVersionSource = readFileSync(sharedVersionFile, "utf8");
+const nextSharedVersionSource = sharedVersionSource.replace(
+  /export const RECALLX_VERSION = "[^"]+";/,
+  `export const RECALLX_VERSION = "${nextVersion}";`,
+);
+
+if (nextSharedVersionSource === sharedVersionSource) {
+  throw new Error(`Failed to update RECALLX_VERSION in ${sharedVersionFile}.`);
+}
+
+writeFileSync(sharedVersionFile, nextSharedVersionSource, "utf8");
+
 function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8"));
 }
