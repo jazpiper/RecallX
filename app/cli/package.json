@@ -2,7 +2,7 @@
   "name": "recallx-headless-source",
   "private": true,
   "type": "module",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Source package for the RecallX headless CLI and runtime wrapper.",
   "bin": {
     "recallx": "./bin/recallx.js",

@@ -98,10 +98,10 @@ export function ProjectGraphCanvas({
   return <div ref={containerRef} className="project-graph-canvas" aria-label="Project graph canvas" />;
 }
 
-function buildSigmaGraph(
+export function buildSigmaGraph(
   graph: ProjectGraphPayload,
 ) {
-  const sigmaGraph = new Graph();
+  const sigmaGraph = new Graph({ multi: true });
 
   for (const node of graph.nodes) {
     sigmaGraph.addNode(node.id, {
