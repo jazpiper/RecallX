@@ -745,7 +745,7 @@ This preserves the existing retrieval goal:
 - explainable first
 - fast first
 
-### A.6 Recommended desktop maintenance defaults
+### A.6 Recommended runtime maintenance defaults
 
 For an installable local app, inferred-score maintenance should feel automatic without behaving like a per-event synchronous write cascade.
 

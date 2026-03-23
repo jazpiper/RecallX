@@ -5,7 +5,7 @@
 - This package is the npm-distributed headless runtime for RecallX.
 - It provides the `recallx` and `recallx-mcp` commands.
 - It can start the local RecallX API directly through `recallx serve`.
-- It does not include the renderer or desktop release artifacts.
+- It does not include the renderer.
 
 It defers behavior to the local RecallX API contract in [`docs/api.md`](../../docs/api.md).
 
@@ -28,6 +28,7 @@ In another shell:
 
 ```bash
 recallx health
+recallx update
 recallx-mcp --help
 recallx mcp install
 ```
@@ -55,7 +56,16 @@ recallx serve --workspace-name "Personal Workspace"
 recallx serve --api-token secret-token
 ```
 
-The headless package does not ship renderer pages or desktop release artifacts. At `/`, it returns a runtime notice instead of the renderer app.
+To update an npm-installed RecallX runtime from the CLI:
+
+```bash
+recallx update
+recallx update --apply
+```
+
+`recallx update` currently supports npm global installs of `recallx` and `recallx-headless`. Source checkouts should keep using their package manager directly.
+
+The headless package does not ship renderer pages. At `/`, it returns a runtime notice instead of the renderer app.
 
 You can also print the direct MCP command or a config snippet:
 
@@ -71,6 +81,7 @@ Quick health and workspace checks:
 
 ```bash
 recallx health
+recallx update
 recallx workspace current
 recallx workspace list
 ```
@@ -106,6 +117,7 @@ recallx mcp config
 
 ```bash
 recallx health
+recallx update [--apply]
 recallx mcp config
 recallx mcp install
 recallx mcp path

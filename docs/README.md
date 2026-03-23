@@ -15,7 +15,7 @@ These documents best match the shipped product surface.
 - `mcp.md` for the current MCP bridge contract and setup
 - `schema.md` for the current durable data model
 - `retrieval.md` for retrieval and context assembly behavior
-- `ux.md` for the current desktop UX model
+- `ux.md` for the current local UI and renderer UX model
 - `workflows.md` for common user and agent workflows
 - `promotion-rules.md` for append-first promotion and governance rules
 
