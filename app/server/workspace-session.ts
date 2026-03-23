@@ -111,6 +111,7 @@ export class WorkspaceSessionManager {
       "search.semantic.chunk.enabled": false,
       "search.semantic.chunk.aggregation": "max",
       "search.semantic.workspaceFallback.enabled": false,
+      "search.semantic.workspaceFallback.mode": "strict_zero",
       "search.semantic.augmentation.minSimilarity": 0.2,
       "search.semantic.augmentation.maxBonus": 18,
       "search.semantic.last_backfill_at": null,

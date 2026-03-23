@@ -86,6 +86,8 @@ describe("observability writer", () => {
       operation: "nodes.search",
       durationMs: 12,
       details: {
+        bestLexicalQuality: "strong",
+        searchHit: true,
         ftsFallback: true
       }
     });
@@ -102,6 +104,10 @@ describe("observability writer", () => {
       operation: "workspace.search",
       durationMs: 16,
       details: {
+        bestNodeLexicalQuality: "weak",
+        resultComposition: "semantic_mixed",
+        searchHit: false,
+        semanticFallbackMode: "no_strong_node_hit",
         semanticFallbackEligible: true,
         semanticFallbackAttempted: true,
         semanticFallbackUsed: true
@@ -113,6 +119,40 @@ describe("observability writer", () => {
       durationMs: 8,
       errorCode: "NETWORK_ERROR",
       errorKind: "network_error"
+    });
+    await writer.recordEvent({
+      surface: "api",
+      operation: "search.feedback",
+      details: {
+        feedbackVerdict: "useful",
+        feedbackLexicalQuality: "weak",
+        feedbackRank: 2,
+        feedbackSemanticFallbackMode: "strict_zero"
+      }
+    });
+    await writer.recordEvent({
+      surface: "api",
+      operation: "search.feedback",
+      details: {
+        feedbackVerdict: "not_useful",
+        feedbackLexicalQuality: "none",
+        feedbackMatchStrategy: "semantic",
+        feedbackRank: 1,
+        feedbackSemanticLifted: true,
+        feedbackSemanticFallbackMode: "no_strong_node_hit"
+      }
+    });
+    await writer.recordEvent({
+      surface: "api",
+      operation: "search.feedback",
+      details: {
+        feedbackVerdict: "useful",
+        feedbackLexicalQuality: "none",
+        feedbackMatchStrategy: "semantic",
+        feedbackRank: 1,
+        feedbackSemanticLifted: true,
+        feedbackSemanticFallbackMode: "no_strong_node_hit"
+      }
     });
     await writer.flush();
 
@@ -126,17 +166,156 @@ describe("observability writer", () => {
       limit: 10
     });
 
-    expect(summary.totalEvents).toBe(4);
+    expect(summary.totalEvents).toBe(7);
     expect(summary.operationSummaries.some((item) => item.operation === "nodes.search")).toBe(true);
     expect(summary.mcpToolFailures).toEqual([{ operation: "recallx_search_nodes", count: 1 }]);
     expect(summary.ftsFallbackRate.fallbackCount).toBe(1);
+    expect(summary.searchHitRate).toEqual({
+      hitCount: 1,
+      missCount: 1,
+      sampleCount: 2,
+      ratio: 0.5,
+      operations: [
+        {
+          surface: "api",
+          operation: "nodes.search",
+          hitCount: 1,
+          missCount: 0,
+          sampleCount: 1,
+          ratio: 1
+        },
+        {
+          surface: "api",
+          operation: "workspace.search",
+          hitCount: 0,
+          missCount: 1,
+          sampleCount: 1,
+          ratio: 0
+        }
+      ]
+    });
+    expect(summary.searchLexicalQualityRate).toEqual({
+      strongCount: 1,
+      weakCount: 1,
+      noneCount: 0,
+      sampleCount: 2,
+      operations: [
+        {
+          surface: "api",
+          operation: "nodes.search",
+          strongCount: 1,
+          weakCount: 0,
+          noneCount: 0,
+          sampleCount: 1
+        },
+        {
+          surface: "api",
+          operation: "workspace.search",
+          strongCount: 0,
+          weakCount: 1,
+          noneCount: 0,
+          sampleCount: 1
+        }
+      ]
+    });
+    expect(summary.workspaceResultCompositionRate).toEqual({
+      emptyCount: 0,
+      nodeOnlyCount: 0,
+      activityOnlyCount: 0,
+      mixedCount: 0,
+      semanticNodeOnlyCount: 0,
+      semanticMixedCount: 1,
+      sampleCount: 1
+    });
+    expect(summary.workspaceFallbackModeRate).toEqual({
+      strictZeroCount: 0,
+      noStrongNodeHitCount: 1,
+      sampleCount: 1,
+      operations: [
+        {
+          surface: "api",
+          operation: "workspace.search",
+          strictZeroCount: 0,
+          noStrongNodeHitCount: 1,
+          sampleCount: 1
+        }
+      ]
+    });
+    expect(summary.searchFeedbackRate).toEqual({
+      usefulCount: 2,
+      notUsefulCount: 1,
+      uncertainCount: 0,
+      sampleCount: 3,
+      usefulRatio: 0.6667,
+      top1UsefulCount: 1,
+      top1SampleCount: 2,
+      top1UsefulRatio: 0.5,
+      top3UsefulCount: 2,
+      top3SampleCount: 3,
+      top3UsefulRatio: 0.6667,
+      semanticUsefulCount: 1,
+      semanticNotUsefulCount: 1,
+      semanticSampleCount: 2,
+      semanticUsefulRatio: 0.5,
+      semanticFalsePositiveRatio: 0.5,
+      semanticLiftUsefulCount: 1,
+      semanticLiftSampleCount: 2,
+      semanticLiftUsefulRatio: 0.5,
+      byLexicalQuality: [
+        {
+          lexicalQuality: "weak",
+          usefulCount: 1,
+          notUsefulCount: 0,
+          uncertainCount: 0,
+          sampleCount: 1,
+          usefulRatio: 1
+        },
+        {
+          lexicalQuality: "none",
+          usefulCount: 1,
+          notUsefulCount: 1,
+          uncertainCount: 0,
+          sampleCount: 2,
+          usefulRatio: 0.5
+        }
+      ],
+      byFallbackMode: [
+        {
+          fallbackMode: "strict_zero",
+          usefulCount: 1,
+          notUsefulCount: 0,
+          uncertainCount: 0,
+          sampleCount: 1,
+          usefulRatio: 1
+        },
+        {
+          fallbackMode: "no_strong_node_hit",
+          usefulCount: 1,
+          notUsefulCount: 1,
+          uncertainCount: 0,
+          sampleCount: 2,
+          usefulRatio: 0.5
+        }
+      ]
+    });
     expect(summary.semanticAugmentationRate.usedCount).toBe(1);
     expect(summary.semanticFallbackRate).toEqual({
       eligibleCount: 1,
       attemptedCount: 1,
       hitCount: 1,
       attemptRatio: 1,
-      hitRatio: 1
+      hitRatio: 1,
+      modes: [
+        {
+          fallbackMode: "no_strong_node_hit",
+          eligibleCount: 1,
+          attemptedCount: 1,
+          hitCount: 1,
+          sampleCount: 1,
+          attemptRatio: 1,
+          hitRatio: 1
+        }
+      ]
     });
     expect(errors.items).toHaveLength(1);
     expect(errors.items[0]?.operation).toBe("recallx_search_nodes");

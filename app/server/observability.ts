@@ -3,13 +3,15 @@ import { appendFile, mkdir, readFile, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import type {
   JsonMap,
+  SearchLexicalQuality,
   TelemetryErrorKind,
   TelemetryErrorsResponse,
   TelemetryEvent,
   TelemetryOperationSummary,
   TelemetryOutcome,
   TelemetrySummaryResponse,
-  TelemetrySurface
+  TelemetrySurface,
+  WorkspaceSemanticFallbackMode
 } from "../shared/types.js";
 
 type TelemetryState = {
@@ -477,8 +479,56 @@ export class ObservabilityWriter {
     const buckets = new Map<string, { summary: TelemetryOperationSummary; durations: number[] }>();
     const mcpFailures = new Map<string, number>();
     const autoJobs = new Map<string, number[]>();
+    const searchHitBuckets = new Map<string, { surface: TelemetrySurface; operation: string; hitCount: number; missCount: number }>();
+    const lexicalQualityBuckets = new Map<
+      string,
+      { surface: TelemetrySurface; operation: string; strongCount: number; weakCount: number; noneCount: number }
+    >();
+    const workspaceFallbackModeBuckets = new Map<
+      string,
+      { surface: TelemetrySurface; operation: string; strictZeroCount: number; noStrongNodeHitCount: number }
+    >();
+    const feedbackByLexicalQuality = new Map<SearchLexicalQuality, { usefulCount: number; notUsefulCount: number; uncertainCount: number }>();
+    const feedbackByFallbackMode = new Map<
+      WorkspaceSemanticFallbackMode,
+      { usefulCount: number; notUsefulCount: number; uncertainCount: number }
+    >();
+    const semanticFallbackByMode = new Map<
+      WorkspaceSemanticFallbackMode,
+      { eligibleCount: number; attemptedCount: number; hitCount: number; sampleCount: number }
+    >();
     let ftsFallbackCount = 0;
     let ftsSampleCount = 0;
+    let searchHitCount = 0;
+    let searchMissCount = 0;
+    let searchSampleCount = 0;
+    let strongLexicalCount = 0;
+    let weakLexicalCount = 0;
+    let noLexicalCount = 0;
+    let lexicalSampleCount = 0;
+    let emptyCompositionCount = 0;
+    let nodeOnlyCompositionCount = 0;
+    let activityOnlyCompositionCount = 0;
+    let mixedCompositionCount = 0;
+    let semanticNodeOnlyCompositionCount = 0;
+    let semanticMixedCompositionCount = 0;
+    let compositionSampleCount = 0;
+    let strictZeroFallbackModeCount = 0;
+    let noStrongNodeHitFallbackModeCount = 0;
+    let workspaceFallbackModeSampleCount = 0;
+    let feedbackUsefulCount = 0;
+    let feedbackNotUsefulCount = 0;
+    let feedbackUncertainCount = 0;
+    let feedbackSampleCount = 0;
+    let feedbackTop1UsefulCount = 0;
+    let feedbackTop1SampleCount = 0;
+    let feedbackTop3UsefulCount = 0;
+    let feedbackTop3SampleCount = 0;
+    let feedbackSemanticUsefulCount = 0;
+    let feedbackSemanticNotUsefulCount = 0;
+    let feedbackSemanticSampleCount = 0;
+    let feedbackSemanticLiftUsefulCount = 0;
+    let feedbackSemanticLiftSampleCount = 0;
     let semanticUsedCount = 0;
     let semanticSampleCount = 0;
     let semanticFallbackEligibleCount = 0;
@@ -490,6 +540,212 @@ export class ObservabilityWriter {
         ftsSampleCount += 1;
         if (event.details.ftsFallback) {
           ftsFallbackCount += 1;
+        }
+      }
+      if (typeof event.details.searchHit === "boolean") {
+        searchSampleCount += 1;
+        if (event.details.searchHit) {
+          searchHitCount += 1;
+        } else {
+          searchMissCount += 1;
+        }
+
+        const bucketKey = `${event.surface}:${event.operation}`;
+        const current =
+          searchHitBuckets.get(bucketKey) ?? {
+            surface: event.surface,
+            operation: event.operation,
+            hitCount: 0,
+            missCount: 0
+          };
+        if (event.details.searchHit) {
+          current.hitCount += 1;
+        } else {
+          current.missCount += 1;
+        }
+        searchHitBuckets.set(bucketKey, current);
+      }
+      if (
+        event.details.bestLexicalQuality === "strong" ||
+        event.details.bestLexicalQuality === "weak" ||
+        event.details.bestLexicalQuality === "none" ||
+        event.details.bestNodeLexicalQuality === "strong" ||
+        event.details.bestNodeLexicalQuality === "weak" ||
+        event.details.bestNodeLexicalQuality === "none"
+      ) {
+        const quality = (event.details.bestNodeLexicalQuality ??
+          event.details.bestLexicalQuality) as SearchLexicalQuality;
+        lexicalSampleCount += 1;
+        if (quality === "strong") {
+          strongLexicalCount += 1;
+        } else if (quality === "weak") {
+          weakLexicalCount += 1;
+        } else {
+          noLexicalCount += 1;
+        }
+
+        const bucketKey = `${event.surface}:${event.operation}`;
+        const current =
+          lexicalQualityBuckets.get(bucketKey) ?? {
+            surface: event.surface,
+            operation: event.operation,
+            strongCount: 0,
+            weakCount: 0,
+            noneCount: 0
+          };
+        if (quality === "strong") {
+          current.strongCount += 1;
+        } else if (quality === "weak") {
+          current.weakCount += 1;
+        } else {
+          current.noneCount += 1;
+        }
+        lexicalQualityBuckets.set(bucketKey, current);
+      }
+      if (typeof event.details.resultComposition === "string") {
+        compositionSampleCount += 1;
+        switch (event.details.resultComposition) {
+          case "node_only":
+            nodeOnlyCompositionCount += 1;
+            break;
+          case "activity_only":
+            activityOnlyCompositionCount += 1;
+            break;
+          case "mixed":
+            mixedCompositionCount += 1;
+            break;
+          case "semantic_node_only":
+            semanticNodeOnlyCompositionCount += 1;
+            break;
+          case "semantic_mixed":
+            semanticMixedCompositionCount += 1;
+            break;
+          default:
+            emptyCompositionCount += 1;
+            break;
+        }
+      }
+      if (
+        event.operation === "workspace.search" &&
+        (event.details.semanticFallbackMode === "strict_zero" || event.details.semanticFallbackMode === "no_strong_node_hit")
+      ) {
+        workspaceFallbackModeSampleCount += 1;
+        if (event.details.semanticFallbackMode === "strict_zero") {
+          strictZeroFallbackModeCount += 1;
+        } else {
+          noStrongNodeHitFallbackModeCount += 1;
+        }
+
+        const bucketKey = `${event.surface}:${event.operation}`;
+        const current =
+          workspaceFallbackModeBuckets.get(bucketKey) ?? {
+            surface: event.surface,
+            operation: event.operation,
+            strictZeroCount: 0,
+            noStrongNodeHitCount: 0
+          };
+        if (event.details.semanticFallbackMode === "strict_zero") {
+          current.strictZeroCount += 1;
+        } else {
+          current.noStrongNodeHitCount += 1;
+        }
+        workspaceFallbackModeBuckets.set(bucketKey, current);
+      }
+      if (
+        event.details.feedbackVerdict === "useful" ||
+        event.details.feedbackVerdict === "not_useful" ||
+        event.details.feedbackVerdict === "uncertain"
+      ) {
+        feedbackSampleCount += 1;
+        if (event.details.feedbackVerdict === "useful") {
+          feedbackUsefulCount += 1;
+        } else if (event.details.feedbackVerdict === "not_useful") {
+          feedbackNotUsefulCount += 1;
+        } else {
+          feedbackUncertainCount += 1;
+        }
+        const feedbackRank =
+          typeof event.details.feedbackRank === "number" && Number.isFinite(event.details.feedbackRank)
+            ? event.details.feedbackRank
+            : null;
+        if (feedbackRank != null) {
+          if (feedbackRank <= 1) {
+            feedbackTop1SampleCount += 1;
+            if (event.details.feedbackVerdict === "useful") {
+              feedbackTop1UsefulCount += 1;
+            }
+          }
+          if (feedbackRank <= 3) {
+            feedbackTop3SampleCount += 1;
+            if (event.details.feedbackVerdict === "useful") {
+              feedbackTop3UsefulCount += 1;
+            }
+          }
+        }
+        const feedbackMatchStrategy =
+          event.details.feedbackMatchStrategy === "fts" ||
+          event.details.feedbackMatchStrategy === "like" ||
+          event.details.feedbackMatchStrategy === "fallback_token" ||
+          event.details.feedbackMatchStrategy === "semantic" ||
+          event.details.feedbackMatchStrategy === "browse"
+            ? event.details.feedbackMatchStrategy
+            : null;
+        if (feedbackMatchStrategy === "semantic") {
+          feedbackSemanticSampleCount += 1;
+          if (event.details.feedbackVerdict === "useful") {
+            feedbackSemanticUsefulCount += 1;
+          } else if (event.details.feedbackVerdict === "not_useful") {
+            feedbackSemanticNotUsefulCount += 1;
+          }
+        }
+        if (event.details.feedbackSemanticLifted === true) {
+          feedbackSemanticLiftSampleCount += 1;
+          if (event.details.feedbackVerdict === "useful") {
+            feedbackSemanticLiftUsefulCount += 1;
+          }
+        }
+
+        const lexicalQuality =
+          event.details.feedbackLexicalQuality === "strong" ||
+          event.details.feedbackLexicalQuality === "weak" ||
+          event.details.feedbackLexicalQuality === "none"
+            ? (event.details.feedbackLexicalQuality as SearchLexicalQuality)
+            : null;
+        if (lexicalQuality) {
+          const current = feedbackByLexicalQuality.get(lexicalQuality) ?? {
+            usefulCount: 0,
+            notUsefulCount: 0,
+            uncertainCount: 0
+          };
+          if (event.details.feedbackVerdict === "useful") {
+            current.usefulCount += 1;
+          } else if (event.details.feedbackVerdict === "not_useful") {
+            current.notUsefulCount += 1;
+          } else {
+            current.uncertainCount += 1;
+          }
+          feedbackByLexicalQuality.set(lexicalQuality, current);
+        }
+
+        const feedbackFallbackMode =
+          event.details.feedbackSemanticFallbackMode === "strict_zero" ||
+          event.details.feedbackSemanticFallbackMode === "no_strong_node_hit"
+            ? (event.details.feedbackSemanticFallbackMode as WorkspaceSemanticFallbackMode)
+            : null;
+        if (feedbackFallbackMode) {
+          const current = feedbackByFallbackMode.get(feedbackFallbackMode) ?? {
+            usefulCount: 0,
+            notUsefulCount: 0,
+            uncertainCount: 0
+          };
+          if (event.details.feedbackVerdict === "useful") {
+            current.usefulCount += 1;
+          } else if (event.details.feedbackVerdict === "not_useful") {
+            current.notUsefulCount += 1;
+          } else {
+            current.uncertainCount += 1;
+          }
+          feedbackByFallbackMode.set(feedbackFallbackMode, current);
         }
       }
       if (typeof event.details.semanticUsed === "boolean") {
@@ -512,6 +768,30 @@ export class ObservabilityWriter {
         if (event.details.semanticFallbackUsed) {
           semanticFallbackHitCount += 1;
         }
+      }
+      const semanticFallbackMode =
+        event.operation === "workspace.search" &&
+        (event.details.semanticFallbackMode === "strict_zero" || event.details.semanticFallbackMode === "no_strong_node_hit")
+          ? (event.details.semanticFallbackMode as WorkspaceSemanticFallbackMode)
+          : null;
+      if (semanticFallbackMode) {
+        const current = semanticFallbackByMode.get(semanticFallbackMode) ?? {
+          eligibleCount: 0,
+          attemptedCount: 0,
+          hitCount: 0,
+          sampleCount: 0
+        };
+        current.sampleCount += 1;
+        if (event.details.semanticFallbackEligible === true) {
+          current.eligibleCount += 1;
+        }
+        if (event.details.semanticFallbackAttempted === true) {
+          current.attemptedCount += 1;
+        }
+        if (event.details.semanticFallbackUsed === true) {
+          current.hitCount += 1;
+        }
+        semanticFallbackByMode.set(semanticFallbackMode, current);
       }
 
       if (event.durationMs != null) {
@@ -584,6 +864,114 @@ export class ObservabilityWriter {
         sampleCount: ftsSampleCount,
         ratio: ftsSampleCount > 0 ? Number((ftsFallbackCount / ftsSampleCount).toFixed(4)) : null
       },
+      searchHitRate: {
+        hitCount: searchHitCount,
+        missCount: searchMissCount,
+        sampleCount: searchSampleCount,
+        ratio: searchSampleCount > 0 ? Number((searchHitCount / searchSampleCount).toFixed(4)) : null,
+        operations: [...searchHitBuckets.values()]
+          .map((item) => ({
+            ...item,
+            sampleCount: item.hitCount + item.missCount,
+            ratio:
+              item.hitCount + item.missCount > 0
+                ? Number((item.hitCount / (item.hitCount + item.missCount)).toFixed(4))
+                : null
+          }))
+          .sort((left, right) => right.sampleCount - left.sampleCount || left.operation.localeCompare(right.operation))
+      },
+      searchLexicalQualityRate: {
+        strongCount: strongLexicalCount,
+        weakCount: weakLexicalCount,
+        noneCount: noLexicalCount,
+        sampleCount: lexicalSampleCount,
+        operations: [...lexicalQualityBuckets.values()]
+          .map((item) => ({
+            ...item,
+            sampleCount: item.strongCount + item.weakCount + item.noneCount
+          }))
+          .sort((left, right) => right.sampleCount - left.sampleCount || left.operation.localeCompare(right.operation))
+      },
+      workspaceResultCompositionRate: {
+        emptyCount: emptyCompositionCount,
+        nodeOnlyCount: nodeOnlyCompositionCount,
+        activityOnlyCount: activityOnlyCompositionCount,
+        mixedCount: mixedCompositionCount,
+        semanticNodeOnlyCount: semanticNodeOnlyCompositionCount,
+        semanticMixedCount: semanticMixedCompositionCount,
+        sampleCount: compositionSampleCount
+      },
+      workspaceFallbackModeRate: {
+        strictZeroCount: strictZeroFallbackModeCount,
+        noStrongNodeHitCount: noStrongNodeHitFallbackModeCount,
+        sampleCount: workspaceFallbackModeSampleCount,
+        operations: [...workspaceFallbackModeBuckets.values()]
+          .map((item) => ({
+            ...item,
+            sampleCount: item.strictZeroCount + item.noStrongNodeHitCount
+          }))
+          .sort((left, right) => right.sampleCount - left.sampleCount || left.operation.localeCompare(right.operation))
+      },
+      searchFeedbackRate: {
+        usefulCount: feedbackUsefulCount,
+        notUsefulCount: feedbackNotUsefulCount,
+        uncertainCount: feedbackUncertainCount,
+        sampleCount: feedbackSampleCount,
+        usefulRatio: feedbackSampleCount > 0 ? Number((feedbackUsefulCount / feedbackSampleCount).toFixed(4)) : null,
+        top1UsefulCount: feedbackTop1UsefulCount,
+        top1SampleCount: feedbackTop1SampleCount,
+        top1UsefulRatio:
+          feedbackTop1SampleCount > 0 ? Number((feedbackTop1UsefulCount / feedbackTop1SampleCount).toFixed(4)) : null,
+        top3UsefulCount: feedbackTop3UsefulCount,
+        top3SampleCount: feedbackTop3SampleCount,
+        top3UsefulRatio:
+          feedbackTop3SampleCount > 0 ? Number((feedbackTop3UsefulCount / feedbackTop3SampleCount).toFixed(4)) : null,
+        semanticUsefulCount: feedbackSemanticUsefulCount,
+        semanticNotUsefulCount: feedbackSemanticNotUsefulCount,
+        semanticSampleCount: feedbackSemanticSampleCount,
+        semanticUsefulRatio:
+          feedbackSemanticSampleCount > 0 ? Number((feedbackSemanticUsefulCount / feedbackSemanticSampleCount).toFixed(4)) : null,
+        semanticFalsePositiveRatio:
+          feedbackSemanticSampleCount > 0 ? Number((feedbackSemanticNotUsefulCount / feedbackSemanticSampleCount).toFixed(4)) : null,
+        semanticLiftUsefulCount: feedbackSemanticLiftUsefulCount,
+        semanticLiftSampleCount: feedbackSemanticLiftSampleCount,
+        semanticLiftUsefulRatio:
+          feedbackSemanticLiftSampleCount > 0
+            ? Number((feedbackSemanticLiftUsefulCount / feedbackSemanticLiftSampleCount).toFixed(4))
+            : null,
+        byLexicalQuality: (["strong", "weak", "none"] as SearchLexicalQuality[])
+          .map((lexicalQuality) => {
+            const counts = feedbackByLexicalQuality.get(lexicalQuality) ?? {
+              usefulCount: 0,
+              notUsefulCount: 0,
+              uncertainCount: 0
+            };
+            const sampleCount = counts.usefulCount + counts.notUsefulCount + counts.uncertainCount;
+            return {
+              lexicalQuality,
+              ...counts,
+              sampleCount,
+              usefulRatio: sampleCount > 0 ? Number((counts.usefulCount / sampleCount).toFixed(4)) : null
+            };
+          })
+          .filter((item) => item.sampleCount > 0),
+        byFallbackMode: (["strict_zero", "no_strong_node_hit"] as WorkspaceSemanticFallbackMode[])
+          .map((fallbackMode) => {
+            const counts = feedbackByFallbackMode.get(fallbackMode) ?? {
+              usefulCount: 0,
+              notUsefulCount: 0,
+              uncertainCount: 0
+            };
+            const sampleCount = counts.usefulCount + counts.notUsefulCount + counts.uncertainCount;
+            return {
+              fallbackMode,
+              ...counts,
+              sampleCount,
+              usefulRatio: sampleCount > 0 ? Number((counts.usefulCount / sampleCount).toFixed(4)) : null
+            };
+          })
+          .filter((item) => item.sampleCount > 0)
+      },
       semanticAugmentationRate: {
         usedCount: semanticUsedCount,
         sampleCount: semanticSampleCount,
@@ -600,7 +988,25 @@ export class ObservabilityWriter {
         hitRatio:
           semanticFallbackAttemptedCount > 0
             ? Number((semanticFallbackHitCount / semanticFallbackAttemptedCount).toFixed(4))
-            : null
+            : null,
+        modes: (["strict_zero", "no_strong_node_hit"] as WorkspaceSemanticFallbackMode[])
+          .map((fallbackMode) => {
+            const counts = semanticFallbackByMode.get(fallbackMode) ?? {
+              eligibleCount: 0,
+              attemptedCount: 0,
+              hitCount: 0,
+              sampleCount: 0
+            };
+            return {
+              fallbackMode,
+              ...counts,
+              attemptRatio:
+                counts.eligibleCount > 0 ? Number((counts.attemptedCount / counts.eligibleCount).toFixed(4)) : null,
+              hitRatio:
+                counts.attemptedCount > 0 ? Number((counts.hitCount / counts.attemptedCount).toFixed(4)) : null
+            };
+          })
+          .filter((item) => item.sampleCount > 0)
       },
       autoJobStats: [...autoJobs.entries()].map(([operation, durations]) => ({
         operation,

@@ -588,6 +588,7 @@ The `settings` table stores workspace-level configuration.
 - `search.semantic.enabled`
 - `search.semantic.indexBackend`
 - `search.semantic.workspaceFallback.enabled`
+- `search.semantic.workspaceFallback.mode`
 - `review.autoApproveLowRisk` (legacy compatibility only)
 - `review.trustedSourceToolNames` (legacy compatibility only)
 - `relations.autoRecompute.enabled`

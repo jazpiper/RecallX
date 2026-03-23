@@ -255,6 +255,7 @@ export interface SearchResultItem {
   updatedAt: string;
   tags: string[];
   matchReason?: SearchMatchReason;
+  lexicalQuality?: SearchLexicalQuality;
 }
 
 export interface ActivitySearchResultItem {
@@ -268,6 +269,7 @@ export interface ActivitySearchResultItem {
   sourceLabel: string | null;
   createdAt: string;
   matchReason?: SearchMatchReason;
+  lexicalQuality?: SearchLexicalQuality;
 }
 
 export interface WorkspaceSearchResultItem {
@@ -279,7 +281,13 @@ export interface WorkspaceSearchResultItem {
 export interface SearchMatchReason {
   strategy: "fts" | "like" | "fallback_token" | "semantic" | "browse";
   matchedFields: string[];
+  strength?: Exclude<SearchLexicalQuality, "none">;
+  termCoverage?: number | null;
 }
+
+export type SearchLexicalQuality = "none" | "weak" | "strong";
+export type WorkspaceSemanticFallbackMode = "strict_zero" | "no_strong_node_hit";
+export type SemanticWorkspaceFallbackMode = "strict_zero" | "no_strong_node_hit";
 
 export interface NeighborhoodItem {
   node: NodeRecord;
@@ -438,6 +446,92 @@ export interface TelemetrySummaryResponse {
     sampleCount: number;
     ratio: number | null;
   };
+  searchHitRate: {
+    hitCount: number;
+    missCount: number;
+    sampleCount: number;
+    ratio: number | null;
+    operations: Array<{
+      surface: TelemetrySurface;
+      operation: string;
+      hitCount: number;
+      missCount: number;
+      sampleCount: number;
+      ratio: number | null;
+    }>;
+  };
+  searchLexicalQualityRate: {
+    strongCount: number;
+    weakCount: number;
+    noneCount: number;
+    sampleCount: number;
+    operations: Array<{
+      surface: TelemetrySurface;
+      operation: string;
+      strongCount: number;
+      weakCount: number;
+      noneCount: number;
+      sampleCount: number;
+    }>;
+  };
+  workspaceResultCompositionRate: {
+    emptyCount: number;
+    nodeOnlyCount: number;
+    activityOnlyCount: number;
+    mixedCount: number;
+    semanticNodeOnlyCount: number;
+    semanticMixedCount: number;
+    sampleCount: number;
+  };
+  workspaceFallbackModeRate: {
+    strictZeroCount: number;
+    noStrongNodeHitCount: number;
+    sampleCount: number;
+    operations: Array<{
+      surface: TelemetrySurface;
+      operation: string;
+      strictZeroCount: number;
+      noStrongNodeHitCount: number;
+      sampleCount: number;
+    }>;
+  };
+  searchFeedbackRate: {
+    usefulCount: number;
+    notUsefulCount: number;
+    uncertainCount: number;
+    sampleCount: number;
+    usefulRatio: number | null;
+    top1UsefulCount: number;
+    top1SampleCount: number;
+    top1UsefulRatio: number | null;
+    top3UsefulCount: number;
+    top3SampleCount: number;
+    top3UsefulRatio: number | null;
+    semanticUsefulCount: number;
+    semanticNotUsefulCount: number;
+    semanticSampleCount: number;
+    semanticUsefulRatio: number | null;
+    semanticFalsePositiveRatio: number | null;
+    semanticLiftUsefulCount: number;
+    semanticLiftSampleCount: number;
+    semanticLiftUsefulRatio: number | null;
+    byLexicalQuality: Array<{
+      lexicalQuality: SearchLexicalQuality;
+      usefulCount: number;
+      notUsefulCount: number;
+      uncertainCount: number;
+      sampleCount: number;
+      usefulRatio: number | null;
+    }>;
+    byFallbackMode: Array<{
+      fallbackMode: WorkspaceSemanticFallbackMode;
+      usefulCount: number;
+      notUsefulCount: number;
+      uncertainCount: number;
+      sampleCount: number;
+      usefulRatio: number | null;
+    }>;
+  };
   semanticAugmentationRate: {
     usedCount: number;
     sampleCount: number;
@@ -449,6 +543,15 @@ export interface TelemetrySummaryResponse {
     hitCount: number;
     attemptRatio: number | null;
     hitRatio: number | null;
+    modes: Array<{
+      fallbackMode: WorkspaceSemanticFallbackMode;
+      eligibleCount: number;
+      attemptedCount: number;
+      hitCount: number;
+      sampleCount: number;
+      attemptRatio: number | null;
+      hitRatio: number | null;
+    }>;
   };
   autoJobStats: Array<{
     operation: string;

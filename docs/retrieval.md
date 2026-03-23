@@ -128,7 +128,9 @@ The scout is optimized for:
 - the shipped built-in provider is currently embedding version `2`, and candidate lookup now requires provider/model/version compatibility
 - request-time tuning is limited to `search.semantic.augmentation.minSimilarity`, `search.semantic.augmentation.maxBonus`, and `search.semantic.chunk.aggregation`
 - semantic bonuses are skipped when there is already a strong lexical exact match
-- mixed workspace search may optionally do a final bounded semantic retry only after deterministic search and token fallback both return `0` results; this is off by default and node-only
+- mixed workspace search may optionally do a final bounded semantic retry and remains node-only
+- `search.semantic.workspaceFallback.mode=strict_zero` keeps the conservative default: retry only when deterministic search plus token fallback still return zero results
+- `search.semantic.workspaceFallback.mode=no_strong_node_hit` allows retry when there is no strong lexical node hit, preserving weak lexical node results and not letting activity-only hits block node recall
 - semantic configuration changes can automatically stale and requeue ready rows so old vectors are rebuilt instead of being reused under a new signature
 
 ### Scout non-goals

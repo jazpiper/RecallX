@@ -710,7 +710,8 @@ Search nodes and activities together through one agent-friendly entry point.
 - `smart` is the recommended mixed-search sort because it combines source-local ranking with recency and contested penalties
 - activity results are capped per target node to avoid timeline spam
 - if an initial multi-token mixed search returns zero results, the server may retry with bounded token fallback and mark those results with `matchReason.strategy = "fallback_token"`
-- when `search.semantic.workspaceFallback.enabled=true`, `scopes` includes `nodes`, and deterministic mixed search still returns `0` items, the server may do one bounded semantic retry against recent semantic-ready nodes and mark recovered node results with `matchReason.strategy = "semantic"`
+- when `search.semantic.workspaceFallback.enabled=true`, `scopes` includes `nodes`, and `search.semantic.workspaceFallback.mode=strict_zero`, the server may do one bounded semantic retry only after deterministic search plus token fallback still return `0` items
+- when `search.semantic.workspaceFallback.enabled=true`, `scopes` includes `nodes`, and `search.semantic.workspaceFallback.mode=no_strong_node_hit`, the server may do one bounded semantic retry when there is no strong lexical node hit; weak lexical node hits are preserved and merged with recovered semantic node results
 
 ---
 
@@ -1115,6 +1116,8 @@ Semantic indexing is optional and currently operates as a background-maintained 
 - `extensionStatus`
 - `extensionLoadError`
 - `chunkEnabled`
+- `workspaceFallbackEnabled`
+- `workspaceFallbackMode`
 - `lastBackfillAt`
 - `counts.pending`
 - `counts.processing`
@@ -1133,6 +1136,8 @@ Notes:
 - `extensionStatus=loaded` means `sqlite-vec` is active, `fallback` means RecallX downgraded to `sqlite`, and `disabled` means the workspace is explicitly configured to stay on plain `sqlite`
 - `search.semantic.chunk.aggregation=max` remains the default request-time chunk aggregation strategy
 - `search.semantic.chunk.aggregation=topk_mean` averages the top semantic chunk matches for each node without changing write-time indexing
+- `search.semantic.workspaceFallback.mode=strict_zero` is the default rollout-safe mode
+- `search.semantic.workspaceFallback.mode=no_strong_node_hit` enables semantic retry when no strong lexical node hit is present
 - semantic configuration changes may automatically mark ready rows as `stale` and queue affected active/draft nodes for rebuild
 
 ## 18.2 Queue workspace semantic reindex

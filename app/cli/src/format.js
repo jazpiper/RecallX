@@ -202,10 +202,64 @@ export function renderTelemetrySummary(data) {
       `fts fallback: ${data.ftsFallbackRate.fallbackCount}/${data.ftsFallbackRate.sampleCount} (${data.ftsFallbackRate.ratio ?? "n/a"})`
     );
   }
+  if (data?.searchHitRate) {
+    lines.push(
+      `search hit rate: ${data.searchHitRate.hitCount}/${data.searchHitRate.sampleCount} (${data.searchHitRate.ratio ?? "n/a"})`
+    );
+    const searchHitOps = Array.isArray(data.searchHitRate.operations) ? data.searchHitRate.operations : [];
+    for (const item of searchHitOps.slice(0, 5)) {
+      lines.push(
+        `- [${item.surface}] ${item.operation}: ${item.hitCount}/${item.sampleCount} hits (${item.ratio ?? "n/a"})`
+      );
+    }
+  }
+  if (data?.searchLexicalQualityRate) {
+    lines.push(
+      `lexical quality: strong=${data.searchLexicalQualityRate.strongCount}, weak=${data.searchLexicalQualityRate.weakCount}, none=${data.searchLexicalQualityRate.noneCount}`
+    );
+  }
+  if (data?.workspaceResultCompositionRate) {
+    lines.push(
+      `workspace composition: node_only=${data.workspaceResultCompositionRate.nodeOnlyCount}, semantic_node_only=${data.workspaceResultCompositionRate.semanticNodeOnlyCount}, activity_only=${data.workspaceResultCompositionRate.activityOnlyCount}, mixed=${data.workspaceResultCompositionRate.mixedCount}, semantic_mixed=${data.workspaceResultCompositionRate.semanticMixedCount}, empty=${data.workspaceResultCompositionRate.emptyCount}`
+    );
+  }
+  if (data?.workspaceFallbackModeRate) {
+    lines.push(
+      `workspace fallback modes: strict_zero=${data.workspaceFallbackModeRate.strictZeroCount}, no_strong_node_hit=${data.workspaceFallbackModeRate.noStrongNodeHitCount}`
+    );
+  }
+  if (data?.searchFeedbackRate) {
+    lines.push(
+      `search feedback: useful=${data.searchFeedbackRate.usefulCount}/${data.searchFeedbackRate.sampleCount} (${data.searchFeedbackRate.usefulRatio ?? "n/a"}), top1=${data.searchFeedbackRate.top1UsefulCount}/${data.searchFeedbackRate.top1SampleCount} (${data.searchFeedbackRate.top1UsefulRatio ?? "n/a"}), top3=${data.searchFeedbackRate.top3UsefulCount}/${data.searchFeedbackRate.top3SampleCount} (${data.searchFeedbackRate.top3UsefulRatio ?? "n/a"}), semantic_fp=${data.searchFeedbackRate.semanticFalsePositiveRatio ?? "n/a"}`
+    );
+    const qualityBuckets = Array.isArray(data.searchFeedbackRate.byLexicalQuality) ? data.searchFeedbackRate.byLexicalQuality : [];
+    for (const item of qualityBuckets) {
+      lines.push(
+        `- feedback [${item.lexicalQuality}]: ${item.usefulCount}/${item.sampleCount} useful (${item.usefulRatio ?? "n/a"})`
+      );
+    }
+    const fallbackModeBuckets = Array.isArray(data.searchFeedbackRate.byFallbackMode) ? data.searchFeedbackRate.byFallbackMode : [];
+    for (const item of fallbackModeBuckets) {
+      lines.push(
+        `- feedback mode [${item.fallbackMode}]: ${item.usefulCount}/${item.sampleCount} useful (${item.usefulRatio ?? "n/a"})`
+      );
+    }
+  }
   if (data?.semanticAugmentationRate) {
     lines.push(
       `semantic augmentation: ${data.semanticAugmentationRate.usedCount}/${data.semanticAugmentationRate.sampleCount} (${data.semanticAugmentationRate.ratio ?? "n/a"})`
     );
+  }
+  if (data?.semanticFallbackRate) {
+    lines.push(
+      `semantic fallback: eligible=${data.semanticFallbackRate.eligibleCount}, attempted=${data.semanticFallbackRate.attemptedCount}, hit=${data.semanticFallbackRate.hitCount}, hit_ratio=${data.semanticFallbackRate.hitRatio ?? "n/a"}`
+    );
+    const fallbackModes = Array.isArray(data.semanticFallbackRate.modes) ? data.semanticFallbackRate.modes : [];
+    for (const item of fallbackModes) {
+      lines.push(
+        `- fallback mode [${item.fallbackMode}]: attempted=${item.attemptedCount}/${item.eligibleCount} (${item.attemptRatio ?? "n/a"}), hit=${item.hitCount}/${item.attemptedCount} (${item.hitRatio ?? "n/a"})`
+      );
+    }
   }
 
   return `${lines.join("\n")}\n`;

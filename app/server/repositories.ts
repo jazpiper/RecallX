@@ -19,6 +19,8 @@ import type {
   RelationUsageEventRecord,
   RelationUsageSummary,
   SearchMatchReason,
+  SearchLexicalQuality,
+  SemanticWorkspaceFallbackMode,
   SearchFeedbackEventRecord,
   SearchFeedbackSummary,
   SearchResultItem,
@@ -90,6 +92,8 @@ const workspaceInboxSource: Source = {
 type SemanticIndexStatus = (typeof SEMANTIC_INDEX_STATUS_VALUES)[number];
 type SemanticIssueStatus = (typeof SEMANTIC_ISSUE_STATUS_VALUES)[number];
 type SemanticChunkAggregation = "max" | "topk_mean";
+type WorkspaceSemanticFallbackMode = SemanticWorkspaceFallbackMode;
+const DEFAULT_WORKSPACE_SEMANTIC_FALLBACK_MODE = "strict_zero" as const;
 
 type SemanticEmbeddingSignature = {
   provider: string | null;
@@ -106,6 +110,8 @@ type SemanticStatusSummary = {
   extensionStatus: "loaded" | "fallback" | "disabled";
   extensionLoadError: string | null;
   chunkEnabled: boolean;
+  workspaceFallbackEnabled: boolean;
+  workspaceFallbackMode: WorkspaceSemanticFallbackMode;
   lastBackfillAt: string | null;
   counts: Record<SemanticIndexStatus, number>;
 };
@@ -146,6 +152,13 @@ type SearchFieldMatcher = {
   matchTerms: string[];
 };
 
+type SearchFieldSignals = {
+  matchedFields: string[];
+  exactFields: string[];
+  matchedTermCount: number;
+  totalTermCount: number;
+};
+
 function normalizeSearchText(value: string | null | undefined): string {
   return (value ?? "").normalize("NFKC").toLowerCase();
 }
@@ -168,15 +181,22 @@ function createSearchFieldMatcher(query: string): SearchFieldMatcher | null {
   };
 }
 
-function collectMatchedFields(
+function collectSearchFieldSignals(
   matcher: SearchFieldMatcher | null,
   candidates: Array<{ field: string; value: string | null | undefined }>
-): string[] {
+): SearchFieldSignals {
   if (!matcher) {
-    return [];
+    return {
+      matchedFields: [],
+      exactFields: [],
+      matchedTermCount: 0,
+      totalTermCount: 0
+    };
   }
 
-  const matches = new Set<string>();
+  const matchedFields = new Set<string>();
+  const exactFields = new Set<string>();
+  const matchedTerms = new Set<string>();
 
   for (const candidate of candidates) {
     const haystack = normalizeSearchText(candidate.value);
@@ -184,21 +204,151 @@ function collectMatchedFields(
       continue;
     }
 
-    if (haystack.includes(matcher.trimmedQuery) || matcher.matchTerms.some((term) => haystack.includes(term))) {
-      matches.add(candidate.field);
+    const exactMatch = haystack.includes(matcher.trimmedQuery);
+    const termMatches = matcher.matchTerms.filter((term) => haystack.includes(term));
+    if (!exactMatch && !termMatches.length) {
+      continue;
+    }
+
+    matchedFields.add(candidate.field);
+    if (exactMatch) {
+      exactFields.add(candidate.field);
+    }
+    for (const term of termMatches) {
+      matchedTerms.add(term);
     }
   }
 
-  return [...matches];
+  return {
+    matchedFields: [...matchedFields],
+    exactFields: [...exactFields],
+    matchedTermCount: matchedTerms.size,
+    totalTermCount: matcher.matchTerms.length
+  };
+}
+
+function classifyNodeLexicalQuality(
+  strategy: SearchMatchReason["strategy"],
+  signals: SearchFieldSignals
+): SearchLexicalQuality {
+  if (strategy === "browse" || strategy === "semantic" || !signals.matchedFields.length) {
+    return "none";
+  }
+  if (strategy === "fallback_token") {
+    return "weak";
+  }
+
+  const strongExactFields = new Set(["title", "summary", "tags"]);
+  if (signals.exactFields.some((field) => strongExactFields.has(field))) {
+    return "strong";
+  }
+
+  const termCoverage = signals.totalTermCount > 0 ? signals.matchedTermCount / signals.totalTermCount : 0;
+  if (strategy === "fts" && termCoverage >= 0.6 && signals.matchedFields.some((field) => strongExactFields.has(field))) {
+    return "strong";
+  }
+
+  return "weak";
+}
+
+function classifyActivityLexicalQuality(
+  strategy: SearchMatchReason["strategy"],
+  signals: SearchFieldSignals
+): SearchLexicalQuality {
+  if (strategy === "browse" || strategy === "semantic" || !signals.matchedFields.length) {
+    return "none";
+  }
+  if (strategy === "fallback_token") {
+    return "weak";
+  }
+
+  if (signals.exactFields.some((field) => field === "targetNodeTitle" || field === "body" || field === "activityType")) {
+    return "strong";
+  }
+
+  const termCoverage = signals.totalTermCount > 0 ? signals.matchedTermCount / signals.totalTermCount : 0;
+  return strategy === "fts" && termCoverage >= 0.6 ? "strong" : "weak";
+}
+
+function summarizeLexicalQuality(items: Array<{ lexicalQuality?: SearchLexicalQuality }>): SearchLexicalQuality {
+  if (items.some((item) => item.lexicalQuality === "strong")) {
+    return "strong";
+  }
+  if (items.some((item) => item.lexicalQuality === "weak")) {
+    return "weak";
+  }
+  return "none";
+}
+
+function computeWorkspaceResultComposition(input: {
+  nodeCount: number;
+  activityCount: number;
+  semanticUsed: boolean;
+}): "empty" | "node_only" | "activity_only" | "mixed" | "semantic_node_only" | "semantic_mixed" {
+  if (input.nodeCount === 0 && input.activityCount === 0) {
+    return "empty";
+  }
+  if (input.nodeCount > 0 && input.activityCount === 0) {
+    return input.semanticUsed ? "semantic_node_only" : "node_only";
+  }
+  if (input.nodeCount === 0 && input.activityCount > 0) {
+    return "activity_only";
+  }
+  return input.semanticUsed ? "semantic_mixed" : "mixed";
+}
+
+function mergeLexicalQuality(
+  left: SearchLexicalQuality | undefined,
+  right: SearchLexicalQuality | undefined
+): SearchLexicalQuality {
+  if (left === "strong" || right === "strong") {
+    return "strong";
+  }
+  if (left === "weak" || right === "weak") {
+    return "weak";
+  }
+  return "none";
+}
+
+function mergeNodeSearchItems(primary: SearchResultItem[], secondary: SearchResultItem[]): SearchResultItem[] {
+  const merged = [...primary];
+  const indexById = new Map(primary.map((item, index) => [item.id, index] as const));
+
+  for (const item of secondary) {
+    const existingIndex = indexById.get(item.id);
+    if (existingIndex == null) {
+      indexById.set(item.id, merged.length);
+      merged.push(item);
+      continue;
+    }
+
+    const existing = merged[existingIndex];
+    merged[existingIndex] = {
+      ...existing,
+      lexicalQuality: existing.lexicalQuality === "strong" ? "strong" : item.lexicalQuality ?? existing.lexicalQuality,
+      matchReason:
+        existing.matchReason && item.matchReason
+          ? mergeMatchReasons(existing.matchReason, item.matchReason, existing.matchReason.strategy)
+          : existing.matchReason ?? item.matchReason
+    };
+  }
+
+  return merged;
 }
 
 function buildSearchMatchReason(
   strategy: SearchMatchReason["strategy"],
-  matchedFields: string[]
+  matchedFields: string[],
+  extras: {
+    strength?: Exclude<SearchLexicalQuality, "none">;
+    termCoverage?: number | null;
+  } = {}
 ): SearchMatchReason {
   return {
     strategy,
-    matchedFields
+    matchedFields,
+    ...(extras.strength ? { strength: extras.strength } : {}),
+    ...(extras.termCoverage != null ? { termCoverage: extras.termCoverage } : {})
   };
 }
 
@@ -209,7 +359,12 @@ function mergeMatchReasons(
 ): SearchMatchReason {
   return {
     strategy,
-    matchedFields: Array.from(new Set([...(left?.matchedFields ?? []), ...(right?.matchedFields ?? [])]))
+    matchedFields: Array.from(new Set([...(left?.matchedFields ?? []), ...(right?.matchedFields ?? [])])),
+    strength: left?.strength ?? right?.strength,
+    termCoverage:
+      typeof left?.termCoverage === "number" || typeof right?.termCoverage === "number"
+        ? Math.max(left?.termCoverage ?? 0, right?.termCoverage ?? 0)
+        : null
   };
 }
 
@@ -228,10 +383,23 @@ function computeWorkspaceSmartScore(input: {
   resultType: "node" | "activity";
   contested: boolean;
   nowMs: number;
+  matchReason?: SearchMatchReason;
+  lexicalQuality?: SearchLexicalQuality;
 }) {
+  const matchBonus =
+    input.matchReason?.strategy === "semantic"
+      ? 3
+      : input.lexicalQuality === "strong"
+        ? 10
+        : input.lexicalQuality === "weak"
+          ? input.matchReason?.strategy === "fallback_token"
+            ? 1
+            : 4
+          : 0;
   return (
     computeWorkspaceRankBonus(input.index, input.total) +
     computeWorkspaceRecencyBonusFromAge(input.nowMs - new Date(input.timestamp).getTime(), input.resultType) +
+    matchBonus +
     (input.resultType === "activity" ? 4 : 0) -
     (input.contested ? 20 : 0)
   );
@@ -257,6 +425,7 @@ type SemanticIndexSettings = {
   chunkEnabled: boolean;
   chunkAggregation: SemanticChunkAggregation;
   workspaceFallbackEnabled: boolean;
+  workspaceFallbackMode: WorkspaceSemanticFallbackMode;
 };
 
 type SemanticAugmentationSettings = {
@@ -268,6 +437,7 @@ type WorkspaceSearchTelemetry = {
   semanticFallbackEligible: boolean;
   semanticFallbackAttempted: boolean;
   semanticFallbackUsed: boolean;
+  semanticFallbackMode: WorkspaceSemanticFallbackMode | null;
   semanticFallbackCandidateCount: number;
   semanticFallbackResultCount: number;
   semanticFallbackBackend: SemanticIndexBackend | null;
@@ -325,6 +495,10 @@ function readNumberSetting(settings: Record<string, unknown>, key: string, fallb
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function normalizeWorkspaceSemanticFallbackMode(value: unknown): WorkspaceSemanticFallbackMode {
+  return value === "no_strong_node_hit" ? "no_strong_node_hit" : DEFAULT_WORKSPACE_SEMANTIC_FALLBACK_MODE;
+}
+
 function normalizeSemanticIndexBackend(value: unknown): SemanticIndexBackend {
   return value === "sqlite-vec" ? "sqlite-vec" : "sqlite";
 }
@@ -379,7 +553,9 @@ function readSemanticIndexSettingSnapshot(
     indexBackend: resolveActiveSemanticIndexBackend(configuredIndexBackend, runtime.sqliteVecLoaded),
     extensionStatus: resolveSemanticExtensionStatus(configuredIndexBackend, runtime.sqliteVecLoaded),
     extensionLoadError: configuredIndexBackend === "sqlite-vec" && !runtime.sqliteVecLoaded ? runtime.sqliteVecLoadError : null,
-    chunkEnabled: readBooleanSetting(settings, "search.semantic.chunk.enabled", false)
+    chunkEnabled: readBooleanSetting(settings, "search.semantic.chunk.enabled", false),
+    workspaceFallbackEnabled: readBooleanSetting(settings, "search.semantic.workspaceFallback.enabled", false),
+    workspaceFallbackMode: normalizeWorkspaceSemanticFallbackMode(settings["search.semantic.workspaceFallback.mode"])
   };
 }
 
@@ -914,7 +1090,8 @@ export class RecallXRepository {
       "search.semantic.indexBackend",
       "search.semantic.chunk.enabled",
       "search.semantic.chunk.aggregation",
-      "search.semantic.workspaceFallback.enabled"
+      "search.semantic.workspaceFallback.enabled",
+      "search.semantic.workspaceFallback.mode"
     ]);
     return {
       ...readSemanticIndexSettingSnapshot(settings, {
@@ -922,7 +1099,8 @@ export class RecallXRepository {
         sqliteVecLoadError: this.sqliteVecRuntime.loadError
       }),
       chunkAggregation: normalizeSemanticChunkAggregation(settings["search.semantic.chunk.aggregation"]),
-      workspaceFallbackEnabled: readBooleanSetting(settings, "search.semantic.workspaceFallback.enabled", false)
+      workspaceFallbackEnabled: readBooleanSetting(settings, "search.semantic.workspaceFallback.enabled", false),
+      workspaceFallbackMode: normalizeWorkspaceSemanticFallbackMode(settings["search.semantic.workspaceFallback.mode"])
     };
   }
 
@@ -1437,6 +1615,8 @@ export class RecallXRepository {
       "search.semantic.model",
       "search.semantic.indexBackend",
       "search.semantic.chunk.enabled",
+      "search.semantic.workspaceFallback.enabled",
+      "search.semantic.workspaceFallback.mode",
       "search.semantic.last_backfill_at"
     ]);
     const semanticSettings = readSemanticIndexSettingSnapshot(settings, {
@@ -1464,6 +1644,8 @@ export class RecallXRepository {
 
     return {
       ...semanticStatusSettings,
+      workspaceFallbackEnabled: readBooleanSetting(settings, "search.semantic.workspaceFallback.enabled", false),
+      workspaceFallbackMode: normalizeWorkspaceSemanticFallbackMode(settings["search.semantic.workspaceFallback.mode"]),
       lastBackfillAt: readStringSetting(settings, "search.semantic.last_backfill_at"),
       counts
     };
@@ -1831,6 +2013,7 @@ export class RecallXRepository {
         const result = this.searchNodesWithFts(input);
         appendCurrentTelemetryDetails({
           ftsFallback: false,
+          lexicalQuality: summarizeLexicalQuality(result.items),
           resultCount: result.items.length,
           totalCount: result.total
         });
@@ -1839,6 +2022,7 @@ export class RecallXRepository {
         const fallbackResult = this.searchNodesWithLike(input);
         appendCurrentTelemetryDetails({
           ftsFallback: true,
+          lexicalQuality: summarizeLexicalQuality(fallbackResult.items),
           resultCount: fallbackResult.items.length,
           totalCount: fallbackResult.total
         });
@@ -1849,6 +2033,7 @@ export class RecallXRepository {
     const result = this.searchNodesWithLike(input);
     appendCurrentTelemetryDetails({
       ftsFallback: false,
+      lexicalQuality: summarizeLexicalQuality(result.items),
       resultCount: result.items.length,
       totalCount: result.total
     });
@@ -1861,6 +2046,7 @@ export class RecallXRepository {
         const result = this.searchActivitiesWithFts(input);
         appendCurrentTelemetryDetails({
           ftsFallback: false,
+          lexicalQuality: summarizeLexicalQuality(result.items),
           resultCount: result.items.length,
           totalCount: result.total
         });
@@ -1869,6 +2055,7 @@ export class RecallXRepository {
         const fallbackResult = this.searchActivitiesWithLike(input);
         appendCurrentTelemetryDetails({
           ftsFallback: true,
+          lexicalQuality: summarizeLexicalQuality(fallbackResult.items),
           resultCount: fallbackResult.items.length,
           totalCount: fallbackResult.total
         });
@@ -1879,6 +2066,7 @@ export class RecallXRepository {
     const result = this.searchActivitiesWithLike(input);
     appendCurrentTelemetryDetails({
       ftsFallback: false,
+      lexicalQuality: summarizeLexicalQuality(result.items),
       resultCount: result.items.length,
       totalCount: result.total
     });
@@ -2037,6 +2225,8 @@ export class RecallXRepository {
       fallbackTokens.length >= 2 && includeActivities
         ? this.searchWorkspaceActivityFallback(fallbackTokens, input.activityFilters ?? {}, requestedWindow)
         : activityResults;
+    const bestNodeLexicalQuality = summarizeLexicalQuality(resolvedNodeResults.items);
+    const bestActivityLexicalQuality = summarizeLexicalQuality(resolvedActivityResults.items);
     const merged = this.mergeWorkspaceSearchResults(
       resolvedNodeResults.items,
       resolvedActivityResults.items,
@@ -2055,6 +2245,8 @@ export class RecallXRepository {
       semanticFallbackEligible: false,
       semanticFallbackAttempted: false,
       semanticFallbackUsed: false,
+      semanticFallbackMode:
+        includeNodes && semanticSettings.workspaceFallbackEnabled ? semanticSettings.workspaceFallbackMode : null,
       semanticFallbackCandidateCount: 0,
       semanticFallbackResultCount: 0,
       semanticFallbackBackend: null,
@@ -2063,16 +2255,33 @@ export class RecallXRepository {
       semanticFallbackQueryLengthBucket: queryPresent ? bucketSemanticQueryLength(normalizedQuery.length) : null
     };
     const appendWorkspaceSearchTelemetry = (result: { items: WorkspaceSearchResultItem[]; total: number }) => {
+      const nodeItems = result.items.flatMap((item) => item.resultType === "node" && item.node ? [item.node] : []);
+      const activityItems = result.items.flatMap((item) =>
+        item.resultType === "activity" && item.activity ? [item.activity] : []
+      );
       appendCurrentTelemetryDetails({
+        searchHit: result.items.length > 0,
         candidateCount: requestedWindow,
         nodeCandidateCount: resolvedNodeResults.items.length,
         activityCandidateCount: resolvedActivityResults.items.length,
+        nodeResultCount: nodeItems.length,
+        activityResultCount: activityItems.length,
+        bestNodeLexicalQuality,
+        bestActivityLexicalQuality,
+        lexicalNodeHit: bestNodeLexicalQuality !== "none",
+        strongNodeLexicalHit: bestNodeLexicalQuality === "strong",
+        resultComposition: computeWorkspaceResultComposition({
+          nodeCount: nodeItems.length,
+          activityCount: activityItems.length,
+          semanticUsed: telemetry.semanticFallbackUsed
+        }),
         resultCount: result.items.length,
         totalCount: result.total,
         fallbackTokenCount: fallbackTokens.length,
         semanticFallbackEligible: telemetry.semanticFallbackEligible,
         semanticFallbackAttempted: telemetry.semanticFallbackAttempted,
         semanticFallbackUsed: telemetry.semanticFallbackUsed,
+        semanticFallbackMode: telemetry.semanticFallbackMode ?? undefined,
         semanticFallbackCandidateCount: telemetry.semanticFallbackCandidateCount,
         semanticFallbackResultCount: telemetry.semanticFallbackResultCount,
         semanticFallbackBackend: telemetry.semanticFallbackBackend,
@@ -2081,14 +2290,21 @@ export class RecallXRepository {
       });
     };
 
+    const strictZeroFallbackBlocked = resolvedNodeResults.total + resolvedActivityResults.total > 0;
+    const noStrongNodeFallbackBlocked = bestNodeLexicalQuality === "strong";
+    const semanticFallbackBlockedByMode =
+      semanticSettings.workspaceFallbackMode === "strict_zero"
+        ? strictZeroFallbackBlocked
+        : noStrongNodeFallbackBlocked;
+
     const shouldAttemptSemanticFallback =
       includeNodes &&
       semanticSettings.workspaceFallbackEnabled &&
       queryPresent &&
       normalizedQuery.length >= 6 &&
-      deterministicResult.total === 0 &&
       semanticSettings.enabled &&
-      Boolean(semanticSettings.provider && semanticSettings.model);
+      Boolean(semanticSettings.provider && semanticSettings.model) &&
+      !semanticFallbackBlockedByMode;
 
     if (!includeNodes) {
       telemetry.semanticFallbackSkippedReason = "nodes_scope_disabled";
@@ -2098,12 +2314,14 @@ export class RecallXRepository {
       telemetry.semanticFallbackSkippedReason = "query_too_short";
     } else if (!semanticSettings.workspaceFallbackEnabled) {
       telemetry.semanticFallbackSkippedReason = "workspace_fallback_disabled";
-    } else if (deterministicResult.total > 0) {
-      telemetry.semanticFallbackSkippedReason = "deterministic_results_present";
     } else if (!semanticSettings.enabled) {
       telemetry.semanticFallbackSkippedReason = "semantic_disabled";
     } else if (!semanticSettings.provider || !semanticSettings.model) {
       telemetry.semanticFallbackSkippedReason = "semantic_provider_unconfigured";
+    } else if (semanticSettings.workspaceFallbackMode === "strict_zero" && strictZeroFallbackBlocked) {
+      telemetry.semanticFallbackSkippedReason = "strict_zero_results_present";
+    } else if (semanticSettings.workspaceFallbackMode === "no_strong_node_hit" && noStrongNodeFallbackBlocked) {
+      telemetry.semanticFallbackSkippedReason = "strong_node_lexical_present";
     }
 
     if (shouldAttemptSemanticFallback) {
@@ -2121,12 +2339,11 @@ export class RecallXRepository {
       } else {
         telemetry.semanticFallbackAttempted = true;
         const runSemanticFallback = async () => {
-          const semanticMatches = await this.rankSemanticCandidates(normalizedQuery, candidateNodeIds);
           const items = this.buildWorkspaceSemanticFallbackNodeItems(
             candidateNodeIds,
-            semanticMatches,
+            await this.rankSemanticCandidates(normalizedQuery, candidateNodeIds),
             this.getSemanticAugmentationSettings()
-          ).map((node) => ({ resultType: "node" as const, node }));
+          );
           return {
             items,
             resultCount: items.length
@@ -2140,6 +2357,7 @@ export class RecallXRepository {
                   semanticFallbackCandidateCount: candidateNodeIds.length,
                   semanticFallbackBackend: semanticSettings.indexBackend,
                   semanticFallbackConfiguredBackend: semanticSettings.configuredIndexBackend,
+                  semanticFallbackMode: telemetry.semanticFallbackMode ?? undefined,
                   semanticFallbackQueryLengthBucket: telemetry.semanticFallbackQueryLengthBucket
                 },
                 runSemanticFallback
@@ -2149,9 +2367,15 @@ export class RecallXRepository {
 
           if (semanticResult.resultCount > 0) {
             telemetry.semanticFallbackUsed = true;
+            const mergedNodeItems = mergeNodeSearchItems(semanticResult.items, resolvedNodeResults.items);
+            const mergedSemanticItems = this.mergeWorkspaceSearchResults(
+              mergedNodeItems,
+              resolvedActivityResults.items,
+              input.sort
+            );
             const semanticWorkspaceResult = {
-              total: semanticResult.resultCount,
-              items: semanticResult.items
+              total: mergedNodeItems.length + (includeActivities ? resolvedActivityResults.total : 0),
+              items: mergedSemanticItems.slice(input.offset, input.offset + input.limit)
             };
             appendWorkspaceSearchTelemetry(semanticWorkspaceResult);
             return {
@@ -2265,6 +2489,8 @@ export class RecallXRepository {
               timestamp: node.updatedAt,
               resultType: "node",
               contested: node.status === "contested",
+              matchReason: node.matchReason,
+              lexicalQuality: node.lexicalQuality,
               nowMs
             })
           : 0
@@ -2283,6 +2509,8 @@ export class RecallXRepository {
               timestamp: activity.createdAt,
               resultType: "activity",
               contested: activity.targetNodeStatus === "contested",
+              matchReason: activity.matchReason,
+              lexicalQuality: activity.lexicalQuality,
               nowMs
             })
           : 0
@@ -2302,6 +2530,27 @@ export class RecallXRepository {
     }
 
     return merged.map(({ index: _index, total: _total, timestamp: _timestamp, contested: _contested, smartScore: _smartScore, ...item }) => item);
+  }
+
+  private mergeNodeSearchResults(primary: SearchResultItem[], secondary: SearchResultItem[]): SearchResultItem[] {
+    const merged = new Map<string, SearchResultItem>();
+    for (const item of [...primary, ...secondary]) {
+      const current = merged.get(item.id);
+      if (!current) {
+        merged.set(item.id, item);
+        continue;
+      }
+
+      merged.set(item.id, {
+        ...current,
+        matchReason:
+          current.matchReason?.strategy === "semantic" && item.matchReason
+            ? item.matchReason
+            : current.matchReason ?? item.matchReason,
+        lexicalQuality: mergeLexicalQuality(current.lexicalQuality, item.lexicalQuality)
+      });
+    }
+    return Array.from(merged.values());
   }
 
   private searchNodesWithFts(input: {
@@ -2573,26 +2822,36 @@ export class RecallXRepository {
       .all(...whereValues, ...params.orderValues, effectiveLimit, effectiveOffset) as Record<string, unknown>[];
 
     const matcher = params.strategy === "browse" ? null : createSearchFieldMatcher(params.input.query);
-    const items = rows.map((row) => ({
-      id: String(row.id),
-      targetNodeId: String(row.target_node_id),
-      targetNodeTitle: row.target_title ? String(row.target_title) : null,
-      targetNodeType: row.target_type ? (row.target_type as ActivitySearchResultItem["targetNodeType"]) : null,
-      targetNodeStatus: row.target_status ? (row.target_status as ActivitySearchResultItem["targetNodeStatus"]) : null,
-      activityType: row.activity_type as ActivitySearchResultItem["activityType"],
-      body: row.body ? String(row.body) : null,
-      sourceLabel: row.source_label ? String(row.source_label) : null,
-      createdAt: String(row.created_at),
-      matchReason: buildSearchMatchReason(
-        params.strategy,
-        collectMatchedFields(matcher, [
-          { field: "body", value: row.body ? String(row.body) : null },
-          { field: "targetNodeTitle", value: row.target_title ? String(row.target_title) : null },
-          { field: "activityType", value: row.activity_type ? String(row.activity_type) : null },
-          { field: "sourceLabel", value: row.source_label ? String(row.source_label) : null }
-        ])
-      )
-    }));
+    const items = rows.map((row) => {
+      const signals = collectSearchFieldSignals(matcher, [
+        { field: "body", value: row.body ? String(row.body) : null },
+        { field: "targetNodeTitle", value: row.target_title ? String(row.target_title) : null },
+        { field: "activityType", value: row.activity_type ? String(row.activity_type) : null },
+        { field: "sourceLabel", value: row.source_label ? String(row.source_label) : null }
+      ]);
+      const lexicalQuality = classifyActivityLexicalQuality(params.strategy, signals);
+      return {
+        id: String(row.id),
+        targetNodeId: String(row.target_node_id),
+        targetNodeTitle: row.target_title ? String(row.target_title) : null,
+        targetNodeType: row.target_type ? (row.target_type as ActivitySearchResultItem["targetNodeType"]) : null,
+        targetNodeStatus: row.target_status ? (row.target_status as ActivitySearchResultItem["targetNodeStatus"]) : null,
+        activityType: row.activity_type as ActivitySearchResultItem["activityType"],
+        body: row.body ? String(row.body) : null,
+        sourceLabel: row.source_label ? String(row.source_label) : null,
+        createdAt: String(row.created_at),
+        lexicalQuality,
+        matchReason: buildSearchMatchReason(
+          params.strategy,
+          signals.matchedFields,
+          {
+            strength: lexicalQuality === "none" ? undefined : lexicalQuality,
+            termCoverage:
+              signals.totalTermCount > 0 ? Number((signals.matchedTermCount / signals.totalTermCount).toFixed(4)) : null
+          }
+        )
+      };
+    });
     const rankedItems = useSearchFeedbackBoost ? this.applyActivitySearchFeedbackBoost(items) : items;
     const cappedItems = this.capActivityResultsPerTarget(rankedItems);
 
@@ -2667,6 +2926,14 @@ export class RecallXRepository {
     const matcher = strategy === "browse" ? null : createSearchFieldMatcher(query);
     const items = rows.map((row) => {
       const tags = parseJson<string[]>(row.tags_json as string | null, []);
+      const signals = collectSearchFieldSignals(matcher, [
+        { field: "title", value: row.title ? String(row.title) : null },
+        { field: "summary", value: row.summary ? String(row.summary) : null },
+        { field: "body", value: row.body ? String(row.body) : null },
+        { field: "tags", value: tags.join(" ") },
+        { field: "sourceLabel", value: row.source_label ? String(row.source_label) : null }
+      ]);
+      const lexicalQuality = classifyNodeLexicalQuality(strategy, signals);
       return {
         id: String(row.id),
         type: row.type as SearchResultItem["type"],
@@ -2677,15 +2944,15 @@ export class RecallXRepository {
         sourceLabel: row.source_label ? String(row.source_label) : null,
         updatedAt: String(row.updated_at),
         tags,
+        lexicalQuality,
         matchReason: buildSearchMatchReason(
           strategy,
-          collectMatchedFields(matcher, [
-            { field: "title", value: row.title ? String(row.title) : null },
-            { field: "summary", value: row.summary ? String(row.summary) : null },
-            { field: "body", value: row.body ? String(row.body) : null },
-            { field: "tags", value: tags.join(" ") },
-            { field: "sourceLabel", value: row.source_label ? String(row.source_label) : null }
-          ])
+          signals.matchedFields,
+          {
+            strength: lexicalQuality === "none" ? undefined : lexicalQuality,
+            termCoverage:
+              signals.totalTermCount > 0 ? Number((signals.matchedTermCount / signals.totalTermCount).toFixed(4)) : null
+          }
         )
       };
     });

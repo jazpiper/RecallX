@@ -1190,7 +1190,9 @@ describe("semantic skeleton", () => {
         provider: "disabled",
         model: "none",
         configuredIndexBackend: "sqlite-vec",
-        chunkEnabled: false
+        chunkEnabled: false,
+        workspaceFallbackEnabled: false,
+        workspaceFallbackMode: "strict_zero"
       });
       expect(["sqlite", "sqlite-vec"]).toContain(bootstrapBody.data.semantic.indexBackend);
       expect(["loaded", "fallback"]).toContain(bootstrapBody.data.semantic.extensionStatus);
@@ -1200,6 +1202,15 @@ describe("semantic skeleton", () => {
       });
       expect(reindexResponse.status).toBe(200);
       expect(statusResponse.status).toBe(200);
+      expect(statusBody.data).toMatchObject({
+        enabled: false,
+        provider: "disabled",
+        model: "none",
+        configuredIndexBackend: "sqlite-vec",
+        chunkEnabled: false,
+        workspaceFallbackEnabled: false,
+        workspaceFallbackMode: "strict_zero"
+      });
       expect(statusBody.data.counts.pending).toBeGreaterThanOrEqual(1);
 
       const issuesResponse = await fetch(`${baseUrl}/semantic/issues?limit=2`);
@@ -3616,6 +3627,11 @@ describe("inferred relation API integration", () => {
           },
           metadata: {
             phase: "ranking",
+            lexicalQuality: "none",
+            matchStrategy: "semantic",
+            rank: 1,
+            semanticLifted: true,
+            semanticFallbackMode: "strict_zero"
           },
         }),
       });
@@ -3626,6 +3642,32 @@ describe("inferred relation API integration", () => {
       expect(payload.data.event.resultId).toBe("node_demo");
       expect(payload.data.event.verdict).toBe("useful");
       expect(payload.data.event.delta).toBe(0.8);
+
+      const summaryResponse = await fetch(`${baseUrl}/observability/summary?since=24h`);
+      const summaryPayload = await summaryResponse.json();
+      expect(summaryPayload.data.searchFeedbackRate).toMatchObject({
+        usefulCount: 1,
+        sampleCount: 1,
+        usefulRatio: 1,
+        top1UsefulCount: 1,
+        top1SampleCount: 1,
+        top3UsefulCount: 1,
+        top3SampleCount: 1,
+        semanticUsefulCount: 1,
+        semanticSampleCount: 1,
+        semanticLiftUsefulCount: 1,
+        semanticLiftSampleCount: 1
+      });
+      expect(summaryPayload.data.searchFeedbackRate.byFallbackMode).toEqual([
+        {
+          fallbackMode: "strict_zero",
+          usefulCount: 1,
+          notUsefulCount: 0,
+          uncertainCount: 0,
+          sampleCount: 1,
+          usefulRatio: 1
+        }
+      ]);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
@@ -3904,6 +3946,7 @@ describe("inferred relation API integration", () => {
     repository.setSetting("search.semantic.model", "chargram-v1");
     repository.setSetting("search.semantic.indexBackend", "sqlite-vec");
     repository.setSetting("search.semantic.workspaceFallback.enabled", true);
+    repository.setSetting("search.semantic.workspaceFallback.mode", "strict_zero");
     repository.setSetting("observability.enabled", true);
     repository.setSetting("observability.slowRequestMs", 1);
 
@@ -3970,7 +4013,7 @@ describe("inferred relation API integration", () => {
       expect(payload.data.items).toHaveLength(1);
       expect(payload.data.items[0]?.resultType).toBe("node");
       expect(payload.data.items[0]?.node?.id).toBe(relatedNode.id);
-      expect(payload.data.items[0]?.node?.matchReason).toEqual({
+      expect(payload.data.items[0]?.node?.matchReason).toMatchObject({
         strategy: "semantic",
         matchedFields: ["semantic"]
       });
@@ -3987,9 +4030,366 @@ describe("inferred relation API integration", () => {
         attemptedCount: 1,
         hitCount: 1,
         attemptRatio: 1,
-        hitRatio: 1
+        hitRatio: 1,
+        modes: [
+          {
+            fallbackMode: "strict_zero",
+            eligibleCount: 1,
+            attemptedCount: 1,
+            hitCount: 1,
+            sampleCount: 1,
+            attemptRatio: 1,
+            hitRatio: 1
+          }
+        ]
+      });
+      expect(summaryPayload.data.workspaceFallbackModeRate).toEqual({
+        strictZeroCount: 1,
+        noStrongNodeHitCount: 0,
+        sampleCount: 1,
+        operations: [
+          {
+            surface: "api",
+            operation: "workspace.search",
+            strictZeroCount: 1,
+            noStrongNodeHitCount: 0,
+            sampleCount: 1
+          }
+        ]
       });
       expect(summaryPayload.data.operationSummaries.some((item: { operation: string }) => item.operation === "workspace.search.semantic_fallback")).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("uses semantic fallback for nodes even when activity results already exist", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+    const { repository, db } = workspaceSessionManager.getCurrent();
+    repository.setSetting("search.semantic.enabled", true);
+    repository.setSetting("search.semantic.provider", "local-ngram");
+    repository.setSetting("search.semantic.model", "chargram-v1");
+    repository.setSetting("search.semantic.indexBackend", "sqlite-vec");
+    repository.setSetting("search.semantic.workspaceFallback.enabled", true);
+    repository.setSetting("search.semantic.workspaceFallback.mode", "no_strong_node_hit");
+
+    const source = {
+      actorType: "agent" as const,
+      actorLabel: "Codex",
+      toolName: "codex",
+    };
+    const relatedNode = repository.createNode({
+      type: "note",
+      title: "Alpha operations memo",
+      body: "Durable operations note with no direct overlap.",
+      source,
+      tags: ["ops"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    repository.appendActivity({
+      targetNodeId: relatedNode.id,
+      activityType: "agent_run_summary",
+      body: "Service rollback recovery restart sequencing checklist validated with operators.",
+      source,
+      metadata: {},
+    });
+    const distractorNode = repository.createNode({
+      type: "note",
+      title: "Visual polish scratchpad",
+      body: "Design notes with different meaning.",
+      source,
+      tags: ["design"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const semanticQuery = "service rollback recovery restart sequencing";
+    await seedSemanticEmbeddings({
+      db,
+      repository,
+      query: semanticQuery,
+      relatedNodeId: relatedNode.id,
+      distractorNodeId: distractorNode.id
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const response = await fetch(`${baseUrl}/search`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          query: semanticQuery,
+          scopes: ["nodes", "activities"],
+          limit: 10,
+          offset: 0,
+          sort: "smart",
+        }),
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload.data.items.some((item: { resultType: string; node?: { id: string; matchReason?: { strategy: string } } }) =>
+        item.resultType === "node" &&
+        item.node?.id === relatedNode.id &&
+        item.node?.matchReason?.strategy === "semantic"
+      )).toBe(true);
+      expect(payload.data.items.some((item: { resultType: string; activity?: { targetNodeId: string; matchReason?: { strategy: string } } }) =>
+        item.resultType === "activity" &&
+        item.activity?.targetNodeId === relatedNode.id &&
+        item.activity?.matchReason?.strategy === "fts"
+      )).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("keeps strict_zero mode from retrying when weak lexical node hits already exist", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+    const { repository, db } = workspaceSessionManager.getCurrent();
+    repository.setSetting("search.semantic.enabled", true);
+    repository.setSetting("search.semantic.provider", "local-ngram");
+    repository.setSetting("search.semantic.model", "chargram-v1");
+    repository.setSetting("search.semantic.indexBackend", "sqlite-vec");
+    repository.setSetting("search.semantic.workspaceFallback.enabled", true);
+    repository.setSetting("search.semantic.workspaceFallback.mode", "strict_zero");
+
+    const source = {
+      actorType: "agent" as const,
+      actorLabel: "Codex",
+      toolName: "codex",
+    };
+    const semanticNode = repository.createNode({
+      type: "note",
+      title: "Alpha operations memo",
+      body: "Durable operations note with no direct overlap.",
+      source,
+      tags: ["ops"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const weakLexicalNode = repository.createNode({
+      type: "note",
+      title: "Scratchpad",
+      body: "Rollback scratch notes and partial recovery reminders.",
+      source,
+      tags: [],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const distractorNode = repository.createNode({
+      type: "note",
+      title: "Visual polish scratchpad",
+      body: "Design notes with different meaning.",
+      source,
+      tags: ["design"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const semanticQuery = "service rollback recovery restart sequencing";
+    await seedSemanticEmbeddings({
+      db,
+      repository,
+      query: semanticQuery,
+      relatedNodeId: semanticNode.id,
+      distractorNodeId: distractorNode.id
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const response = await fetch(`${baseUrl}/search`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          query: semanticQuery,
+          scopes: ["nodes"],
+          limit: 10,
+          offset: 0,
+          sort: "smart",
+        }),
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload.data.items.some((item: { resultType: string; node?: { id: string } }) =>
+        item.resultType === "node" &&
+        item.node?.id === weakLexicalNode.id
+      )).toBe(true);
+      expect(payload.data.items.some((item: { resultType: string; node?: { id: string; matchReason?: { strategy: string } } }) =>
+        item.resultType === "node" &&
+        item.node?.id === semanticNode.id &&
+        item.node?.matchReason?.strategy === "semantic"
+      )).toBe(false);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("keeps weak lexical node hits while adding semantic node results", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+    const { repository, db } = workspaceSessionManager.getCurrent();
+    repository.setSetting("search.semantic.enabled", true);
+    repository.setSetting("search.semantic.provider", "local-ngram");
+    repository.setSetting("search.semantic.model", "chargram-v1");
+    repository.setSetting("search.semantic.indexBackend", "sqlite-vec");
+    repository.setSetting("search.semantic.workspaceFallback.enabled", true);
+    repository.setSetting("search.semantic.workspaceFallback.mode", "no_strong_node_hit");
+    repository.setSetting("observability.enabled", true);
+
+    const source = {
+      actorType: "agent" as const,
+      actorLabel: "Codex",
+      toolName: "codex",
+    };
+    const weakLexicalNode = repository.createNode({
+      type: "note",
+      title: "Runbook appendix",
+      body: "Rollback appendix with partial recovery notes captured in body text only.",
+      source,
+      tags: [],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const semanticNode = repository.createNode({
+      type: "note",
+      title: "Alpha operations memo",
+      body: "Durable operations note with no direct overlap.",
+      source,
+      tags: ["ops"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const distractorNode = repository.createNode({
+      type: "note",
+      title: "Design archive",
+      body: "Unrelated design content.",
+      source,
+      tags: ["design"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const semanticQuery = "service rollback recovery restart sequencing";
+    await seedSemanticEmbeddings({
+      db,
+      repository,
+      query: semanticQuery,
+      relatedNodeId: semanticNode.id,
+      distractorNodeId: distractorNode.id
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const response = await fetch(`${baseUrl}/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: semanticQuery,
+          scopes: ["nodes"],
+          limit: 10,
+          offset: 0,
+          sort: "smart",
+        }),
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload.data.items.some((item: { resultType: string; node?: { id: string; matchReason?: { strategy: string } } }) =>
+        item.resultType === "node" &&
+        item.node?.id === semanticNode.id &&
+        item.node?.matchReason?.strategy === "semantic"
+      )).toBe(true);
+      expect(payload.data.items.some((item: { resultType: string; node?: { id: string; lexicalQuality?: string } }) =>
+        item.resultType === "node" &&
+        item.node?.id === weakLexicalNode.id &&
+        item.node?.lexicalQuality === "weak"
+      )).toBe(true);
+
+      const summaryPayload = await waitFor(async () => {
+        const summaryResponse = await fetch(`${baseUrl}/observability/summary?since=24h`);
+        const summary = await summaryResponse.json();
+        return summary.data?.workspaceResultCompositionRate ? summary : null;
+      });
+      expect(summaryPayload.data.workspaceResultCompositionRate).toMatchObject({
+        nodeOnlyCount: 0,
+        semanticNodeOnlyCount: 1,
+        semanticMixedCount: 0
+      });
+      expect(summaryPayload.data.workspaceFallbackModeRate).toEqual({
+        strictZeroCount: 0,
+        noStrongNodeHitCount: 1,
+        sampleCount: 1,
+        operations: [
+          {
+            surface: "api",
+            operation: "workspace.search",
+            strictZeroCount: 0,
+            noStrongNodeHitCount: 1,
+            sampleCount: 1
+          }
+        ]
+      });
+      expect(summaryPayload.data.semanticFallbackRate.hitCount).toBe(1);
+      expect(summaryPayload.data.semanticFallbackRate.modes).toEqual([
+        {
+          fallbackMode: "no_strong_node_hit",
+          eligibleCount: 1,
+          attemptedCount: 1,
+          hitCount: 1,
+          sampleCount: 1,
+          attemptRatio: 1,
+          hitRatio: 1
+        }
+      ]);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
@@ -4009,6 +4409,7 @@ describe("inferred relation API integration", () => {
     repository.setSetting("search.semantic.model", "chargram-v1");
     repository.setSetting("search.semantic.indexBackend", "sqlite");
     repository.setSetting("search.semantic.workspaceFallback.enabled", true);
+    repository.setSetting("search.semantic.workspaceFallback.mode", "strict_zero");
 
     const source = {
       actorType: "agent" as const,
@@ -4088,6 +4489,7 @@ describe("inferred relation API integration", () => {
     repository.setSetting("search.semantic.provider", "local-ngram");
     repository.setSetting("search.semantic.model", "chargram-v1");
     repository.setSetting("search.semantic.workspaceFallback.enabled", true);
+    repository.setSetting("search.semantic.workspaceFallback.mode", "strict_zero");
     repository.setSetting("observability.enabled", true);
 
     const source = {
@@ -4142,7 +4544,18 @@ describe("inferred relation API integration", () => {
         attemptedCount: 0,
         hitCount: 0,
         attemptRatio: null,
-        hitRatio: null
+        hitRatio: null,
+        modes: [
+          {
+            fallbackMode: "strict_zero",
+            eligibleCount: 0,
+            attemptedCount: 0,
+            hitCount: 0,
+            sampleCount: 1,
+            attemptRatio: null,
+            hitRatio: null
+          }
+        ]
       });
       expect(summaryPayload.data.operationSummaries.some((item: { operation: string }) => item.operation === "workspace.search.semantic_fallback")).toBe(false);
     } finally {
@@ -4163,6 +4576,7 @@ describe("inferred relation API integration", () => {
     repository.setSetting("search.semantic.provider", "local-ngram");
     repository.setSetting("search.semantic.model", "chargram-v1");
     repository.setSetting("search.semantic.workspaceFallback.enabled", true);
+    repository.setSetting("search.semantic.workspaceFallback.mode", "strict_zero");
     repository.setSetting("observability.enabled", true);
 
     const server = createServer(app);
@@ -4201,7 +4615,18 @@ describe("inferred relation API integration", () => {
         attemptedCount: 0,
         hitCount: 0,
         attemptRatio: null,
-        hitRatio: null
+        hitRatio: null,
+        modes: [
+          {
+            fallbackMode: "strict_zero",
+            eligibleCount: 0,
+            attemptedCount: 0,
+            hitCount: 0,
+            sampleCount: 1,
+            attemptRatio: null,
+            hitRatio: null
+          }
+        ]
       });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));

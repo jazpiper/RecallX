@@ -44,7 +44,7 @@ import {
   shouldPromoteActivitySummary
 } from "./governance.js";
 import { refreshAutomaticInferredRelationsForNode, reindexAutomaticInferredRelations } from "./inferred-relations.js";
-import { createObservabilityWriter, summarizePayloadShape } from "./observability.js";
+import { appendCurrentTelemetryDetails, createObservabilityWriter, summarizePayloadShape } from "./observability.js";
 import {
   buildSemanticCandidateBonusMap,
   buildCandidateRelationBonusMap,
@@ -340,6 +340,10 @@ function parseBooleanSetting(value: unknown, fallback: boolean): boolean {
 
 function parseNumberSetting(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function readWorkspaceSemanticFallbackMode(value: unknown): "strict_zero" | "no_strong_node_hit" | null {
+  return value === "strict_zero" || value === "no_strong_node_hit" ? value : null;
 }
 
 function normalizeApiRequestPath(value: string): string {
@@ -1767,6 +1771,12 @@ export function createRecallXApp(params: {
       (span) => {
         const searchResult = currentRepository().searchNodes(input);
         span.addDetails({
+          searchHit: searchResult.items.length > 0,
+          bestLexicalQuality: searchResult.items.some((item) => item.lexicalQuality === "strong")
+            ? "strong"
+            : searchResult.items.some((item) => item.lexicalQuality === "weak")
+              ? "weak"
+              : "none",
           resultCount: searchResult.items.length,
           totalCount: searchResult.total
         });
@@ -1789,6 +1799,12 @@ export function createRecallXApp(params: {
       (span) => {
         const searchResult = currentRepository().searchActivities(input);
         span.addDetails({
+          searchHit: searchResult.items.length > 0,
+          bestLexicalQuality: searchResult.items.some((item) => item.lexicalQuality === "strong")
+            ? "strong"
+            : searchResult.items.some((item) => item.lexicalQuality === "weak")
+              ? "weak"
+              : "none",
           resultCount: searchResult.items.length,
           totalCount: searchResult.total
         });
@@ -1831,6 +1847,7 @@ export function createRecallXApp(params: {
             })
         });
         span.addDetails({
+          searchHit: searchResult.items.length > 0,
           resultCount: searchResult.items.length,
           totalCount: searchResult.total
         });
@@ -2322,9 +2339,58 @@ export function createRecallXApp(params: {
     );
   });
 
-  app.post("/api/v1/search-feedback-events", (request, response) => {
+  app.post("/api/v1/search-feedback-events", handleAsyncRoute(async (request, response) => {
     const repository = currentRepository();
     const event = repository.appendSearchFeedbackEvent(appendSearchFeedbackSchema.parse(request.body ?? {}));
+    const metadata = event.metadata ?? {};
+    const fallbackMode = readWorkspaceSemanticFallbackMode(metadata.semanticFallbackMode);
+    const lexicalQuality =
+      metadata.lexicalQuality === "strong" || metadata.lexicalQuality === "weak" || metadata.lexicalQuality === "none"
+        ? metadata.lexicalQuality
+        : null;
+    const feedbackRank =
+      typeof metadata.rank === "number" && Number.isFinite(metadata.rank)
+        ? metadata.rank
+        : typeof metadata.resultRank === "number" && Number.isFinite(metadata.resultRank)
+          ? metadata.resultRank
+          : null;
+    const matchStrategy =
+      metadata.matchStrategy === "fts" ||
+      metadata.matchStrategy === "like" ||
+      metadata.matchStrategy === "fallback_token" ||
+      metadata.matchStrategy === "semantic" ||
+      metadata.matchStrategy === "browse"
+        ? metadata.matchStrategy
+        : null;
+    await observability.recordEvent({
+      surface: "api",
+      operation: "search.feedback",
+      details: {
+        feedbackVerdict: event.verdict,
+        feedbackResultType: event.resultType,
+        feedbackLexicalQuality: lexicalQuality,
+        feedbackConfidence: event.confidence,
+        feedbackRank,
+        feedbackMatchStrategy: matchStrategy,
+        feedbackSemanticLifted: metadata.semanticLifted === true,
+        feedbackSemanticFallbackMode: fallbackMode ?? undefined,
+        feedbackHasQuery: Boolean(event.query?.trim()),
+        feedbackHasRunId: Boolean(event.runId),
+        feedbackHasSessionId: Boolean(event.sessionId)
+      }
+    });
+    appendCurrentTelemetryDetails({
+      feedbackVerdict: event.verdict,
+      feedbackResultType: event.resultType,
+      feedbackLexicalQuality: lexicalQuality,
+      feedbackMatchStrategy: matchStrategy,
+      feedbackRank,
+      feedbackSemanticLifted: metadata.semanticLifted === true,
+      feedbackSemanticFallbackMode: fallbackMode ?? undefined,
+      feedbackHasQuery: Boolean(event.query?.trim()),
+      feedbackHasRunId: Boolean(event.runId),
+      feedbackHasSessionId: Boolean(event.sessionId)
+    });
     const governanceResult =
       event.resultType === "node"
         ? recomputeGovernanceForEntities("node", [event.resultId])
@@ -2348,7 +2414,7 @@ export function createRecallXApp(params: {
             : null
       })
     );
-  });
+  }));
 
   app.post("/api/v1/inferred-relations/recompute", handleAsyncRoute(async (request, response) => {
     const input = recomputeInferredRelationsSchema.parse(request.body ?? {});
