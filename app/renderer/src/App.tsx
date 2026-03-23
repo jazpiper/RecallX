@@ -776,8 +776,9 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       title: 'Write lightly unless the target is already clear.',
       body: 'This is the part that prevents over-structuring. Treat durable memory, activity logs, and anchored bundles as separate decisions.',
       points: [
-        'recallx_capture_memory is the safe default when work is not yet tied to a specific project or node.',
-        'recallx_append_activity is best for routine summaries and work logs.',
+        'recallx_capture_memory is the safe default only before a project or node is known.',
+        'Once a project is known, stop using untargeted capture for routine logs and append activity to that project instead.',
+        'recallx_append_activity is best for routine summaries and work logs after the target is known.',
         'recallx_context_bundle should include targetId only after the project or node is truly known.',
       ],
     },

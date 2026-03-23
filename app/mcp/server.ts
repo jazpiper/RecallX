@@ -457,7 +457,7 @@ export function createRecallXMcpServer(params?: {
     },
     {
       instructions:
-        "Use RecallX as a local knowledge backend. Treat the current workspace as the default scope, and do not create or open another workspace unless the user explicitly asks. When the work is clearly project-shaped, search for an existing project inside the current workspace first: prefer recallx_search_nodes with type=project, broaden with recallx_search_workspace when needed, create a project node only if no suitable one exists, and then anchor follow-up context with recallx_context_bundle targetId. If the conversation is not project-specific, keep memory at workspace scope. Prefer read tools first, and include source details on durable writes when you want caller-specific provenance.",
+        "Use RecallX as a local knowledge backend. Treat the current workspace as the default scope, and do not create or open another workspace unless the user explicitly asks. When the work is clearly project-shaped, search for an existing project inside the current workspace first: prefer recallx_search_nodes with type=project, broaden with recallx_search_workspace when needed, create a project node only if no suitable one exists, and then anchor follow-up context with recallx_context_bundle targetId. Once a project is known, do not keep writing untargeted workspace captures for routine work logs: append activity to that project or pass targetNodeId on capture writes. Reserve workspace-scope inbox activity for genuinely untargeted, cross-project, or not-yet-classified short logs. If the conversation is not project-specific, keep memory at workspace scope. Prefer read tools first, and include source details on durable writes when you want caller-specific provenance.",
       capabilities: {
         logging: {}
       }
@@ -884,7 +884,7 @@ export function createRecallXMcpServer(params?: {
     {
       title: "Capture Memory",
       description:
-        "Safely capture a memory item without choosing low-level storage first. Prefer this as the default write when the conversation is not yet tied to a specific project or node. General short logs can stay at workspace scope and be auto-routed into activities, while reusable content can still land as durable memory.",
+        "Safely capture a memory item without choosing low-level storage first. Prefer this as the default write only when the conversation is not yet tied to a specific project or node. Once a project or target node is known, include targetNodeId or switch to recallx_append_activity for routine work logs. General short logs can stay at workspace scope and be auto-routed into activities, while reusable content can still land as durable memory.",
       inputSchema: {
         mode: z.enum(captureModes).default("auto"),
         body: z.string().min(1),
