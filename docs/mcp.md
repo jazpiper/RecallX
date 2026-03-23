@@ -109,7 +109,7 @@ Rules:
 - Read tools are marked read-only/idempotent where possible.
 - Durable write tools accept an optional `source` object.
 - If `source` is omitted, the MCP bridge fills in its own default agent provenance.
-- `recallx_capture_memory` is the preferred first write for LLMs because it can auto-route short work logs into activities and durable knowledge into nodes.
+- `recallx_capture_memory` is the preferred first write for LLMs only before a project or target node is known. Once work is clearly attached to a project, include `targetNodeId` on capture writes or switch to `recallx_append_activity` for routine summaries.
 - We do not expose low-level retrieval fragments or settings mutation in the first pass.
 - `recallx_get_related` defaults to including inferred relations because that is the most useful shape for downstream LLMs; agents can disable inferred items when they specifically need only canonical links.
 - Usage feedback is intentionally a separate write. Do not append a relation usage event for every read; reserve it for cases where a canonical or inferred relation actually helped retrieval or final output.
@@ -141,7 +141,8 @@ When the work is clearly project-shaped, keep the flow inside the current worksp
 3. If you need broader context before deciding, widen the search with `recallx_search_workspace`.
 4. Create a new project with `recallx_create_node` and `type=project` only when no suitable project already exists.
 5. Once the project is known, use `recallx_context_bundle` with `targetId` to anchor follow-up context.
-6. If the work is not tied to a specific project yet, omit `targetId` and use the workspace-entry bundle instead.
+6. After the project is known, do not keep writing untargeted workspace captures for routine project logs. Use `recallx_append_activity` or `recallx_capture_memory` with `targetNodeId`.
+7. If the work is not tied to a specific project yet, omit `targetId` and use the workspace-entry bundle instead.
 
 ---
 
@@ -173,7 +174,7 @@ Use `recallx_capture_memory` when you want the server to choose between activity
 }
 ```
 
-The server routes short log-like agent updates to the workspace inbox activity timeline and keeps reusable or decision-shaped content as durable nodes.
+The server routes short log-like agent updates to the workspace inbox activity timeline and keeps reusable or decision-shaped content as durable nodes. Treat that inbox routing as a fallback for untargeted work, not as the default place for ongoing project logs once a project node is known.
 
 ### Context bundle target
 

@@ -13,6 +13,7 @@ import type {
   TelemetrySurface,
   WorkspaceSemanticFallbackMode
 } from "../shared/types.js";
+import { createId } from "./utils.js";
 
 type TelemetryState = {
   enabled: boolean;
@@ -42,6 +43,7 @@ type StartSpanInput = {
   operation: string;
   requestId?: string | null;
   traceId?: string;
+  parentSpanId?: string | null;
   details?: JsonMap;
 };
 
@@ -79,13 +81,37 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function createSpanId() {
+  return createId("span");
+}
+
 function parseJsonLine(line: string): TelemetryEvent | null {
   if (!line.trim()) {
     return null;
   }
 
   try {
-    return JSON.parse(line) as TelemetryEvent;
+    const parsed = JSON.parse(line) as Partial<TelemetryEvent>;
+    if (!parsed || typeof parsed !== "object" || typeof parsed.ts !== "string" || typeof parsed.operation !== "string") {
+      return null;
+    }
+
+    return {
+      ts: parsed.ts,
+      traceId: typeof parsed.traceId === "string" ? parsed.traceId : "trace_unknown",
+      spanId: typeof parsed.spanId === "string" ? parsed.spanId : null,
+      parentSpanId: typeof parsed.parentSpanId === "string" ? parsed.parentSpanId : null,
+      requestId: typeof parsed.requestId === "string" ? parsed.requestId : null,
+      surface: parsed.surface === "mcp" ? "mcp" : "api",
+      operation: parsed.operation,
+      outcome: parsed.outcome === "error" ? "error" : "success",
+      durationMs: typeof parsed.durationMs === "number" ? parsed.durationMs : null,
+      statusCode: typeof parsed.statusCode === "number" ? parsed.statusCode : null,
+      errorCode: typeof parsed.errorCode === "string" ? parsed.errorCode : null,
+      errorKind: typeof parsed.errorKind === "string" ? parsed.errorKind : null,
+      workspaceName: typeof parsed.workspaceName === "string" ? parsed.workspaceName : null,
+      details: parsed.details && typeof parsed.details === "object" && !Array.isArray(parsed.details) ? parsed.details as JsonMap : {}
+    };
   } catch {
     return null;
   }
@@ -247,6 +273,8 @@ export class TelemetrySpan {
     private readonly writer: ObservabilityWriter,
     private readonly state: TelemetryState,
     private readonly context: TelemetryContext,
+    readonly spanId: string,
+    readonly parentSpanId: string | null,
     private readonly operation: string,
     details?: JsonMap
   ) {
@@ -268,6 +296,8 @@ export class TelemetrySpan {
     await this.writer.enqueue({
       ts: nowIso(),
       traceId: this.context.traceId,
+      spanId: this.spanId,
+      parentSpanId: this.parentSpanId,
       requestId: input.requestId ?? this.context.requestId,
       surface: this.context.surface,
       operation: this.operation,
@@ -309,10 +339,11 @@ export class ObservabilityWriter {
     input: Omit<TelemetryContext, "spans">,
     callback: () => T
   ): T {
+    const current = telemetryStorage.getStore();
     return telemetryStorage.run(
       {
         ...input,
-        spans: []
+        spans: current?.spans ?? []
       },
       callback
     );
@@ -321,6 +352,7 @@ export class ObservabilityWriter {
   startSpan(input: StartSpanInput): TelemetrySpan {
     const state = this.options.getState();
     const current = telemetryStorage.getStore();
+    const parentSpan = current?.spans[current.spans.length - 1] ?? null;
     const context: TelemetryContext = {
       traceId: input.traceId ?? current?.traceId ?? "trace_unknown",
       requestId: input.requestId ?? current?.requestId ?? null,
@@ -331,7 +363,15 @@ export class ObservabilityWriter {
       spans: current?.spans ?? []
     };
 
-    return new TelemetrySpan(this, state, context, input.operation, input.details);
+    return new TelemetrySpan(
+      this,
+      state,
+      context,
+      createSpanId(),
+      input.parentSpanId ?? parentSpan?.spanId ?? null,
+      input.operation,
+      input.details
+    );
   }
 
   addCurrentSpanDetails(details: JsonMap | undefined) {
@@ -350,6 +390,8 @@ export class ObservabilityWriter {
       {
         ts: nowIso(),
         traceId: input.traceId ?? current?.traceId ?? "trace_unknown",
+        spanId: createSpanId(),
+        parentSpanId: current?.spans[current.spans.length - 1]?.spanId ?? null,
         requestId: input.requestId ?? current?.requestId ?? null,
         surface: input.surface ?? current?.surface ?? "api",
         operation: input.operation,
@@ -652,9 +694,12 @@ export class ObservabilityWriter {
         workspaceFallbackModeBuckets.set(bucketKey, current);
       }
       if (
-        event.details.feedbackVerdict === "useful" ||
-        event.details.feedbackVerdict === "not_useful" ||
-        event.details.feedbackVerdict === "uncertain"
+        event.operation === "search.feedback" &&
+        (
+          event.details.feedbackVerdict === "useful" ||
+          event.details.feedbackVerdict === "not_useful" ||
+          event.details.feedbackVerdict === "uncertain"
+        )
       ) {
         feedbackSampleCount += 1;
         if (event.details.feedbackVerdict === "useful") {
@@ -1037,6 +1082,11 @@ export function createObservabilityWriter(options: TelemetryWriterOptions) {
 
 export function currentTelemetryContext() {
   return telemetryStorage.getStore() ?? null;
+}
+
+export function currentTelemetrySpanId() {
+  const current = telemetryStorage.getStore();
+  return current?.spans[current.spans.length - 1]?.spanId ?? null;
 }
 
 export function appendCurrentTelemetryDetails(details: JsonMap | undefined) {

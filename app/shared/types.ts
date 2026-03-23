@@ -406,6 +406,8 @@ export type TelemetryErrorKind =
 export interface TelemetryEvent {
   ts: string;
   traceId: string;
+  spanId: string | null;
+  parentSpanId: string | null;
   requestId: string | null;
   surface: TelemetrySurface;
   operation: string;

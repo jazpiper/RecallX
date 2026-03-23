@@ -304,7 +304,7 @@ export function renderTelemetryErrors(data) {
   return `${items
     .map(
       (item, index) =>
-        `${index + 1}. [${item.surface}] ${item.operation}\n  ts: ${item.ts}\n  trace: ${item.traceId}\n  error: ${item.errorKind || ""}/${item.errorCode || ""}\n  status: ${item.statusCode ?? ""}\n  durationMs: ${item.durationMs ?? ""}`
+        `${index + 1}. [${item.surface}] ${item.operation}\n  ts: ${item.ts}\n  trace: ${item.traceId}\n  span: ${item.spanId ?? ""}\n  parent: ${item.parentSpanId ?? ""}\n  error: ${item.errorKind || ""}/${item.errorCode || ""}\n  status: ${item.statusCode ?? ""}\n  durationMs: ${item.durationMs ?? ""}`
     )
     .join("\n\n")}\n`;
 }

@@ -29,7 +29,7 @@ export interface GovernanceRecomputeResult {
   updatedNodes?: Map<string, NodeRecord>;
 }
 
-const relaxedShortFormNodeTypes = new Set<CreateNodeInput["type"]>(["reference", "question", "conversation"]);
+const relaxedShortFormNodeTypes = new Set<CreateNodeInput["type"]>(["project", "reference", "question", "conversation"]);
 
 type GovernanceEvaluation = {
   entityType: GovernanceEntityType;

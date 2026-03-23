@@ -1516,6 +1516,7 @@ export function createRecallXApp(params: {
   app.use((request, response, next) => {
     const requestId = createId("req");
     const traceId = request.header("x-recallx-trace-id")?.trim() || createId("trace");
+    const parentSpanId = request.header("x-recallx-parent-span-id")?.trim() || null;
     const operation = `${request.method.toUpperCase()} ${normalizeApiRequestPath(request.path)}`;
     const observabilityState = currentObservabilityConfig();
     const requestSpan = observability.startSpan({
@@ -1523,6 +1524,7 @@ export function createRecallXApp(params: {
       operation,
       requestId,
       traceId,
+      parentSpanId,
       details: {
         ...(observabilityState.capturePayloadShape ? summarizePayloadShape(request.body) : {}),
         mcpTool: request.header("x-recallx-mcp-tool") ?? null
@@ -1534,6 +1536,7 @@ export function createRecallXApp(params: {
     response.locals.telemetryRequestSpan = requestSpan;
     response.setHeader("x-recallx-request-id", requestId);
     response.setHeader("x-recallx-trace-id", traceId);
+    response.setHeader("x-recallx-span-id", requestSpan.spanId);
     response.on("finish", () => {
       void requestSpan.finish({
         outcome: response.statusCode >= 400 ? "error" : "success",
@@ -1543,16 +1546,18 @@ export function createRecallXApp(params: {
       });
     });
 
-    observability.withContext(
-      {
-        traceId,
-        requestId,
-        workspaceRoot: currentWorkspaceRoot(),
-        workspaceName: currentWorkspaceInfo().workspaceName,
-        toolName: request.header("x-recallx-mcp-tool") ?? null,
-        surface: "api"
-      },
-      next
+    requestSpan.run(() =>
+      observability.withContext(
+        {
+          traceId,
+          requestId,
+          workspaceRoot: currentWorkspaceRoot(),
+          workspaceName: currentWorkspaceInfo().workspaceName,
+          toolName: request.header("x-recallx-mcp-tool") ?? null,
+          surface: "api"
+        },
+        next
+      )
     );
   });
   app.use(express.json({ limit: "2mb" }));

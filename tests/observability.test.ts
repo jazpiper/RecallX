@@ -78,6 +78,50 @@ describe("observability writer", () => {
     expect(content).not.toContain("skip-me");
   });
 
+  it("records nested span ids for child operations", async () => {
+    const { root, writer } = createWriter();
+    const rootSpan = writer.startSpan({
+      surface: "api",
+      operation: "request.root",
+      traceId: "trace_nested",
+      requestId: "req_nested"
+    });
+
+    await writer.withContext(
+      {
+        traceId: "trace_nested",
+        requestId: "req_nested",
+        workspaceRoot: root,
+        workspaceName: "Observability Test",
+        surface: "api",
+        toolName: null
+      },
+      async () =>
+        rootSpan.run(async () => {
+          const childSpan = writer.startSpan({
+            operation: "request.child"
+          });
+          await childSpan.run(async () => {});
+          await childSpan.finish();
+        })
+    );
+    await rootSpan.finish();
+    await writer.flush();
+
+    const logFile = path.join(root, "logs", `telemetry-${new Date().toISOString().slice(0, 10)}.ndjson`);
+    const events = readFileSync(logFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { operation: string; spanId: string | null; parentSpanId: string | null });
+    const rootEvent = events.find((event) => event.operation === "request.root");
+    const childEvent = events.find((event) => event.operation === "request.child");
+
+    expect(rootEvent?.spanId).toBeTruthy();
+    expect(rootEvent?.parentSpanId).toBeNull();
+    expect(childEvent?.spanId).toBeTruthy();
+    expect(childEvent?.parentSpanId).toBe(rootEvent?.spanId);
+  });
+
   it("summarizes telemetry and lists recent errors", async () => {
     const { writer } = createWriter();
 

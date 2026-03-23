@@ -25,7 +25,7 @@ function createObservabilityStateReader() {
   let cachedState: ObservabilityState | null = null;
   let cachedAt = 0;
   let inFlight: Promise<ObservabilityState> | null = null;
-  const cacheTtlMs = 5_000;
+  const cacheTtlMs = 60_000;
 
   return async function readObservabilityState() {
     const now = Date.now();

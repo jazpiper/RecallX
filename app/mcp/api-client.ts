@@ -1,6 +1,6 @@
 import type { ApiEnvelope, ApiErrorEnvelope } from "../shared/types.js";
 import { buildApiRequestInit, buildApiUrl, parseApiJsonBody } from "../shared/request-runtime.js";
-import { currentTelemetryContext } from "../server/observability.js";
+import { currentTelemetryContext, currentTelemetrySpanId } from "../server/observability.js";
 
 export class RecallXApiError extends Error {
   readonly status: number;
@@ -55,6 +55,10 @@ export class RecallXApiClient {
     const telemetryContext = currentTelemetryContext();
     if (telemetryContext?.traceId) {
       headers.set("x-recallx-trace-id", telemetryContext.traceId);
+    }
+    const telemetrySpanId = currentTelemetrySpanId();
+    if (telemetrySpanId) {
+      headers.set("x-recallx-parent-span-id", telemetrySpanId);
     }
     if (telemetryContext?.toolName) {
       headers.set("x-recallx-mcp-tool", telemetryContext.toolName);

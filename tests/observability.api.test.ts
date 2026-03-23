@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -83,6 +83,7 @@ describe("observability API", () => {
         headers: {
           "content-type": "application/json",
           "x-recallx-trace-id": "trace_test_summary",
+          "x-recallx-parent-span-id": "span_mcp_root",
           "x-recallx-mcp-tool": "recallx_search_nodes"
         },
         body: JSON.stringify({
@@ -118,6 +119,22 @@ describe("observability API", () => {
       expect(summary.data?.operationSummaries.some((item: { operation: string }) => item.operation === "nodes.search")).toBe(true);
       expect(summary.data?.mcpToolFailures).toEqual([]);
       expect(errorsPayload.data?.items?.some((item) => item.errorKind === "validation_error")).toBe(true);
+
+      const telemetryFile = path.join(root, "logs", `telemetry-${new Date().toISOString().slice(0, 10)}.ndjson`);
+      const traceEvents = readFileSync(telemetryFile, "utf8")
+        .trim()
+        .split("\n")
+        .map(
+          (line: string) =>
+            JSON.parse(line) as { traceId: string; operation: string; spanId: string | null; parentSpanId: string | null }
+        )
+        .filter((event: { traceId: string }) => event.traceId === "trace_test_summary");
+      const routeEvent = traceEvents.find((event) => event.operation.startsWith("POST /api/v1/nodes"));
+      const internalEvent = traceEvents.find((event) => event.operation === "nodes.search");
+
+      expect(routeEvent?.parentSpanId).toBe("span_mcp_root");
+      expect(routeEvent?.spanId).toBeTruthy();
+      expect(internalEvent?.parentSpanId).toBe(routeEvent?.spanId);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

@@ -263,8 +263,14 @@ export default function App() {
     globalThis.crypto?.randomUUID?.() ?? `recallx-renderer-${Date.now()}`
   );
 
-  async function refreshSnapshotState() {
-    const snapshotResult = await getSnapshot();
+  async function refreshSnapshotState(workspaceOverride?: WorkspaceSeed['workspace']) {
+    const snapshotResult = await getSnapshot(
+      workspaceOverride
+        ? {
+            workspace: workspaceOverride,
+          }
+        : undefined,
+    );
     setSnapshot(snapshotResult);
     setLoadError(null);
     return snapshotResult;
@@ -274,12 +280,11 @@ export default function App() {
     workspaceOverride?: WorkspaceSeed['workspace'];
     catalogOverride?: { current: WorkspaceSeed['workspace']; items: WorkspaceCatalogItem[] };
   }) {
-    const [workspaceResult, snapshotResult, catalog] = await Promise.all([
-      options?.workspaceOverride ? Promise.resolve(options.workspaceOverride) : getWorkspace(),
-      refreshSnapshotState(),
+    const [snapshotResult, catalog] = await Promise.all([
+      refreshSnapshotState(options?.workspaceOverride),
       options?.catalogOverride ? Promise.resolve(options.catalogOverride) : getWorkspaceCatalog(),
     ]);
-    setWorkspace(options?.catalogOverride?.current ?? workspaceResult);
+    setWorkspace(options?.catalogOverride?.current ?? options?.workspaceOverride ?? snapshotResult.workspace);
     setWorkspaceCatalog(catalog.items);
     setWorkspaceRootInput(catalog.current.rootPath);
     setLoadError(null);
@@ -776,8 +781,9 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       title: 'Write lightly unless the target is already clear.',
       body: 'This is the part that prevents over-structuring. Treat durable memory, activity logs, and anchored bundles as separate decisions.',
       points: [
-        'recallx_capture_memory is the safe default when work is not yet tied to a specific project or node.',
-        'recallx_append_activity is best for routine summaries and work logs.',
+        'recallx_capture_memory is the safe default only before a project or node is known.',
+        'Once a project is known, stop using untargeted capture for routine logs and append activity to that project instead.',
+        'recallx_append_activity is best for routine summaries and work logs after the target is known.',
         'recallx_context_bundle should include targetId only after the project or node is truly known.',
       ],
     },

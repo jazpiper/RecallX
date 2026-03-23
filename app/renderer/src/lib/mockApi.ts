@@ -702,11 +702,11 @@ export async function openWorkspace(rootPath: string): Promise<WorkspaceCatalog>
   return mapWorkspaceCatalogResponse(payload);
 }
 
-export async function getSnapshot(): Promise<WorkspaceSeed> {
+export async function getSnapshot(options?: { workspace?: Workspace }): Promise<WorkspaceSeed> {
   return withFallback(
     async () => {
       const [workspacePayload, nodesPayload, integrationsPayload] = await Promise.all([
-        requestJson('/workspace'),
+        options?.workspace ? Promise.resolve(options.workspace) : requestJson('/workspace'),
         requestJson('/nodes/search', {
           method: 'POST',
           body: JSON.stringify({
@@ -726,7 +726,7 @@ export async function getSnapshot(): Promise<WorkspaceSeed> {
       const pinnedProjectIds = nodes.filter((node) => node.type === 'project').slice(0, 3).map((node) => node.id);
 
       return {
-        workspace: mapWorkspace(workspacePayload),
+        workspace: options?.workspace ?? mapWorkspace(workspacePayload),
         nodes,
         relations: [],
         activities: [],
