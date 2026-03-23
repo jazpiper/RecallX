@@ -1062,4 +1062,85 @@ describe("RecallX MCP server", () => {
       })
     );
   });
+
+  it("normalizes mode and preset aliases for context bundles and candidate ranking", async () => {
+    const postMock = vi.fn().mockResolvedValue({
+      bundle: {
+        target: {
+          type: "workspace",
+          id: "workspace",
+          title: "Workspace context"
+        },
+        mode: "compact",
+        preset: "for-coding",
+        summary: "Recent workspace context.",
+        items: [],
+        activityDigest: [],
+        decisions: [],
+        openQuestions: [],
+        sources: []
+      },
+      items: []
+    });
+    const { client } = await connectTestClient({
+      post: postMock
+    });
+
+    await client.callTool({
+      name: "recallx_context_bundle",
+      arguments: {
+        mode: "small",
+        preset: "coding"
+      }
+    });
+
+    await client.callTool({
+      name: "recallx_rank_candidates",
+      arguments: {
+        query: "agent integration",
+        candidateNodeIds: ["node_a"],
+        preset: "assistant"
+      }
+    });
+
+    expect(postMock).toHaveBeenNthCalledWith(
+      1,
+      "/context/bundles",
+      expect.objectContaining({
+        mode: "micro",
+        preset: "for-coding"
+      })
+    );
+    expect(postMock).toHaveBeenNthCalledWith(
+      2,
+      "/retrieval/rank-candidates",
+      expect.objectContaining({
+        preset: "for-assistant"
+      })
+    );
+  });
+
+  it("shows actionable hints for unsupported context bundle mode and preset values", async () => {
+    const { client } = await connectTestClient({
+      post: vi.fn()
+    });
+
+    const result = await client.callTool({
+      name: "recallx_context_bundle",
+      arguments: {
+        mode: "enormous",
+        preset: "banana"
+      }
+    });
+    const resultContent = Array.isArray((result as { content?: unknown }).content)
+      ? ((result as { content: Array<{ type?: string; text?: string }> }).content)
+      : [];
+    const errorText = resultContent[0]?.text ?? "";
+
+    expect("isError" in result && result.isError).toBe(true);
+    expect(errorText).toContain("Unsupported mode 'enormous'");
+    expect(errorText).toContain("small -> micro");
+    expect(errorText).toContain("Unsupported preset 'banana'");
+    expect(errorText).toContain("coding -> for-coding");
+  });
 });

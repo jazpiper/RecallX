@@ -8,6 +8,8 @@ import {
   captureModes,
   governanceStates,
   inferredRelationStatuses,
+  normalizeBundleMode,
+  normalizeBundlePreset,
   nodeStatuses,
   nodeTypes,
   relationSources,
@@ -87,6 +89,34 @@ function coerceBooleanSchema(defaultValue: boolean) {
 
 function formatStructuredContent(content: unknown) {
   return JSON.stringify(content, null, 2);
+}
+
+function formatInvalidBundleModeMessage(input: unknown) {
+  const quotedInput = typeof input === "string" && input.trim() ? `'${input}'` : "that value";
+  return `Unsupported mode ${quotedInput}. Use one of ${bundleModes.join(", ")}. Common aliases also work: small -> micro, concise -> compact, normal -> standard, full -> deep.`;
+}
+
+function formatInvalidBundlePresetMessage(input: unknown) {
+  const quotedInput = typeof input === "string" && input.trim() ? `'${input}'` : "that value";
+  return `Unsupported preset ${quotedInput}. Use one of ${bundlePresets.join(", ")}. Common aliases also work: coding -> for-coding, assistant/default -> for-assistant.`;
+}
+
+function bundleModeSchema(defaultValue: (typeof bundleModes)[number]) {
+  return z.preprocess(
+    normalizeBundleMode,
+    z.enum(bundleModes, {
+      error: (issue) => formatInvalidBundleModeMessage(issue.input)
+    })
+  ).default(defaultValue);
+}
+
+function bundlePresetSchema(defaultValue: (typeof bundlePresets)[number]) {
+  return z.preprocess(
+    normalizeBundlePreset,
+    z.enum(bundlePresets, {
+      error: (issue) => formatInvalidBundlePresetMessage(issue.input)
+    })
+  ).default(defaultValue);
 }
 
 function toolResult<T>(structuredContent: T) {
@@ -1044,8 +1074,8 @@ export function createRecallXMcpServer(params?: {
         "Build a compact RecallX context bundle for coding, research, writing, or decision support. Omit targetId to get a workspace-entry bundle when the work is not yet tied to a specific project or node, and add targetId only after you know which project or node should anchor the context.",
       inputSchema: {
         targetId: z.string().min(1).optional(),
-        mode: z.enum(bundleModes).default("compact"),
-        preset: z.enum(bundlePresets).default("for-assistant"),
+        mode: bundleModeSchema("compact"),
+        preset: bundlePresetSchema("for-assistant"),
         options: z
           .object({
             includeRelated: coerceBooleanSchema(true),
@@ -1117,7 +1147,7 @@ export function createRecallXMcpServer(params?: {
       inputSchema: {
         query: z.string().default(""),
         candidateNodeIds: z.array(z.string().min(1)).min(1).max(100),
-        preset: z.enum(bundlePresets).default("for-assistant"),
+        preset: bundlePresetSchema("for-assistant"),
         targetNodeId: z.string().optional()
       }
     },

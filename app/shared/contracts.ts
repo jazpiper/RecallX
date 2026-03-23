@@ -72,6 +72,60 @@ export const bundlePresets = [
   "for-assistant"
 ] as const;
 
+export function normalizeBundlePreset(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  const aliasMap: Record<string, (typeof bundlePresets)[number]> = {
+    coding: "for-coding",
+    code: "for-coding",
+    "for-code": "for-coding",
+    "for-coding": "for-coding",
+    research: "for-research",
+    "for-research": "for-research",
+    decision: "for-decision",
+    decisions: "for-decision",
+    "for-decision": "for-decision",
+    writing: "for-writing",
+    write: "for-writing",
+    writer: "for-writing",
+    "for-writing": "for-writing",
+    assistant: "for-assistant",
+    default: "for-assistant",
+    general: "for-assistant",
+    "for-assistant": "for-assistant"
+  };
+
+  return aliasMap[normalized] ?? normalized;
+}
+
+export function normalizeBundleMode(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  const aliasMap: Record<string, (typeof bundleModes)[number]> = {
+    micro: "micro",
+    tiny: "micro",
+    small: "micro",
+    minimal: "micro",
+    compact: "compact",
+    concise: "compact",
+    medium: "standard",
+    normal: "standard",
+    standard: "standard",
+    full: "deep",
+    detailed: "deep",
+    detail: "deep",
+    deep: "deep"
+  };
+
+  return aliasMap[normalized] ?? normalized;
+}
+
 export const sourceSchema = z.object({
   actorType: z.enum(sourceTypes),
   actorLabel: z.string().min(1),
@@ -252,8 +306,8 @@ export const buildContextBundleSchema = z.object({
       id: z.string().min(1)
     })
     .optional(),
-  mode: z.enum(bundleModes).default("compact"),
-  preset: z.enum(bundlePresets).default("for-assistant"),
+  mode: z.preprocess(normalizeBundleMode, z.enum(bundleModes)).default("compact"),
+  preset: z.preprocess(normalizeBundlePreset, z.enum(bundlePresets)).default("for-assistant"),
   options: z
     .object({
       includeRelated: z.boolean().default(true),
