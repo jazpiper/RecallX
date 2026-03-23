@@ -343,6 +343,76 @@ describe("capture workflow behavior", () => {
     }
   });
 
+  it("routes untargeted short auto-capture writes into the sole active project timeline", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+
+      const createProjectResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "project",
+          title: "RecallX",
+          body: "Current repo work.",
+          tags: ["repo"],
+          source: {
+            actorType: "agent",
+            actorLabel: "Codex",
+            toolName: "codex"
+          },
+          metadata: {}
+        })
+      });
+      const createProjectPayload = await createProjectResponse.json();
+
+      expect(createProjectResponse.status).toBe(201);
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/capture`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "auto",
+          body: "Adjusted the MCP guidance and capture routing.",
+          source: {
+            actorType: "agent",
+            actorLabel: "Codex",
+            toolName: "codex"
+          },
+          metadata: {}
+        })
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(201);
+      expect(payload.data.storedAs).toBe("activity");
+      expect(payload.data.targetNode.id).toBe(createProjectPayload.data.node.id);
+      expect(payload.data.targetNode.type).toBe("project");
+      expect(payload.data.activity.targetNodeId).toBe(createProjectPayload.data.node.id);
+      expect(payload.data.activity.metadata.autoTargetRoute).toBe("sole_active_project");
+      expect(payload.data.landing).toEqual({
+        storedAs: "activity",
+        status: "recorded",
+        governanceState: null,
+        reason: "Short log-like capture was routed to the sole active project timeline."
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
   it("stores reusable auto-capture writes as durable nodes", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
     tempRoots.push(root);

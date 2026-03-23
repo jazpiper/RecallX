@@ -1459,6 +1459,34 @@ export function createRecallXApp(params: {
     };
   }
 
+  function resolveCaptureActivityTarget(
+    repository: ReturnType<typeof currentRepository>,
+    input: typeof captureMemorySchema._type,
+  ): {
+    targetNode: NodeRecord;
+    route: "explicit" | "sole_active_project" | "workspace_inbox";
+  } {
+    if (input.targetNodeId) {
+      return {
+        targetNode: repository.getNode(input.targetNodeId),
+        route: "explicit"
+      };
+    }
+
+    const activeProjects = repository.listActiveNodesByType("project", 2);
+    if (activeProjects.length === 1) {
+      return {
+        targetNode: activeProjects[0],
+        route: "sole_active_project"
+      };
+    }
+
+    return {
+      targetNode: repository.ensureWorkspaceInboxNode(),
+      route: "workspace_inbox"
+    };
+  }
+
   function createDurableNodeResponse(
     repository: ReturnType<typeof currentRepository>,
     input: typeof createNodeSchema._type
@@ -1998,7 +2026,8 @@ export function createRecallXApp(params: {
       return;
     }
 
-    const targetNode = input.targetNodeId ? repository.getNode(input.targetNodeId) : repository.ensureWorkspaceInboxNode();
+    const captureTarget = resolveCaptureActivityTarget(repository, input);
+    const targetNode = captureTarget.targetNode;
     const activity = repository.appendActivity({
       targetNodeId: targetNode.id,
       activityType: "agent_run_summary",
@@ -2006,6 +2035,7 @@ export function createRecallXApp(params: {
       source,
       metadata: {
         ...input.metadata,
+        autoTargetRoute: captureTarget.route,
         captureMode: input.mode,
         capturedTitle: title
       }
@@ -2038,9 +2068,13 @@ export function createRecallXApp(params: {
           status: "recorded",
           governanceState: null,
           reason:
-            input.mode === "activity"
-              ? "Capture was explicitly routed to the activity timeline."
-              : "Short log-like capture was routed to the activity timeline."
+            captureTarget.route === "sole_active_project"
+              ? input.mode === "activity"
+                ? "Capture was routed to the sole active project timeline."
+                : "Short log-like capture was routed to the sole active project timeline."
+              : input.mode === "activity"
+                ? "Capture was explicitly routed to the activity timeline."
+                : "Short log-like capture was routed to the activity timeline."
         })
       })
     );

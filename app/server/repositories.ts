@@ -1798,6 +1798,21 @@ export class RecallXRepository {
     }));
   }
 
+  listActiveNodesByType(type: string, limit = 20): NodeRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT *
+         FROM nodes
+         WHERE type = ?
+           AND status = 'active'
+         ORDER BY updated_at DESC, id DESC
+         LIMIT ?`
+      )
+      .all(type, limit) as Record<string, unknown>[];
+
+    return rows.map(mapNode);
+  }
+
   listInferenceCandidateNodes(targetNodeId: string, limit = 200): NodeRecord[] {
     const rows = this.db
       .prepare(
