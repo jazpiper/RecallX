@@ -132,9 +132,10 @@ recallx workspace open --root /Users/name/Documents/RecallX-Test
 ## Environment
 
 - `RECALLX_API_URL` to override the local API base URL
-- `RECALLX_TOKEN` to pass a bearer token
+- `RECALLX_API_TOKEN` to pass a bearer token for CLI requests
+- `RECALLX_TOKEN` remains supported as a legacy alias for CLI requests
 - `RECALLX_PORT`, `RECALLX_BIND`, `RECALLX_WORKSPACE_ROOT`, `RECALLX_WORKSPACE_NAME`, and `RECALLX_API_TOKEN` are respected by `recallx serve`
-- Node 20+ is recommended for the headless package
+- Node 22.13+ is recommended for the headless package
 
 ## Notes
 

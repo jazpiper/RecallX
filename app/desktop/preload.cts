@@ -14,7 +14,7 @@ const mcpLauncherPath = readArgument("--recallx-mcp-launcher-path=");
 const mcpCommand = readArgument("--recallx-mcp-command=");
 const executablePath = readArgument("--recallx-app-executable=") ?? process.execPath;
 const isPackaged = readArgument("--recallx-is-packaged=") === "1";
-const appVersion = readArgument("--recallx-app-version=") ?? "1.0.0";
+const appVersion = readArgument("--recallx-app-version=");
 
 function joinWorkspacePath(root: string | null, child: string): string | null {
   if (!root) {
@@ -37,7 +37,7 @@ const desktopInfo = {
   workspaceDbPath: joinWorkspacePath(workspaceRoot, "workspace.db"),
   artifactsPath: joinWorkspacePath(workspaceRoot, "artifacts"),
   isPackaged,
-  appVersion
+  appVersion: appVersion ?? undefined
 };
 
 contextBridge.exposeInMainWorld("__RECALLX_API_BASE__", apiBase);

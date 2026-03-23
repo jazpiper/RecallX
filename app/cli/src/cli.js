@@ -831,7 +831,14 @@ async function installMcpLauncher(launcherPath, commandParts) {
   await mkdir(path.dirname(launcherPath), { recursive: true });
   await writeFile(
     launcherPath,
-    `#!/bin/sh\nexec ${commandParts.map(quoteShellArg).join(" ")} "$@"\n`,
+    `#!/bin/sh
+NODE_BIN="\${RECALLX_NODE_BIN:-$(command -v node 2>/dev/null || true)}"
+if [ -z "$NODE_BIN" ]; then
+  echo "recallx-mcp launcher could not find a node executable in PATH." >&2
+  exit 1
+fi
+exec "$NODE_BIN" ${commandParts.slice(1).map(quoteShellArg).join(" ")} "$@"
+`,
     "utf8",
   );
   await chmod(launcherPath, 0o755);

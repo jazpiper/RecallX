@@ -7,6 +7,9 @@
     "name": "jazpiper",
     "email": "jazpiper1@gmail.com"
   },
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "main": "dist/server/app/desktop/main.js",
   "bin": {
     "recallx": "./app/cli/bin/recallx.js",

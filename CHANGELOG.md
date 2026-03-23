@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-- reworked distribution planning around three supported paths: Git source-run, npm full runtime `recallx`, and npm headless runtime `recallx-headless`
-- added package prep and verification flows for both the full and headless npm distributions
-- added `recallx serve` so installed packages can start the local API directly
-- added optional renderer serving from the packaged runtime and a root runtime notice for headless installs
-
 ## 1.0.0
 
 - published the first public RecallX release around two supported distribution paths: Git source-run and npm terminal-only

@@ -160,7 +160,7 @@ At `/`, the headless runtime returns a small runtime notice instead of the rende
 
 Node requirements:
 
-- npm packages: Node 20+
+- npm packages: Node 22.13+
 - local source development: Node 25+ is recommended because the backend uses `node:sqlite`
 
 ## Use From Other Coding Agents

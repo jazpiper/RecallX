@@ -9,6 +9,6 @@
     "recallx-mcp": "./bin/recallx-mcp.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
   }
 }

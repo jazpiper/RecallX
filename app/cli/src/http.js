@@ -11,7 +11,7 @@ export function getApiBase(argvOptions = {}, env = process.env) {
 }
 
 export function getAuthToken(argvOptions = {}, env = process.env) {
-  return argvOptions.token || env.RECALLX_TOKEN || "";
+  return argvOptions.token || env.RECALLX_API_TOKEN || env.RECALLX_TOKEN || "";
 }
 
 export async function requestJson(apiBase, path, { method = "GET", token, body } = {}) {

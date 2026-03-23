@@ -828,7 +828,7 @@ export default function App() {
   const runtimeCommandShimPath = desktopRuntimeState?.commandShimPath ?? desktopInfo?.commandShimPath ?? '';
   const runtimeMcpLauncherPath = desktopRuntimeState?.mcpLauncherPath ?? mcpLauncherPath;
   const runtimeMcpCommand = desktopRuntimeState?.mcpCommand ?? mcpCommand;
-  const runtimeVersion = desktopRuntimeState?.appVersion ?? desktopInfo?.appVersion ?? '1.0.0';
+  const runtimeVersion = desktopRuntimeState?.appVersion ?? desktopInfo?.appVersion ?? '';
   const runtimeLaunchAtLogin = desktopRuntimeState?.launchAtLoginEnabled ?? false;
   const runtimeKeepRunning = desktopRuntimeState?.keepRunningInBackground ?? Boolean(desktopInfo?.isPackaged);
   const runtimeIsPackaged = desktopRuntimeState?.isPackaged ?? Boolean(desktopInfo?.isPackaged);
@@ -2132,7 +2132,7 @@ curl${apiAuthHeader} ${desktopInfo?.workspaceUrl ?? `${apiBase}/workspace`}`;
               <div className="info-grid three">
                 <article className="info-block">
                   <span className="info-label">Version</span>
-                  <strong>{runtimeVersion}</strong>
+                  <strong>{runtimeVersion || 'Unavailable'}</strong>
                   <p>{runtimeIsPackaged ? 'Desktop runtime is active.' : 'Renderer is currently running in development/browser mode.'}</p>
                 </article>
                 <article className="info-block">

@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderRelated } from "../app/cli/src/format.js";
 import { runCli } from "../app/cli/src/cli.js";
+import { getAuthToken } from "../app/cli/src/http.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -75,6 +76,8 @@ describe("runCli mcp", () => {
 
       expect(contents).toContain("recallx-mcp.js");
       expect(contents).toContain("--api");
+      expect(contents).toContain('command -v node');
+      expect(contents).not.toContain(process.execPath);
       expect(output).toContain(`Installed launcher: ${launcherPath}`);
       expect(output).toContain("\"mcpServers\"");
       expect(output).toContain("RECALLX_API_TOKEN");
@@ -102,5 +105,13 @@ describe("runCli mcp", () => {
     } finally {
       rmSync(tempDir, { force: true, recursive: true });
     }
+  });
+});
+
+describe("getAuthToken", () => {
+  it("prefers the API token env var while keeping the legacy token alias", () => {
+    expect(getAuthToken({}, { RECALLX_API_TOKEN: "api-token", RECALLX_TOKEN: "legacy-token" })).toBe("api-token");
+    expect(getAuthToken({}, { RECALLX_TOKEN: "legacy-token" })).toBe("legacy-token");
+    expect(getAuthToken({ token: "argv-token" }, { RECALLX_API_TOKEN: "api-token" })).toBe("argv-token");
   });
 });

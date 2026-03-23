@@ -118,7 +118,7 @@ writeFileSync(
       files: selectedConfig.files,
       dependencies: packageDependencies,
       engines: {
-        node: ">=20",
+        node: ">=22.13.0",
       },
       keywords: ["recallx", packageKind, "cli", "mcp", "knowledge", "local-first"],
       repository: {
