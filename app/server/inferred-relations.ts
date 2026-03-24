@@ -44,6 +44,10 @@ function normalizeTags(tags: string[]): string[] {
   return Array.from(new Set(tags.map((tag) => normalizeText(tag)).filter(Boolean)));
 }
 
+function normalizeTexts(values: Array<string | null | undefined>): string[] {
+  return values.map(normalizeText).filter(Boolean);
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -66,6 +70,13 @@ function mentionsNode(haystacks: string[], candidate: NodeRecord): { idMention: 
     : false;
 
   return { idMention, titleMention };
+}
+
+function hasCheapMention(normalizedHaystacks: string[], candidate: Pick<NodeRecord, "id" | "title">): boolean {
+  const normalizedTitle = normalizeText(candidate.title);
+  return normalizedHaystacks.some((haystack) =>
+    haystack.includes(candidate.id.toLowerCase()) || (normalizedTitle.length >= 5 && haystack.includes(normalizedTitle))
+  );
 }
 
 function sortPair(left: string, right: string): [string, string] {
@@ -218,6 +229,7 @@ function collectGeneratedCandidates(
     projectIds: new Set(projectMembershipsByNodeId.get(target.id) ?? []),
     artifactKeys: artifactKeysByNodeId.get(target.id) ?? { exactPaths: [], baseNames: [] }
   };
+  const normalizedTargetTexts = normalizeTexts([target.title, target.body, target.summary]);
   const activityBodies =
     trigger === "activity-append" || trigger === "reindex"
       ? repository
@@ -225,27 +237,20 @@ function collectGeneratedCandidates(
           .map((activity) => activity.body ?? "")
           .filter(Boolean)
       : [];
+  const normalizedActivityBodies = activityBodies.map(normalizeText).filter(Boolean);
 
   return candidates.flatMap((candidate) => {
     const generated: GeneratedCandidate[] = [];
+    const candidateProjectIds = projectMembershipsByNodeId.get(candidate.id) ?? [];
+    const candidateArtifacts = artifactKeysByNodeId.get(candidate.id) ?? { exactPaths: [], baseNames: [] };
     const tagOverlapCandidate = buildTagOverlapCandidate(target, candidate, targetContext.normalizedTags);
     if (tagOverlapCandidate) {
       generated.push(tagOverlapCandidate);
     }
-    const bodyReferenceCandidate = buildBodyReferenceCandidate(target, candidate);
-    if (bodyReferenceCandidate) {
-      generated.push(bodyReferenceCandidate);
-    }
-    if (activityBodies.length) {
-      const activityReferenceCandidate = buildActivityReferenceCandidate(target, candidate, activityBodies);
-      if (activityReferenceCandidate) {
-        generated.push(activityReferenceCandidate);
-      }
-    }
     const projectMembershipCandidate = buildProjectMembershipCandidate(
       target,
       candidate,
-      projectMembershipsByNodeId.get(candidate.id) ?? [],
+      candidateProjectIds,
       targetContext.projectIds
     );
     if (projectMembershipCandidate) {
@@ -254,11 +259,25 @@ function collectGeneratedCandidates(
     const sharedArtifactCandidate = buildSharedArtifactCandidate(
       target,
       candidate,
-      artifactKeysByNodeId.get(candidate.id) ?? { exactPaths: [], baseNames: [] },
+      candidateArtifacts,
       targetContext.artifactKeys
     );
     if (sharedArtifactCandidate) {
       generated.push(sharedArtifactCandidate);
+    }
+
+    const candidateTexts = normalizeTexts([candidate.title, candidate.body, candidate.summary]);
+    const shouldCheckBodyReference =
+      hasCheapMention(normalizedTargetTexts, candidate) || hasCheapMention(candidateTexts, target);
+    const bodyReferenceCandidate = shouldCheckBodyReference ? buildBodyReferenceCandidate(target, candidate) : null;
+    if (bodyReferenceCandidate) {
+      generated.push(bodyReferenceCandidate);
+    }
+    if (normalizedActivityBodies.length && hasCheapMention(normalizedActivityBodies, candidate)) {
+      const activityReferenceCandidate = buildActivityReferenceCandidate(target, candidate, activityBodies);
+      if (activityReferenceCandidate) {
+        generated.push(activityReferenceCandidate);
+      }
     }
     return generated;
   });

@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { appendFile, mkdir, readFile, readdir, unlink } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { appendFile, mkdir, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import type {
   JsonMap,
   SearchLexicalQuality,
@@ -123,6 +125,11 @@ function roundDuration(value: number) {
 
 function dateStamp(value: string) {
   return value.slice(0, 10);
+}
+
+function telemetryLogDate(entry: string): string | null {
+  const match = /^telemetry-(\d{4}-\d{2}-\d{2})\.ndjson$/.exec(entry);
+  return match ? match[1] : null;
 }
 
 function normalizeRetentionDays(value: number) {
@@ -486,25 +493,40 @@ export class ObservabilityWriter {
 
     const files = entries
       .filter((entry) => /^telemetry-\d{4}-\d{2}-\d{2}\.ndjson$/.test(entry))
+      .filter((entry) => {
+        const stamp = telemetryLogDate(entry);
+        return stamp !== null && stamp >= dateStamp(new Date(sinceMs).toISOString());
+      })
       .sort();
 
     const events: TelemetryEvent[] = [];
     for (const file of files) {
       const filePath = path.join(logsDir, file);
-      const content = await readFile(filePath, "utf8").catch(() => "");
-      for (const line of content.split("\n")) {
-        const event = parseJsonLine(line);
-        if (!event) {
-          continue;
+      const stream = createReadStream(filePath, { encoding: "utf8" });
+      const lines = createInterface({
+        input: stream,
+        crlfDelay: Number.POSITIVE_INFINITY
+      });
+      try {
+        for await (const line of lines) {
+          const event = parseJsonLine(line);
+          if (!event) {
+            continue;
+          }
+          const eventMs = Date.parse(event.ts);
+          if (!Number.isFinite(eventMs) || eventMs < sinceMs) {
+            continue;
+          }
+          if (options.surface && options.surface !== "all" && event.surface !== options.surface) {
+            continue;
+          }
+          events.push(event);
         }
-        const eventMs = Date.parse(event.ts);
-        if (!Number.isFinite(eventMs) || eventMs < sinceMs) {
-          continue;
-        }
-        if (options.surface && options.surface !== "all" && event.surface !== options.surface) {
-          continue;
-        }
-        events.push(event);
+      } catch {
+        // Ignore individual file read failures so observability endpoints stay resilient.
+      } finally {
+        lines.close();
+        stream.destroy();
       }
     }
 

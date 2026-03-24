@@ -50,9 +50,11 @@ import {
   buildCandidateRelationBonusMap,
   buildContextBundle,
   buildNeighborhoodItems,
+  buildNeighborhoodItemsBatch,
   buildTargetRelatedRetrievalItems,
   bundleAsMarkdown,
   computeRankCandidateScore,
+  selectSemanticCandidateIds,
   shouldUseSemanticCandidateAugmentation
 } from "./retrieval.js";
 import { buildProjectGraph } from "./project-graph.js";
@@ -2219,21 +2221,23 @@ export function createRecallXApp(params: {
       (span) => {
         const repository = currentRepository();
         const nodeId = readRequestParam(request.params.id);
-        const result = buildNeighborhoodItems(repository, nodeId, {
+        const neighborhoodOptions = {
           relationTypes: types,
           includeInferred,
           maxInferred
-        });
+        };
+        const result = buildNeighborhoodItems(repository, nodeId, neighborhoodOptions);
         const expanded =
           depth === 2
             ? (() => {
                 const seen = new Set(result.map((item) => `${item.edge.relationId}:${item.node.id}:1`));
+                const secondHopByNodeId = buildNeighborhoodItemsBatch(
+                  repository,
+                  result.map((item) => item.node.id),
+                  neighborhoodOptions
+                );
                 const secondHop = result.flatMap((item) =>
-                  buildNeighborhoodItems(repository, item.node.id, {
-                    relationTypes: types,
-                    includeInferred,
-                    maxInferred
-                  })
+                  (secondHopByNodeId.get(item.node.id) ?? [])
                     .filter((nested) => nested.node.id !== nodeId)
                     .map((nested) => ({
                       ...nested,
@@ -2257,7 +2261,8 @@ export function createRecallXApp(params: {
               })()
             : result;
         span.addDetails({
-          resultCount: expanded.length
+          resultCount: expanded.length,
+          firstHopCount: result.length
         });
         return expanded;
       }
@@ -2671,8 +2676,9 @@ export function createRecallXApp(params: {
         });
         const semanticAugmentation = repository.getSemanticAugmentationSettings();
         const semanticEnabled = shouldUseSemanticCandidateAugmentation(query, candidates);
+        const semanticCandidateIds = selectSemanticCandidateIds(query, candidates);
         const semanticBonuses = semanticEnabled
-          ? buildSemanticCandidateBonusMap(await repository.rankSemanticCandidates(query, candidateNodeIds), semanticAugmentation)
+          ? buildSemanticCandidateBonusMap(await repository.rankSemanticCandidates(query, semanticCandidateIds), semanticAugmentation)
           : new Map();
         const result = candidates
           .map((node) => {
@@ -2696,7 +2702,9 @@ export function createRecallXApp(params: {
           .sort((left: { score: number }, right: { score: number }) => right.score - left.score);
         span.addDetails({
           resultCount: result.length,
-          semanticUsed: semanticEnabled
+          semanticUsed: semanticEnabled,
+          semanticCandidateCount: candidates.length,
+          semanticRankedCandidateCount: semanticCandidateIds.length
         });
         return result;
       }

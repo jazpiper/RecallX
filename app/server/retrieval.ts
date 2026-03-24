@@ -33,6 +33,7 @@ const boostedRelationRankWeights: RetrievalRankWeights = {
 
 const semanticCandidateMinSimilarity = 0.2;
 const semanticCandidateMaxBonus = 18;
+const maxSemanticPrefilterCandidates = 256;
 
 type SemanticAugmentationSettings = {
   minSimilarity?: number;
@@ -80,7 +81,17 @@ function prioritizeItems(
   return weighted.slice(0, maxItems);
 }
 
-function buildNeighborhoodResult(
+function normalizeRetrievalText(value: string | null | undefined): string {
+  return (value ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function tokenizeRetrievalText(value: string): string[] {
+  return normalizeRetrievalText(value)
+    .split(/[^a-z0-9]+/g)
+    .filter((token) => token.length >= 3);
+}
+
+function listNeighborhoodCandidates(
   repository: RecallXRepository,
   nodeId: string,
   options?: {
@@ -150,6 +161,22 @@ function buildNeighborhoodResult(
         })()
       : [];
 
+  return {
+    canonicalItems,
+    inferredItems
+  };
+}
+
+function buildNeighborhoodResult(
+  repository: RecallXRepository,
+  nodeId: string,
+  options?: {
+    relationTypes?: RelationType[];
+    includeInferred?: boolean;
+    maxInferred?: number;
+  }
+) {
+  const { canonicalItems, inferredItems } = listNeighborhoodCandidates(repository, nodeId, options);
   const usageSummaries = repository.getRelationUsageSummaries(
     [...canonicalItems, ...inferredItems].map((item) => item.edge.relationId)
   );
@@ -163,6 +190,40 @@ function buildNeighborhoodResult(
     items: [...rankedCanonical, ...rankedInferred],
     usageSummaries
   };
+}
+
+export function buildNeighborhoodItemsBatch(
+  repository: RecallXRepository,
+  nodeIds: string[],
+  options?: {
+    relationTypes?: RelationType[];
+    includeInferred?: boolean;
+    maxInferred?: number;
+  }
+): Map<string, NeighborhoodItem[]> {
+  const uniqueNodeIds = Array.from(new Set(nodeIds.filter(Boolean)));
+  const rawByNodeId = new Map<string, ReturnType<typeof listNeighborhoodCandidates>>();
+  const relationIds: string[] = [];
+
+  for (const nodeId of uniqueNodeIds) {
+    const raw = listNeighborhoodCandidates(repository, nodeId, options);
+    rawByNodeId.set(nodeId, raw);
+    relationIds.push(...raw.canonicalItems.map((item) => item.edge.relationId));
+    relationIds.push(...raw.inferredItems.map((item) => item.edge.relationId));
+  }
+
+  const usageSummaries = repository.getRelationUsageSummaries(relationIds);
+  const results = new Map<string, NeighborhoodItem[]>();
+  for (const [nodeId, raw] of rawByNodeId.entries()) {
+    const rankedCanonical = rankNeighborhoodItems(raw.canonicalItems, usageSummaries, neighborhoodRetrievalRankWeights);
+    const rankedInferred =
+      options?.includeInferred && options.maxInferred
+        ? rankNeighborhoodItems(raw.inferredItems, usageSummaries, neighborhoodRetrievalRankWeights, options.maxInferred)
+        : [];
+    results.set(nodeId, [...rankedCanonical, ...rankedInferred]);
+  }
+
+  return results;
 }
 
 function matchesSearchResultFilters(
@@ -309,6 +370,59 @@ export function buildSemanticCandidateBonusMap(
         ] as const;
       })
   );
+}
+
+function scoreSemanticPrefilterCandidate(
+  normalizedQuery: string,
+  queryTokens: string[],
+  candidate: Pick<SearchResultItem, "title" | "summary">
+): number {
+  const normalizedTitle = normalizeRetrievalText(candidate.title);
+  const normalizedSummary = normalizeRetrievalText(candidate.summary);
+  let score = 0;
+
+  if (normalizedTitle.includes(normalizedQuery)) {
+    score += 12;
+  }
+  if (normalizedSummary.includes(normalizedQuery)) {
+    score += 6;
+  }
+
+  for (const token of queryTokens) {
+    if (normalizedTitle.includes(token)) {
+      score += 2;
+    }
+    if (normalizedSummary.includes(token)) {
+      score += 1;
+    }
+  }
+
+  return score;
+}
+
+export function selectSemanticCandidateIds(
+  query: string,
+  candidates: Array<Pick<SearchResultItem, "id" | "title" | "summary" | "updatedAt">>,
+  maxCandidates = maxSemanticPrefilterCandidates
+): string[] {
+  if (candidates.length <= maxCandidates) {
+    return candidates.map((candidate) => candidate.id);
+  }
+
+  const normalizedQuery = normalizeRetrievalText(query);
+  if (!normalizedQuery) {
+    return candidates.slice(0, maxCandidates).map((candidate) => candidate.id);
+  }
+  const queryTokens = Array.from(new Set(tokenizeRetrievalText(query)));
+  return candidates
+    .map((candidate) => ({
+      id: candidate.id,
+      score: scoreSemanticPrefilterCandidate(normalizedQuery, queryTokens, candidate),
+      updatedAt: candidate.updatedAt
+    }))
+    .sort((left, right) => right.score - left.score || right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, maxCandidates)
+    .map((candidate) => candidate.id);
 }
 
 function computeBundleRelationBoost(item: NeighborhoodItem, summary?: RelationUsageSummary): number {
@@ -558,15 +672,14 @@ export async function buildContextBundle(
   const candidateItems = [targetItem, ...relatedItems, ...decisions, ...openQuestions];
   const dedupedItems = Array.from(new Map(candidateItems.map((item) => [item.id, item])).values());
   const semanticQuery = [target.title, target.summary ?? target.body].filter(Boolean).join("\n");
+  const semanticCandidates = dedupedItems.filter((item) => item.id !== target.id);
+  const semanticCandidateIds = selectSemanticCandidateIds(semanticQuery, semanticCandidates);
   const semanticBonuses = shouldUseSemanticCandidateAugmentation(
     semanticQuery,
-    dedupedItems.filter((item) => item.id !== target.id)
+    semanticCandidates
   )
     ? buildSemanticCandidateBonusMap(
-        await repository.rankSemanticCandidates(
-          semanticQuery,
-          dedupedItems.filter((item) => item.id !== target.id).map((item) => item.id)
-        ),
+        await repository.rankSemanticCandidates(semanticQuery, semanticCandidateIds),
         repository.getSemanticAugmentationSettings()
       )
     : new Map();
@@ -575,7 +688,9 @@ export async function buildContextBundle(
     relatedCandidateCount: relatedItems.length,
     decisionCount: decisions.length,
     openQuestionCount: openQuestions.length,
-    semanticUsed: semanticBonuses.size > 0
+    semanticUsed: semanticBonuses.size > 0,
+    semanticCandidateCount: semanticCandidates.length,
+    semanticRankedCandidateCount: semanticCandidateIds.length
   });
   const combinedBonuses = new Map<string, number>();
   for (const item of dedupedItems) {
