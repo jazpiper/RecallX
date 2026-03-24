@@ -21,7 +21,7 @@ const packageConfigs = {
     readmeSource: path.join(rootDir, "README.md"),
     description: "Local-first RecallX runtime with API, renderer, CLI, and MCP entrypoint.",
     packageName: "recallx",
-    files: ["app/cli", "app/mcp", "app/shared", "app/server", "dist/renderer", "README.md"],
+    files: ["app/cli", "app/mcp", "app/shared", "app/server", "dist/renderer", "README.md", "LICENSE"],
     directoriesToCopy: [
       ["app", "cli", "bin"],
       ["dist", "server", "app", "cli"],
@@ -37,7 +37,7 @@ const packageConfigs = {
     readmeSource: path.join(rootDir, "app", "cli", "README.md"),
     description: "Headless RecallX runtime with API, CLI, and MCP entrypoint.",
     packageName: "recallx-headless",
-    files: ["app/cli", "app/mcp", "app/shared", "app/server", "README.md"],
+    files: ["app/cli", "app/mcp", "app/shared", "app/server", "README.md", "LICENSE"],
     directoriesToCopy: [
       ["app", "cli", "bin"],
       ["dist", "server", "app", "cli"],
@@ -101,6 +101,7 @@ for (const parts of selectedConfig.filesToCopy) {
 }
 
 cpSync(selectedConfig.readmeSource, path.join(selectedConfig.outputDir, "README.md"));
+cpSync(path.join(rootDir, "LICENSE"), path.join(selectedConfig.outputDir, "LICENSE"));
 
 writeFileSync(
   path.join(selectedConfig.outputDir, "package.json"),
@@ -110,6 +111,8 @@ writeFileSync(
       version: packageJson.version,
       description: selectedConfig.description,
       type: "module",
+      author: packageJson.author,
+      license: packageJson.license ?? "MIT",
       bin: {
         recallx: "./app/cli/bin/recallx.js",
         recallx: "./app/cli/bin/recallx.js",
