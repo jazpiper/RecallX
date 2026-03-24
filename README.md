@@ -225,3 +225,7 @@ For launcher paths, environment variables, and editor-specific setup, see `docs/
 - `docs/mcp.md` for MCP bridge setup
 - `docs/workflows.md` for common usage flows
 - `docs/schema.md` for storage and data model details
+
+## License
+
+MIT. See `LICENSE`.
