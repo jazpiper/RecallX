@@ -59,3 +59,4 @@ Before wrapping up:
 6. If that review says "yes", make one small reusable harness improvement and stop.
 7. If a quick closeout draft would help, run `./.codex/hooks/finish-report.sh`.
 8. Add `--verbose` only when the changed-path list is actually useful.
+9. After push or PR creation, run `./.codex/hooks/return-to-main.sh` unless you are intentionally continuing the same task branch.
