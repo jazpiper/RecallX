@@ -31,7 +31,7 @@ jobs:
         run: npm ci
 
       - name: Validate pending changesets
-        run: npm run changeset:status
+        run: npx changeset status --verbose --since=origin/main
 
       - name: Verify source and release packages
         run: npm run release:verify

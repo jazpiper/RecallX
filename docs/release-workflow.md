@@ -65,7 +65,7 @@ npm run release:publish
 ```
 
 `npm run changeset:status` is also a useful pre-merge guard when touching release notes or workflow plumbing because it catches invalid package names in pending changesets.
-In GitHub Actions, this check needs enough git history to compare the current ref against `main`, so CI should use a full checkout rather than the default shallow fetch.
+In GitHub Actions, this check should use a full checkout and compare against `origin/main` so detached PR merge refs still validate correctly.
 
 ## Notes
 
