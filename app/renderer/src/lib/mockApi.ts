@@ -10,6 +10,7 @@ import type {
   GraphConnection,
   Integration,
   NodeDetail,
+  NodeGovernanceAction,
   Node,
   ProjectGraphPayload,
   Relation,
@@ -1338,4 +1339,174 @@ export async function archiveNode(id: string): Promise<Node> {
     body: JSON.stringify({ source: DEFAULT_SOURCE }),
   });
   return mapNode(payload?.data?.node);
+}
+
+export async function applyNodeGovernanceAction(input: {
+  id: string;
+  action: NodeGovernanceAction;
+  note?: string;
+}): Promise<{ node: Node; governance: GovernancePayload; activity: Activity | null }> {
+  return withFallback(
+    async () => {
+      const payload = await requestJson(`/nodes/${encodeURIComponent(input.id)}/governance-action`, {
+        method: 'POST',
+        body: JSON.stringify({
+          action: input.action,
+          ...(input.note?.trim() ? { note: input.note.trim() } : {}),
+          source: DEFAULT_SOURCE,
+        }),
+      });
+      return {
+        node: mapNode(payload?.data?.node),
+        governance: mapGovernancePayload(payload?.data?.governance),
+        activity: payload?.data?.activity ? mapActivity(payload.data.activity) : null,
+      };
+    },
+    async () => {
+      const fallback = getFallbackState();
+      const nodeIndex = fallback.nodes.findIndex((item) => item.id === input.id);
+      if (nodeIndex < 0) {
+        throw new Error(`Node ${input.id} not found.`);
+      }
+
+      const existing = fallback.nodes[nodeIndex];
+      const now = new Date().toISOString();
+      const note = input.note?.trim() ? input.note.trim() : '';
+      const updatedNode: Node =
+        input.action === 'promote'
+          ? {
+              ...existing,
+              status: 'active',
+              canonicality: 'canonical',
+              updatedAt: now,
+              metadata: {
+                ...existing.metadata,
+                manualGovernanceAction: 'promote',
+                manualGovernanceAt: now,
+              },
+            }
+          : input.action === 'contest'
+            ? {
+                ...existing,
+                status: 'contested',
+                updatedAt: now,
+                metadata: {
+                  ...existing.metadata,
+                  manualGovernanceAction: 'contest',
+                  manualGovernanceAt: now,
+                },
+              }
+            : {
+                ...existing,
+                status: 'archived',
+                updatedAt: now,
+                metadata: {
+                  ...existing.metadata,
+                  manualGovernanceAction: 'archive',
+                  manualGovernanceAt: now,
+                },
+              };
+      fallback.nodes[nodeIndex] = updatedNode;
+      fallback.recentNodeIds = [updatedNode.id, ...fallback.recentNodeIds.filter((item) => item !== updatedNode.id)].slice(0, 5);
+
+      const activityBody =
+        input.action === 'promote'
+          ? note
+            ? `Human promoted this node to canonical. ${note}`
+            : 'Human promoted this node to canonical from the governance surface.'
+          : input.action === 'contest'
+            ? note
+              ? `Human marked this node contested. ${note}`
+              : 'Human marked this node contested from the governance surface.'
+            : note
+              ? `Human archived this node from governance. ${note}`
+              : 'Human archived this node from the governance surface.';
+      const activity: Activity = {
+        id: `act-fallback:${updatedNode.id}:${now}`,
+        targetNodeId: updatedNode.id,
+        activityType: 'review_action',
+        body: activityBody,
+        createdBy: DEFAULT_SOURCE.actorLabel,
+        sourceType: DEFAULT_SOURCE.actorType,
+        sourceLabel: DEFAULT_SOURCE.actorLabel,
+        createdAt: now,
+        metadata: {
+          action: input.action,
+          note,
+        },
+      };
+      fallback.activities.unshift(activity);
+
+      const governanceState =
+        input.action === 'promote'
+          ? {
+              entityType: 'node' as const,
+              entityId: updatedNode.id,
+              state: 'healthy' as const,
+              confidence: 0.96,
+              reasons: [activityBody],
+              lastEvaluatedAt: now,
+              lastTransitionAt: now,
+              metadata: {
+                source: 'fallback',
+                manualAction: input.action,
+              },
+            }
+          : input.action === 'contest'
+            ? {
+                entityType: 'node' as const,
+                entityId: updatedNode.id,
+                state: 'contested' as const,
+                confidence: 0.32,
+                reasons: [activityBody],
+                lastEvaluatedAt: now,
+                lastTransitionAt: now,
+                metadata: {
+                  source: 'fallback',
+                  manualAction: input.action,
+                },
+              }
+            : {
+                entityType: 'node' as const,
+                entityId: updatedNode.id,
+                state: 'low_confidence' as const,
+                confidence: 0.2,
+                reasons: [activityBody],
+                lastEvaluatedAt: now,
+                lastTransitionAt: now,
+                metadata: {
+                  source: 'fallback',
+                  manualAction: input.action,
+                },
+              };
+
+      const governance: GovernancePayload = {
+        state: governanceState,
+        events: [
+          {
+            id: `gov-fallback:${updatedNode.id}:${now}`,
+            entityType: 'node',
+            entityId: updatedNode.id,
+            eventType: input.action === 'promote' ? 'promoted' : input.action === 'contest' ? 'contested' : 'demoted',
+            previousState: existing.status === 'contested' ? 'contested' : existing.canonicality === 'canonical' ? 'healthy' : 'low_confidence',
+            nextState: governanceState.state,
+            confidence: governanceState.confidence,
+            reason: activityBody,
+            createdAt: now,
+            metadata: {
+              source: 'fallback',
+              manualAction: input.action,
+            },
+          },
+          ...buildFallbackGovernanceEvents(updatedNode, governanceState),
+        ],
+      };
+
+      return {
+        node: updatedNode,
+        governance,
+        activity,
+      };
+    },
+  );
 }

@@ -18,6 +18,7 @@ import {
   createNodesSchema,
   createRelationSchema,
   exportWorkspaceSchema,
+  governanceNodeActionSchema,
   governanceIssuesQuerySchema,
   importWorkspacePreviewSchema,
   importWorkspaceSchema,
@@ -2279,6 +2280,165 @@ export function createRecallXApp(params: {
           node.id,
           governanceResult.items[0] ?? repository.getGovernanceStateNullable("node", node.id)
         )
+      })
+    );
+  });
+
+  app.post("/api/v1/nodes/:id/governance-action", (request, response) => {
+    const repository = currentRepository();
+    const input = governanceNodeActionSchema.parse(request.body ?? {});
+    const note = input.note?.trim() ? input.note.trim() : null;
+    const nodeId = request.params.id;
+    const beforeNode = repository.getNode(nodeId);
+    const previousState = repository.getGovernanceStateNullable("node", nodeId);
+    const now = new Date().toISOString();
+
+    let node = beforeNode;
+    let nextState = previousState?.state ?? "low_confidence";
+    let confidence = previousState?.confidence ?? 0.5;
+    let eventType: "promoted" | "contested" | "demoted";
+    let operationType: "promote" | "contest" | "archive";
+    let reason: string;
+
+    switch (input.action) {
+      case "promote": {
+        if (beforeNode.status === "archived") {
+          throw new AppError(409, "INVALID_STATE", "Archived nodes cannot be promoted.");
+        }
+        node = repository.updateNode(nodeId, {
+          status: "active",
+          metadata: {
+            manualGovernanceAction: "promote",
+            manualGovernanceAt: now
+          }
+        });
+        node = repository.setNodeCanonicality(nodeId, "canonical");
+        nextState = "healthy";
+        confidence = Math.max(previousState?.confidence ?? 0, 0.96);
+        eventType = "promoted";
+        operationType = "promote";
+        reason = note
+          ? `Human promoted this node to canonical. ${note}`
+          : "Human promoted this node to canonical from the governance surface.";
+        break;
+      }
+      case "contest": {
+        if (beforeNode.status === "archived") {
+          throw new AppError(409, "INVALID_STATE", "Archived nodes cannot be contested.");
+        }
+        node = repository.updateNode(nodeId, {
+          status: "contested",
+          metadata: {
+            manualGovernanceAction: "contest",
+            manualGovernanceAt: now
+          }
+        });
+        nextState = "contested";
+        confidence = Math.min(previousState?.confidence ?? 0.4, 0.32);
+        eventType = "contested";
+        operationType = "contest";
+        reason = note
+          ? `Human marked this node contested. ${note}`
+          : "Human marked this node contested from the governance surface.";
+        break;
+      }
+      case "archive": {
+        if (beforeNode.status === "archived") {
+          throw new AppError(409, "INVALID_STATE", "Node is already archived.");
+        }
+        node = repository.archiveNode(nodeId);
+        nextState = previousState?.state === "contested" ? "contested" : "low_confidence";
+        confidence = Math.min(previousState?.confidence ?? 0.4, 0.2);
+        eventType = "demoted";
+        operationType = "archive";
+        reason = note
+          ? `Human archived this node from governance. ${note}`
+          : "Human archived this node from the governance surface.";
+        break;
+      }
+    }
+
+    repository.recordProvenance({
+      entityType: "node",
+      entityId: node.id,
+      operationType,
+      source: input.source,
+      metadata: {
+        action: input.action,
+        note,
+        previousStatus: beforeNode.status,
+        nextStatus: node.status,
+        previousCanonicality: beforeNode.canonicality,
+        nextCanonicality: node.canonicality,
+        ...input.metadata
+      }
+    });
+    const activity = repository.appendActivity({
+      targetNodeId: node.id,
+      activityType: "review_action",
+      body: reason,
+      source: input.source,
+      metadata: {
+        action: input.action,
+        previousState: previousState?.state ?? "none",
+        nextState,
+        previousStatus: beforeNode.status,
+        nextStatus: node.status,
+        previousCanonicality: beforeNode.canonicality,
+        nextCanonicality: node.canonicality,
+        note: note ?? "",
+        ...input.metadata
+      }
+    });
+    const governanceState = repository.upsertGovernanceState({
+      entityType: "node",
+      entityId: node.id,
+      state: nextState,
+      confidence,
+      reasons: [reason],
+      lastEvaluatedAt: now,
+      metadata: {
+        manualAction: input.action,
+        note: note ?? "",
+        source: input.source.actorLabel
+      },
+      previousState
+    });
+    repository.appendGovernanceEvent({
+      entityType: "node",
+      entityId: node.id,
+      eventType,
+      previousState: previousState?.state ?? null,
+      nextState,
+      confidence,
+      reason,
+      metadata: {
+        manualAction: input.action,
+        note: note ?? "",
+        previousStatus: beforeNode.status,
+        nextStatus: node.status,
+        previousCanonicality: beforeNode.canonicality,
+        nextCanonicality: node.canonicality
+      }
+    });
+
+    queueInferredRefresh(node.id, "node-write");
+    scheduleAutoSemanticIndex();
+    broadcastWorkspaceEvent({
+      reason:
+        input.action === "promote"
+          ? "node.promoted"
+          : input.action === "contest"
+            ? "node.contested"
+            : "node.archived",
+      entityType: "node",
+      entityId: node.id
+    });
+    response.json(
+      envelope(response.locals.requestId, {
+        node,
+        activity,
+        governance: buildGovernancePayload(repository, "node", node.id, governanceState)
       })
     );
   });

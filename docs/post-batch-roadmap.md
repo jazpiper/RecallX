@@ -32,7 +32,7 @@ Items 1 through 3 in the original follow-up order have now shipped:
 2. search refinement and command palette
 3. import normalization with dry-run and duplicate handling
 
-The next recommended product batch is now:
+The latest shipped batch is now:
 
 4. lightweight governance actions beyond archive
 
@@ -42,12 +42,29 @@ Why this is next now:
 - it improves trust without opening a large moderation or review queue
 - it stays compatible with the current local-first and renderer-first product shape
 
-Recommended scope for the next item:
+That batch shipped:
 
 - promote action for suggested nodes from Governance and node detail
-- dismiss or reject action for low-confidence suggestions
+- contest or archive action for low-confidence suggestions
 - compact decision logging tied to provenance when a human accepts or rejects a suggestion
 - no full moderation inbox, no large workflow engine, no background auto-resolution
+
+The next recommended product batch is now:
+
+5. relation governance follow-through and decision-log polish
+
+Why this is next now:
+
+- item 09 completed the node side of lightweight governance, but relation issues still remain read-mostly
+- the product now logs human trust decisions, so the next leverage is making those decisions easier to review and filter afterward
+- this extends the same trust loop without opening a separate admin surface
+
+Recommended scope for the next item:
+
+- direct accept, reject, or archive actions for relation issues
+- a small recent decision history slice on Governance
+- decision-note filtering or grouping for recent review activity
+- no bulk moderation tools, no workflow engine, no hidden background resolution
 
 ## Impact x Effort
 

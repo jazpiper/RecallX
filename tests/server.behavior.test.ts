@@ -7508,6 +7508,184 @@ describe("node governance behavior", () => {
     }
   });
 
+  it("lets humans promote suggested nodes with review activity and governance history", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "recallx-test"
+    };
+    const node = repository.createNode({
+      type: "note",
+      title: "Suggested architecture note",
+      body: "Suggested note body",
+      summary: "Suggested note summary",
+      tags: [],
+      source: {
+        actorType: "agent",
+        actorLabel: "Codex",
+        toolName: "codex"
+      },
+      metadata: {
+        durable: true
+      },
+      resolvedCanonicality: "suggested",
+      resolvedStatus: "active"
+    });
+    repository.upsertGovernanceState({
+      entityType: "node",
+      entityId: node.id,
+      state: "low_confidence",
+      confidence: 0.54,
+      reasons: ["Suggested note still needs human confirmation."],
+      metadata: {}
+    });
+
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      const response = await fetch(`${baseUrl}/nodes/${node.id}/governance-action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "promote",
+          note: "Reviewed after import cleanup.",
+          source
+        })
+      });
+      const payload = await response.json();
+      const updatedNode = repository.getNode(node.id);
+      const activities = repository.listNodeActivities(node.id, 10);
+      const provenance = repository.listProvenance("node", node.id);
+      const governance = repository.getGovernanceState("node", node.id);
+      const events = repository.listGovernanceEvents("node", node.id, 10);
+
+      expect(response.status).toBe(200);
+      expect(payload.data.node.canonicality).toBe("canonical");
+      expect(payload.data.node.status).toBe("active");
+      expect(payload.data.activity.activityType).toBe("review_action");
+      expect(payload.data.governance.state.state).toBe("healthy");
+      expect(updatedNode.canonicality).toBe("canonical");
+      expect(governance.state).toBe("healthy");
+      expect(activities[0]?.body).toContain("Reviewed after import cleanup.");
+      expect(provenance.some((item) => item.operationType === "promote")).toBe(true);
+      expect(events[0]?.eventType).toBe("promoted");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("lets humans contest then archive governance candidates without leaving them in the issue list", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "recallx-test"
+    };
+    const node = repository.createNode({
+      type: "note",
+      title: "Questionable import note",
+      body: "Imported note body",
+      summary: "Imported note summary",
+      tags: [],
+      source: {
+        actorType: "import",
+        actorLabel: "workspace-import",
+        toolName: "recallx-import"
+      },
+      metadata: {},
+      resolvedCanonicality: "suggested",
+      resolvedStatus: "active"
+    });
+    repository.upsertGovernanceState({
+      entityType: "node",
+      entityId: node.id,
+      state: "low_confidence",
+      confidence: 0.48,
+      reasons: ["Imported suggestion has not been reviewed yet."],
+      metadata: {}
+    });
+
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      const contestResponse = await fetch(`${baseUrl}/nodes/${node.id}/governance-action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "contest",
+          note: "Conflicts with trusted project notes.",
+          source
+        })
+      });
+      const contestPayload = await contestResponse.json();
+      const afterContest = repository.getNode(node.id);
+      const afterContestState = repository.getGovernanceState("node", node.id);
+
+      expect(contestResponse.status).toBe(200);
+      expect(contestPayload.data.node.status).toBe("contested");
+      expect(contestPayload.data.governance.state.state).toBe("contested");
+      expect(afterContest.status).toBe("contested");
+      expect(afterContestState.state).toBe("contested");
+
+      const archiveResponse = await fetch(`${baseUrl}/nodes/${node.id}/governance-action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "archive",
+          note: "Redundant after manual review.",
+          source
+        })
+      });
+      const archivePayload = await archiveResponse.json();
+      const archivedNode = repository.getNode(node.id);
+      const governanceIssues = repository.listGovernanceIssues(20);
+      const provenance = repository.listProvenance("node", node.id);
+      const activities = repository.listNodeActivities(node.id, 10);
+      const events = repository.listGovernanceEvents("node", node.id, 10);
+
+      expect(archiveResponse.status).toBe(200);
+      expect(archivePayload.data.node.status).toBe("archived");
+      expect(archivedNode.status).toBe("archived");
+      expect(governanceIssues.some((item) => item.entityId === node.id)).toBe(false);
+      expect(provenance.some((item) => item.operationType === "contest")).toBe(true);
+      expect(provenance.some((item) => item.operationType === "archive")).toBe(true);
+      expect(activities.filter((item) => item.activityType === "review_action")).toHaveLength(2);
+      expect(events.some((item) => item.eventType === "contested")).toBe(true);
+      expect(events.some((item) => item.eventType === "demoted")).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
   it("creates a relevant_to project relation when node metadata includes projectId", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
     tempRoots.push(root);

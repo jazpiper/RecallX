@@ -1,5 +1,6 @@
 import { Suspense, lazy, startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  applyNodeGovernanceAction as applyNodeGovernanceActionRequest,
   appendRelationUsageEvent,
   clearRendererToken,
   createWorkspaceBackup,
@@ -49,6 +50,7 @@ import type {
   GraphConnection,
   NavView,
   NodeDetail,
+  NodeGovernanceAction,
   Node,
   ProjectGraphPayload,
   RelationType,
@@ -199,6 +201,31 @@ function getGovernanceStateSummary(state: GovernanceIssueItem['state']) {
 
 function getGovernanceActionLabel(item: GovernanceIssueItem) {
   return item.entityType === 'node' ? 'Inspect node' : 'Relation issue';
+}
+
+function isNodeGovernanceCandidate(node: Node | null, governance: GovernancePayload['state'] | null = null) {
+  if (!node) {
+    return false;
+  }
+  return (
+    node.status === 'contested' ||
+    node.canonicality === 'suggested' ||
+    node.canonicality === 'generated' ||
+    governance?.state === 'low_confidence' ||
+    governance?.state === 'contested'
+  );
+}
+
+function canPromoteNode(node: Node | null) {
+  return Boolean(node && node.status !== 'archived' && (node.canonicality === 'suggested' || node.canonicality === 'generated'));
+}
+
+function canContestNode(node: Node | null) {
+  return Boolean(node && node.status !== 'archived' && node.status !== 'contested');
+}
+
+function canArchiveNode(node: Node | null) {
+  return Boolean(node && node.status !== 'archived');
 }
 
 function getViewTitle(view: NavView) {
@@ -376,6 +403,9 @@ export default function App() {
   const [noteEditError, setNoteEditError] = useState<string | null>(null);
   const [isSavingNoteEdit, setIsSavingNoteEdit] = useState(false);
   const [isArchivingNote, setIsArchivingNote] = useState(false);
+  const [governanceDecisionNote, setGovernanceDecisionNote] = useState('');
+  const [governanceActionError, setGovernanceActionError] = useState<string | null>(null);
+  const [governanceActionPending, setGovernanceActionPending] = useState<NodeGovernanceAction | null>(null);
   const [guideSectionId, setGuideSectionId] = useState('overview');
   const bundleUsageEventKeysRef = useRef(new Set<string>());
   const activeProjectBundleUsageEventKeysRef = useRef(new Set<string>());
@@ -414,6 +444,17 @@ export default function App() {
     setWorkspaceRootInput(catalog.current.rootPath);
     setLoadError(null);
     return snapshotResult;
+  }
+
+  async function loadGovernanceIssues() {
+    const issues = await getGovernanceIssues();
+    return issues.slice().sort((left, right) => {
+      const rankDiff = governanceStateRank(left.state) - governanceStateRank(right.state);
+      if (rankDiff !== 0) {
+        return rankDiff;
+      }
+      return left.confidence - right.confidence || right.lastTransitionAt.localeCompare(left.lastTransitionAt);
+    });
   }
 
   function handleRequestFailure(error: unknown, fallbackMessage: string) {
@@ -906,6 +947,7 @@ export default function App() {
       ? detail.node
       : nodeMap.get(notePreviewTargetId) ?? null
     : null;
+  const notePreviewSupportsGovernanceActions = isNodeGovernanceCandidate(notePreviewNode, detail.governance.state);
   const pinnedProjectNodes = useMemo(() => {
     const fromPinned = (snapshot?.pinnedProjectIds ?? [])
       .map((nodeId) => nodeMap.get(nodeId))
@@ -975,6 +1017,11 @@ export default function App() {
   }, [notePreviewNode]);
 
   useEffect(() => {
+    setGovernanceDecisionNote('');
+    setGovernanceActionError(null);
+  }, [notePreviewTargetId, selectedGovernanceId, view]);
+
+  useEffect(() => {
     let mounted = true;
     const nodeId = notePreviewTargetId;
     const currentNode = nodeId ? nodeMap.get(nodeId) ?? null : null;
@@ -1027,18 +1074,9 @@ export default function App() {
 
     async function loadLists() {
       try {
-        const issues = await getGovernanceIssues();
-
+        const issues = await loadGovernanceIssues();
         if (!mounted) return;
-        setGovernanceIssues(
-          issues.slice().sort((left, right) => {
-            const rankDiff = governanceStateRank(left.state) - governanceStateRank(right.state);
-            if (rankDiff !== 0) {
-              return rankDiff;
-            }
-            return left.confidence - right.confidence || right.lastTransitionAt.localeCompare(left.lastTransitionAt);
-          })
-        );
+        setGovernanceIssues(issues);
         setLoadError(null);
       } catch (error) {
         if (!mounted) return;
@@ -1452,6 +1490,9 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
   );
   const activeGovernanceNode =
     activeGovernanceIssue?.entityType === 'node' ? nodeMap.get(activeGovernanceIssue.entityId) ?? null : null;
+  const activeGovernanceNodeCanPromote = canPromoteNode(activeGovernanceNode);
+  const activeGovernanceNodeCanContest = canContestNode(activeGovernanceNode);
+  const activeGovernanceNodeCanArchive = canArchiveNode(activeGovernanceNode);
 
   function resetWorkspaceSelection(nextSnapshot: WorkspaceSeed) {
     const nextProjectNodes = nextSnapshot.nodes.filter((node) => node.type === 'project');
@@ -1715,6 +1756,49 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       setNoteEditError(error instanceof Error ? error.message : 'Failed to archive node.');
     } finally {
       setIsArchivingNote(false);
+    }
+  }
+
+  async function handleApplyNodeGovernanceAction(action: NodeGovernanceAction, node: Node) {
+    setGovernanceActionError(null);
+    setGovernanceActionPending(action);
+    try {
+      const result = await applyNodeGovernanceActionRequest({
+        id: node.id,
+        action,
+        note: governanceDecisionNote,
+      });
+      setDetail((current) =>
+        current.node?.id === node.id
+          ? {
+              ...current,
+              node: result.node,
+              governance: result.governance,
+              activities: result.activity ? [result.activity, ...current.activities] : current.activities,
+            }
+          : current
+      );
+      await refreshSnapshotState();
+      setGovernanceIssues(await loadGovernanceIssues());
+      setCaptureNotice(
+        action === 'promote'
+          ? `Promoted ${result.node.title} to canonical.`
+          : action === 'contest'
+            ? `Marked ${result.node.title} contested.`
+            : `Archived ${result.node.title} from governance.`
+      );
+      setGovernanceDecisionNote('');
+      setLoadError(null);
+      if (action === 'archive' && notePreviewTargetId === node.id) {
+        setNotePreviewTargetId(null);
+        setIsEditingNote(false);
+        setNoteEditError(null);
+      }
+    } catch (error) {
+      handleRequestFailure(error, 'Failed to apply governance action.');
+      setGovernanceActionError(error instanceof Error ? error.message : 'Failed to apply governance action.');
+    } finally {
+      setGovernanceActionPending(null);
     }
   }
 
@@ -2366,6 +2450,52 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                               Open in graph
                             </button>
                           </div>
+                          {(activeGovernanceNodeCanPromote || activeGovernanceNodeCanContest || activeGovernanceNodeCanArchive) ? (
+                            <>
+                              <label className="search-box" htmlFor="governance-decision-note">
+                                <span>Decision note</span>
+                                <textarea
+                                  id="governance-decision-note"
+                                  value={governanceDecisionNote}
+                                  onChange={(event) => setGovernanceDecisionNote(event.target.value)}
+                                  placeholder="Optional short rationale for this human decision."
+                                  rows={3}
+                                />
+                              </label>
+                              <div className="action-row">
+                                {activeGovernanceNodeCanPromote ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleApplyNodeGovernanceAction('promote', activeGovernanceNode)}
+                                    disabled={governanceActionPending !== null}
+                                  >
+                                    {governanceActionPending === 'promote' ? 'Promoting...' : 'Promote'}
+                                  </button>
+                                ) : null}
+                                {activeGovernanceNodeCanContest ? (
+                                  <button
+                                    type="button"
+                                    className="ghost"
+                                    onClick={() => void handleApplyNodeGovernanceAction('contest', activeGovernanceNode)}
+                                    disabled={governanceActionPending !== null}
+                                  >
+                                    {governanceActionPending === 'contest' ? 'Marking...' : 'Mark contested'}
+                                  </button>
+                                ) : null}
+                                {activeGovernanceNodeCanArchive ? (
+                                  <button
+                                    type="button"
+                                    className="ghost"
+                                    onClick={() => void handleApplyNodeGovernanceAction('archive', activeGovernanceNode)}
+                                    disabled={governanceActionPending !== null}
+                                  >
+                                    {governanceActionPending === 'archive' ? 'Archiving...' : 'Archive suggestion'}
+                                  </button>
+                                ) : null}
+                              </div>
+                              {governanceActionError ? <div className="empty-state compact">{governanceActionError}</div> : null}
+                            </>
+                          ) : null}
                         </div>
                       ) : (
                         <div className="empty-state compact">
@@ -3506,6 +3636,56 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   <div className="note-reading-pane">{notePreviewNode.body || notePreviewNode.summary}</div>
                 )}
                 {noteEditError ? <div className="empty-state compact">{noteEditError}</div> : null}
+                {notePreviewSupportsGovernanceActions && !isEditingNote ? (
+                  <div className="card-stack compact-stack">
+                    <article className="mini-card">
+                      <strong>Governance actions</strong>
+                      <p>Use a direct human decision here when this note should be promoted, contested, or archived.</p>
+                    </article>
+                    <label className="search-box" htmlFor="note-governance-decision-note">
+                      <span>Decision note</span>
+                      <textarea
+                        id="note-governance-decision-note"
+                        value={governanceDecisionNote}
+                        onChange={(event) => setGovernanceDecisionNote(event.target.value)}
+                        placeholder="Optional short rationale for this governance decision."
+                        rows={3}
+                      />
+                    </label>
+                    <div className="action-row">
+                      {canPromoteNode(notePreviewNode) ? (
+                        <button
+                          type="button"
+                          onClick={() => notePreviewNode && void handleApplyNodeGovernanceAction('promote', notePreviewNode)}
+                          disabled={governanceActionPending !== null}
+                        >
+                          {governanceActionPending === 'promote' ? 'Promoting...' : 'Promote'}
+                        </button>
+                      ) : null}
+                      {canContestNode(notePreviewNode) ? (
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => notePreviewNode && void handleApplyNodeGovernanceAction('contest', notePreviewNode)}
+                          disabled={governanceActionPending !== null}
+                        >
+                          {governanceActionPending === 'contest' ? 'Marking...' : 'Mark contested'}
+                        </button>
+                      ) : null}
+                      {canArchiveNode(notePreviewNode) ? (
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => notePreviewNode && void handleApplyNodeGovernanceAction('archive', notePreviewNode)}
+                          disabled={governanceActionPending !== null}
+                        >
+                          {governanceActionPending === 'archive' ? 'Archiving...' : 'Archive suggestion'}
+                        </button>
+                      ) : null}
+                    </div>
+                    {governanceActionError ? <div className="empty-state compact">{governanceActionError}</div> : null}
+                  </div>
+                ) : null}
                 <div className="chip-row">
                   {notePreviewNode.tags.map((tag) => (
                     <span key={tag} className="chip">
@@ -3516,7 +3696,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 <div className="action-row">
                   {isEditingNote ? (
                     <>
-                      <button type="button" onClick={() => void handleSaveNoteEdit()} disabled={isSavingNoteEdit || isArchivingNote}>
+                      <button type="button" onClick={() => void handleSaveNoteEdit()} disabled={isSavingNoteEdit || isArchivingNote || governanceActionPending !== null}>
                         {isSavingNoteEdit ? 'Saving...' : 'Save changes'}
                       </button>
                       <button
@@ -3528,11 +3708,11 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                           setNoteEditBody(notePreviewNode.body);
                           setNoteEditError(null);
                         }}
-                        disabled={isSavingNoteEdit || isArchivingNote}
+                        disabled={isSavingNoteEdit || isArchivingNote || governanceActionPending !== null}
                       >
                         Cancel
                       </button>
-                      <button type="button" className="ghost" onClick={() => void handleArchiveNote()} disabled={isSavingNoteEdit || isArchivingNote}>
+                      <button type="button" className="ghost" onClick={() => void handleArchiveNote()} disabled={isSavingNoteEdit || isArchivingNote || governanceActionPending !== null}>
                         {isArchivingNote ? 'Archiving...' : 'Archive'}
                       </button>
                     </>
@@ -3558,16 +3738,28 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                           setNoteEditBody(notePreviewNode.body);
                           setNoteEditError(null);
                         }}
-                        disabled={isArchivingNote}
+                        disabled={isArchivingNote || governanceActionPending !== null}
                       >
                         Edit
                       </button>
-                      <button type="button" className="ghost" onClick={() => void handleArchiveNote()} disabled={isArchivingNote}>
-                        {isArchivingNote ? 'Archiving...' : 'Archive'}
-                      </button>
+                      {!notePreviewSupportsGovernanceActions ? (
+                        <button type="button" className="ghost" onClick={() => void handleArchiveNote()} disabled={isArchivingNote || governanceActionPending !== null}>
+                          {isArchivingNote ? 'Archiving...' : 'Archive'}
+                        </button>
+                      ) : null}
                     </>
                   )}
                 </div>
+                {detail.governance.events.length ? (
+                  <div className="card-stack compact-stack">
+                    {detail.governance.events.slice(0, 3).map((event) => (
+                      <article key={event.id} className="mini-card">
+                        <strong>{event.eventType}</strong>
+                        <p>{event.reason}</p>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="card-stack compact-stack">
                   {detail.bundleItems.slice(0, 2).map((item) => (
                     <button
