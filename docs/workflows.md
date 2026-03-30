@@ -79,6 +79,7 @@ Operational guidance:
 - use `recallx_search_nodes` for durable-only lookups, especially `type=project` when checking whether a project already exists
 - use `recallx_search_activities` for recent logs, change history, and "what happened recently" questions
 - when work is clearly project-shaped, search for an existing project inside the current workspace before creating a new project node
+- if you want the agent to use RecallX actively throughout the task instead of only at the end, follow the copy-paste MCP instruction and operating loop in `docs/mcp.md`
 
 ## 4. Default workspace root behavior
 

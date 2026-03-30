@@ -204,6 +204,17 @@ Use the returned endpoint list and request examples to search nodes and activiti
 Reuse the existing local service instead of starting a new one.
 ```
 
+Recommended instruction for MCP-connected coding agents:
+
+```text
+Use my RecallX MCP server as an active local memory layer during this task, not just for final write-back.
+Treat the current workspace as the default scope and do not switch workspaces unless I explicitly ask.
+Before making assumptions or starting meaningful work, read context first: confirm the current workspace, use recallx_search_workspace when the target is still unclear, search for an existing project node when the task is clearly project-shaped, and build a compact recallx_context_bundle once the relevant node or project is known.
+Prefer compact context over repeated broad browsing.
+Once a project is known, append routine work logs to that project instead of writing untargeted workspace captures.
+At the end of meaningful work, write back a concise summary of what changed, what was verified, and any follow-up.
+```
+
 ## MCP Bridge
 
 RecallX also ships a stdio MCP adapter for agent clients that prefer tool discovery over raw HTTP calls.
