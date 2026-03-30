@@ -1521,9 +1521,17 @@ export function createRecallXApp(params: {
     repository: ReturnType<typeof currentRepository>,
     input: typeof createNodeSchema._type
   ) {
+    const governancePolicy = resolveGovernancePolicy(
+      repository.getSettings(["review.autoApproveLowRisk", "review.trustedSourceToolNames"])
+    );
+    const rawProjectId = typeof input.metadata.projectId === "string" ? input.metadata.projectId.trim() : "";
+    const linkedProject: NodeRecord | null = rawProjectId ? repository.getNode(rawProjectId) : null;
+    if (linkedProject && (linkedProject.type !== "project" || linkedProject.status === "archived")) {
+      throw new AppError(400, "INVALID_INPUT", "metadata.projectId must reference an active project node.");
+    }
     const governance = resolveNodeGovernance(
       input,
-      resolveGovernancePolicy(repository.getSettings(["review.autoApproveLowRisk", "review.trustedSourceToolNames"]))
+      governancePolicy
     );
     const node = repository.createNode({
       ...input,
@@ -1540,7 +1548,46 @@ export function createRecallXApp(params: {
       }
     });
     const governanceResult = recomputeGovernanceForEntities("node", [node.id]);
-    queueInferredRefresh(node.id, "node-write");
+    if (linkedProject) {
+      if (linkedProject.id !== node.id) {
+        const relationInput = {
+          fromNodeId: node.id,
+          toNodeId: linkedProject.id,
+          relationType: "relevant_to" as const,
+          source: input.source,
+          metadata: {
+            createdFrom: "project-aware-capture",
+            projectId: linkedProject.id,
+          },
+        };
+        const relationGovernance = resolveRelationStatus(relationInput, governancePolicy);
+        const relation = repository.createRelation({
+          ...relationInput,
+          resolvedStatus: relationGovernance.status,
+        });
+        repository.recordProvenance({
+          entityType: "relation",
+          entityId: relation.id,
+          operationType: "create",
+          source: input.source,
+          metadata: {
+            reason: relationGovernance.reason,
+            createdFrom: "project-aware-capture",
+          },
+        });
+        recomputeGovernanceForEntities("relation", [relation.id]);
+        queueInferredRefreshForNodes([node.id, linkedProject.id], "node-write");
+        broadcastWorkspaceEvent({
+          reason: "relation.created",
+          entityType: "relation",
+          entityId: relation.id,
+        });
+      } else {
+        queueInferredRefresh(node.id, "node-write");
+      }
+    } else {
+      queueInferredRefresh(node.id, "node-write");
+    }
     scheduleAutoSemanticIndex();
     broadcastWorkspaceEvent({
       reason: "node.created",

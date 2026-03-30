@@ -272,6 +272,7 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [selectedGovernanceId, setSelectedGovernanceId] = useState<string | null>(null);
   const [captureType, setCaptureType] = useState<Node['type']>('note');
+  const [captureProjectId, setCaptureProjectId] = useState('');
   const [captureTitle, setCaptureTitle] = useState('');
   const [captureBody, setCaptureBody] = useState('');
   const [captureError, setCaptureError] = useState<string | null>(null);
@@ -540,6 +541,15 @@ export default function App() {
     () => graphFocusableNodes.filter((node) => node.type === 'project'),
     [graphFocusableNodes],
   );
+  useEffect(() => {
+    if (!captureProjectId) {
+      return;
+    }
+
+    if (!projectNodes.some((node) => node.id === captureProjectId)) {
+      setCaptureProjectId('');
+    }
+  }, [captureProjectId, projectNodes]);
 
   const selectedNode = selectedNodeId ? nodeMap.get(selectedNodeId) ?? null : null;
   const selectedNodeKey = selectedNode?.id ?? null;
@@ -1192,6 +1202,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
         type: captureType,
         title: captureTitle.trim(),
         body: captureBody.trim(),
+        projectId: captureProjectId || undefined,
       });
       const node = result.node;
       await refreshSnapshotState();
@@ -1201,9 +1212,11 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       setCaptureTitle('');
       setCaptureBody('');
       setCaptureType('note');
+      setCaptureProjectId('');
+      const captureProject = captureProjectId ? projectNodes.find((project) => project.id === captureProjectId) ?? null : null;
       setCaptureNotice(
         result.landing
-          ? `Saved as ${result.landing.canonicality ? `${result.landing.canonicality} ` : ''}${result.landing.status}. ${result.landing.reason}`
+          ? `Saved as ${result.landing.canonicality ? `${result.landing.canonicality} ` : ''}${result.landing.status}.${captureProject ? ` Linked to ${captureProject.title}.` : ''} ${result.landing.reason}`
           : 'Node saved.'
       );
       setLoadError(null);
@@ -2361,6 +2374,17 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     <option value="decision">decision</option>
                     <option value="reference">reference</option>
                     <option value="project">project</option>
+                  </select>
+                </label>
+                <label className="search-box">
+                  <span>Project</span>
+                  <select value={captureProjectId} onChange={(event) => setCaptureProjectId(event.target.value)}>
+                    <option value="">No project</option>
+                    {projectNodes.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.title}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <label className="search-box">

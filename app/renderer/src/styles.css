@@ -961,7 +961,7 @@ pre {
 
 .notes-capture-form {
   display: grid;
-  grid-template-columns: 120px minmax(200px, 0.9fr) minmax(220px, 1.1fr) auto;
+  grid-template-columns: 120px minmax(180px, 0.85fr) minmax(220px, 0.95fr) minmax(220px, 1.1fr) auto;
   gap: 12px;
   align-items: end;
 }
