@@ -67,12 +67,15 @@ If local Codex helpers exist under `.codex/`, use them as lightweight guardrails
 
 - `.codex/skills/recallx-task-loop/` for the default repo task loop
 - `.codex/skills/recallx-harness-self-improve/` for the bounded post-task harness review
+- `.codex/skills/recallx-publish-flow/` for explicit publish, merge, and resync work
 - `.codex/skills/recallx-retrieval-guard/` for retrieval and hot-path changes
 - `.codex/skills/recallx-release-guard/` for release, version, and packaging work
 - `.codex/hooks/preflight.sh` for start-of-task checks
 - `.codex/hooks/post-edit.sh` for validation suggestions after edits
 - `.codex/hooks/pre-finish.sh` for end-of-task validation and write-back reminders
 - `.codex/hooks/finish-report.sh` for a lightweight final response template; add `--verbose` only when changed paths are worth showing
+- `.codex/hooks/return-to-main.sh` for switching the primary checkout back to `main` after a task branch is published
+- `.codex/hooks/publish-and-sync.sh` for pushing the current task branch, creating or reusing a PR, optionally merging it, and resyncing the primary checkout to `main`
 
 ## 6. Start-Of-Task Checklist
 
@@ -228,7 +231,19 @@ Work is only done when all of the following are true:
 - remaining risks or follow-ups are explicitly called out
 - a concise RecallX memory write-back was made when the task was meaningful
 
-## 16. Post-Task Harness Self-Improvement
+## 16. Branch Reset After Publish
+
+After a completed task branch has been committed, pushed, or turned into a PR, return the primary checkout to `main` unless you are intentionally continuing the same branch.
+
+Rules:
+
+- do not start unrelated work from a stale `codex/*` branch
+- prefer `main` as the reset point for the next task in the primary checkout
+- use the task branch only when you are still actively iterating on that same PR
+- if helpful, run `.codex/hooks/return-to-main.sh` after the publish step
+- default to `.codex/hooks/publish-and-sync.sh` when the user wants the full publish flow
+- only stop before merge when the user explicitly asks for manual review or manual merge
+## 17. Post-Task Harness Self-Improvement
 
 After a meaningful task is complete, run one short bounded self-review of the harness itself.
 
@@ -252,7 +267,7 @@ Improvement rules:
 
 When no reusable lesson emerged, record that briefly and move on without changing the harness.
 
-## 17. Suggested Operating Pattern For Long Autonomous Work
+## 18. Suggested Operating Pattern For Long Autonomous Work
 
 Use this rhythm on longer runs:
 
