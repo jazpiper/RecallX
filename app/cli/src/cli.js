@@ -18,6 +18,7 @@ import {
   renderTelemetrySummary,
   renderText,
   renderUpdateResult,
+  renderWorkspaceBackups,
   renderWorkspaceSearchResults,
   renderWorkspaces,
 } from "./format.js";
@@ -532,6 +533,27 @@ async function runWorkspace(apiBase, token, format, args, positionals) {
         action,
         rootPath: args.root || args.path || positionals[1],
       });
+    case "backups": {
+      const data = await requestJson(apiBase, "/workspaces/backups", { token });
+      outputData(data, format, "workspace-backups");
+      return;
+    }
+    case "backup":
+      return runPostCommand(apiBase, token, format, "/workspaces/backups", "workspace-backup", {
+        label: args.label || args.name || positionals[1],
+      });
+    case "export":
+      return runPostCommand(apiBase, token, format, "/workspaces/export", "workspace-export", {
+        format: args.format || args.kind || "json",
+      });
+    case "restore":
+      validateRequired(args.backup || args.id || positionals[1], "workspace restore requires --backup");
+      validateRequired(args.root || args.path || positionals[2], "workspace restore requires --root");
+      return runPostCommand(apiBase, token, format, "/workspaces/restore", "workspace-restore", {
+        backupId: args.backup || args.id || positionals[1],
+        targetRootPath: args.root || args.path || positionals[2],
+        workspaceName: args.name || args.title,
+      });
   }
 
   throw new Error(`Unknown workspace action: ${action}`);
@@ -629,6 +651,9 @@ function outputData(data, format, command) {
     case "workspace-list":
       writeStdout(renderWorkspaces(payload));
       return;
+    case "workspace-backups":
+      writeStdout(renderWorkspaceBackups(payload));
+      return;
     case "append":
     case "create":
     case "link":
@@ -639,6 +664,9 @@ function outputData(data, format, command) {
     case "workspace-current":
     case "workspace-create":
     case "workspace-open":
+    case "workspace-backup":
+    case "workspace-export":
+    case "workspace-restore":
       writeStdout(renderText(payload));
       return;
     case "observability-summary":
@@ -795,6 +823,10 @@ Usage:
   recallx workspace list
   recallx workspace create --root /path/to/workspace [--name "Personal"]
   recallx workspace open --root /path/to/workspace
+  recallx workspace backups
+  recallx workspace backup [--label "before-upgrade"]
+  recallx workspace export [--format json|markdown]
+  recallx workspace restore --backup <id> --root /path/to/restore [--name "Recovered"]
   recallx observability summary [--since 24h]
   recallx observability errors [--since 24h] [--surface mcp] [--limit 50]
 

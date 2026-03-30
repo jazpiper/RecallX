@@ -7,6 +7,7 @@ export function renderWorkspaceSearchResults(data: Record<string, unknown>): str
 export function renderRelated(data: Record<string, unknown>): string;
 export function renderGovernanceIssues(data: Record<string, unknown>): string;
 export function renderWorkspaces(data: Record<string, unknown>): string;
+export function renderWorkspaceBackups(data: Record<string, unknown>): string;
 export function renderBundleMarkdown(bundle: Record<string, unknown>): string;
 export function renderTelemetrySummary(data: Record<string, unknown>): string;
 export function renderTelemetryErrors(data: Record<string, unknown>): string;

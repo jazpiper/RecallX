@@ -2,8 +2,10 @@ import { Suspense, lazy, startTransition, useDeferredValue, useEffect, useMemo, 
 import {
   appendRelationUsageEvent,
   clearRendererToken,
+  createWorkspaceBackup,
   createWorkspace as createWorkspaceSession,
   createNode,
+  exportWorkspace as exportWorkspaceSnapshot,
   getBootstrap,
   getContextBundlePreview,
   getGovernanceIssues,
@@ -14,14 +16,19 @@ import {
   getWorkspaceCatalog,
   getWorkspace,
   isAuthError,
+  listWorkspaceBackups,
   openWorkspace as openWorkspaceSession,
   refreshNodeSummary as refreshNodeSummaryRequest,
+  restoreWorkspaceBackup,
   saveRendererToken,
+  searchWorkspace,
   subscribeWorkspaceEvents,
 } from './lib/mockApi';
 import { buildProjectGraphEmphasis, filterProjectGraphView, listProjectGraphRelationTypes } from './lib/projectGraph';
+import { buildRecentSelectableNodeIds, buildSearchResultNodeMap } from './lib/searchResults';
 import type {
   Activity,
+  ActivitySearchHit,
   Artifact,
   ContextBundlePreviewItem,
   GovernanceIssueItem,
@@ -32,7 +39,10 @@ import type {
   Node,
   ProjectGraphPayload,
   RelationType,
+  SearchNodeHit,
+  WorkspaceBackupRecord,
   WorkspaceCatalogItem,
+  WorkspaceExportRecord,
   WorkspaceSeed,
 } from './lib/types';
 
@@ -43,6 +53,14 @@ type DetailPanel = {
   activities: Activity[];
   artifacts: Artifact[];
   governance: GovernancePayload;
+};
+
+type SearchPanelState = {
+  nodes: SearchNodeHit[];
+  activities: ActivitySearchHit[];
+  total: number;
+  isLoading: boolean;
+  error: string | null;
 };
 
 type GraphMode = 'neighborhood' | 'project-map';
@@ -240,6 +258,13 @@ export default function App() {
   const [selectedNodeId, setSelectedNodeId] = useState<string>('node_recallx');
   const [query, setQuery] = useState('');
   const deferredQuery = useDeferredValue(query);
+  const [searchPanel, setSearchPanel] = useState<SearchPanelState>({
+    nodes: [],
+    activities: [],
+    total: 0,
+    isLoading: false,
+    error: null,
+  });
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState(false);
@@ -254,9 +279,15 @@ export default function App() {
   const [isSavingCapture, setIsSavingCapture] = useState(false);
   const [workspaceRootInput, setWorkspaceRootInput] = useState('');
   const [workspaceNameInput, setWorkspaceNameInput] = useState('');
+  const [restoreTargetRootInput, setRestoreTargetRootInput] = useState('');
+  const [backupLabelInput, setBackupLabelInput] = useState('');
   const [workspaceActionError, setWorkspaceActionError] = useState<string | null>(null);
   const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false);
-  const [isNotePreviewOpen, setIsNotePreviewOpen] = useState(false);
+  const [workspaceBackups, setWorkspaceBackups] = useState<WorkspaceBackupRecord[]>([]);
+  const [isWorkspaceBackupBusy, setIsWorkspaceBackupBusy] = useState(false);
+  const [workspaceBackupNotice, setWorkspaceBackupNotice] = useState<string | null>(null);
+  const [lastWorkspaceExport, setLastWorkspaceExport] = useState<WorkspaceExportRecord | null>(null);
+  const [notePreviewTargetId, setNotePreviewTargetId] = useState<string | null>(null);
   const [guideSectionId, setGuideSectionId] = useState('overview');
   const bundleUsageEventKeysRef = useRef(new Set<string>());
   const relationUsageSessionIdRef = useRef(
@@ -280,12 +311,14 @@ export default function App() {
     workspaceOverride?: WorkspaceSeed['workspace'];
     catalogOverride?: { current: WorkspaceSeed['workspace']; items: WorkspaceCatalogItem[] };
   }) {
-    const [snapshotResult, catalog] = await Promise.all([
+    const [snapshotResult, catalog, backups] = await Promise.all([
       refreshSnapshotState(options?.workspaceOverride),
       options?.catalogOverride ? Promise.resolve(options.catalogOverride) : getWorkspaceCatalog(),
+      listWorkspaceBackups().catch(() => []),
     ]);
     setWorkspace(options?.catalogOverride?.current ?? options?.workspaceOverride ?? snapshotResult.workspace);
     setWorkspaceCatalog(catalog.items);
+    setWorkspaceBackups(backups);
     setWorkspaceRootInput(catalog.current.rootPath);
     setLoadError(null);
     return snapshotResult;
@@ -417,11 +450,70 @@ export default function App() {
     };
   }, [authRequired, isLoading, view, workspace?.authMode]);
 
-  const nodeMap = useMemo(() => {
-    const map = new Map<string, Node>();
-    snapshot?.nodes.forEach((node) => map.set(node.id, node));
-    return map;
-  }, [snapshot]);
+  useEffect(() => {
+    if (isLoading || authRequired || view !== 'recent') {
+      return;
+    }
+
+    const normalizedQuery = deferredQuery.trim();
+    if (!normalizedQuery) {
+      setSearchPanel({
+        nodes: [],
+        activities: [],
+        total: 0,
+        isLoading: false,
+        error: null,
+      });
+      return;
+    }
+
+    let cancelled = false;
+    setSearchPanel((current) => ({
+      ...current,
+      isLoading: true,
+      error: null,
+    }));
+
+    void searchWorkspace({
+      query: normalizedQuery,
+      limit: 24,
+      offset: 0,
+    })
+      .then((result) => {
+        if (cancelled) return;
+        setSearchPanel({
+          nodes: result.nodes,
+          activities: result.activities,
+          total: result.total,
+          isLoading: false,
+          error: null,
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setSearchPanel({
+          nodes: [],
+          activities: [],
+          total: 0,
+          isLoading: false,
+          error: error instanceof Error ? error.message : 'Failed to search the workspace.',
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authRequired, deferredQuery, isLoading, view]);
+
+  const nodeMap = useMemo(
+    () => buildSearchResultNodeMap(snapshot?.nodes ?? [], searchPanel.nodes, searchPanel.activities),
+    [searchPanel.activities, searchPanel.nodes, snapshot],
+  );
+
+  const recentSelectableNodeIds = useMemo(
+    () => buildRecentSelectableNodeIds(searchPanel.nodes, searchPanel.activities),
+    [searchPanel.activities, searchPanel.nodes],
+  );
 
   useEffect(() => {
     if (!snapshot?.nodes.length) {
@@ -430,8 +522,11 @@ export default function App() {
     if (!selectedNodeId || nodeMap.has(selectedNodeId)) {
       return;
     }
+    if (view === 'recent' && recentSelectableNodeIds.has(selectedNodeId)) {
+      return;
+    }
     setSelectedNodeId(snapshot.nodes[0]?.id ?? '');
-  }, [nodeMap, selectedNodeId, snapshot]);
+  }, [nodeMap, recentSelectableNodeIds, selectedNodeId, snapshot, view]);
 
   const graphFocusableNodes = useMemo(
     () =>
@@ -594,36 +689,75 @@ export default function App() {
   const [governanceIssues, setGovernanceIssues] = useState<GovernanceIssueItem[]>([]);
   const searchableNoteNodes = useMemo(
     () =>
-      (snapshot?.nodes ?? [])
-        .map((node) => ({
-          node,
-          searchText: [node.title, node.summary, node.body, node.tags.join(' ')].join(' ').toLowerCase(),
-        }))
-        .sort(
-          (left, right) =>
-            right.node.updatedAt.localeCompare(left.node.updatedAt) || left.node.title.localeCompare(right.node.title),
-        ),
+      (snapshot?.nodes ?? []).slice().sort(
+        (left, right) =>
+          right.updatedAt.localeCompare(left.updatedAt) || left.title.localeCompare(right.title),
+      ),
     [snapshot],
   );
   const noteNodes = useMemo(() => {
-    const normalizedQuery = deferredQuery.trim().toLowerCase();
-    if (!normalizedQuery) {
-      return searchableNoteNodes.map((item) => item.node);
+    if (!deferredQuery.trim()) {
+      return searchableNoteNodes;
     }
 
-    return searchableNoteNodes
-      .filter((item) => item.searchText.includes(normalizedQuery))
-      .map((item) => item.node);
-  }, [deferredQuery, searchableNoteNodes]);
+    return searchPanel.nodes;
+  }, [deferredQuery, searchPanel.nodes, searchableNoteNodes]);
+  const noteActivityHits = useMemo(() => (deferredQuery.trim() ? searchPanel.activities : []), [deferredQuery, searchPanel.activities]);
   const activeNoteNode = useMemo(
     () => noteNodes.find((node) => node.id === selectedNodeId) ?? null,
     [noteNodes, selectedNodeId],
   );
-  const notePreviewNode = isNotePreviewOpen
-    ? detail.node?.id === activeNoteNode?.id
+  const notePreviewNode = notePreviewTargetId
+    ? detail.node?.id === notePreviewTargetId
       ? detail.node
-      : activeNoteNode
+      : nodeMap.get(notePreviewTargetId) ?? null
     : null;
+
+  useEffect(() => {
+    let mounted = true;
+    const nodeId = notePreviewTargetId;
+    const currentNode = nodeId ? nodeMap.get(nodeId) ?? null : null;
+    if (view !== 'recent' || !nodeId || !currentNode) return undefined;
+    const targetNodeId = nodeId;
+    setDetail({
+      ...emptyDetailPanel(),
+      node: currentNode,
+    });
+
+    async function loadRecentNoteDetail() {
+      try {
+        const [nodeDetail, bundleItems] = await Promise.all([
+          getNodeDetail(targetNodeId),
+          getContextBundlePreview(targetNodeId),
+        ]);
+
+        if (!mounted) return;
+        const resolvedDetail: NodeDetail =
+          nodeDetail ?? {
+            ...emptyDetailPanel(),
+            node: currentNode,
+          };
+        setDetail({
+          node: resolvedDetail.node?.id === targetNodeId ? resolvedDetail.node : currentNode,
+          related: resolvedDetail.related,
+          bundleItems,
+          activities: resolvedDetail.activities,
+          artifacts: resolvedDetail.artifacts,
+          governance: resolvedDetail.governance,
+        });
+        setLoadError(null);
+      } catch (error) {
+        if (!mounted) return;
+        handleRequestFailure(error, 'Failed to load note detail.');
+      }
+    }
+
+    void loadRecentNoteDetail();
+
+    return () => {
+      mounted = false;
+    };
+  }, [nodeMap, notePreviewTargetId, view]);
 
   useEffect(() => {
     if (view !== 'governance') return;
@@ -676,8 +810,11 @@ export default function App() {
   const workspaceName = workspace?.name ?? 'RecallX';
   const apiBase = formatApiBase(workspace?.apiBind ?? '127.0.0.1:8787');
   const workspaceRoot = workspace?.rootPath ?? '';
-  const workspaceDbPath = workspaceRoot ? `${workspaceRoot}/workspace.db` : '';
-  const artifactsPath = workspaceRoot ? `${workspaceRoot}/artifacts` : '';
+  const workspaceDbPath = workspace?.paths?.dbPath ?? (workspaceRoot ? `${workspaceRoot}/workspace.db` : '');
+  const artifactsPath = workspace?.paths?.artifactsDir ?? (workspaceRoot ? `${workspaceRoot}/artifacts` : '');
+  const exportsPath = workspace?.paths?.exportsDir ?? (workspaceRoot ? `${workspaceRoot}/exports` : '');
+  const backupsPath = workspace?.paths?.backupsDir ?? (workspaceRoot ? `${workspaceRoot}/backups` : '');
+  const workspaceSafetyWarnings = workspace?.safety?.warnings ?? [];
   const defaultMcpCommand = `node dist/server/app/mcp/index.js --api ${apiBase}`;
   const mcpCommand = defaultMcpCommand;
   const genericMcpConfig = `{
@@ -939,7 +1076,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
 
   function resetWorkspaceSelection(nextSnapshot: WorkspaceSeed) {
     setSelectedNodeId(nextSnapshot.nodes[0]?.id ?? '');
-    setIsNotePreviewOpen(false);
+    setNotePreviewTargetId(null);
     setDetail(emptyDetailPanel());
     setProjectGraph(null);
     setProjectGraphProjectId(nextSnapshot.nodes.find((node) => node.type === 'project')?.id ?? null);
@@ -1026,7 +1163,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       const node = result.node;
       await refreshSnapshotState();
       focusNode(node.id);
-      setIsNotePreviewOpen(false);
+      setNotePreviewTargetId(null);
       setView('recent');
       setCaptureTitle('');
       setCaptureBody('');
@@ -1151,6 +1288,68 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       setWorkspaceActionError(error instanceof Error ? error.message : 'Failed to switch workspace.');
     } finally {
       setIsSwitchingWorkspace(false);
+    }
+  }
+
+  async function handleCreateWorkspaceBackup() {
+    setWorkspaceBackupNotice(null);
+    setWorkspaceActionError(null);
+    setIsWorkspaceBackupBusy(true);
+    try {
+      const backup = await createWorkspaceBackup(backupLabelInput.trim() || undefined);
+      const backups = await listWorkspaceBackups();
+      setWorkspaceBackups(backups);
+      setBackupLabelInput('');
+      setWorkspaceBackupNotice(`Created snapshot at ${backup.backupPath}`);
+    } catch (error) {
+      setWorkspaceActionError(error instanceof Error ? error.message : 'Failed to create workspace backup.');
+    } finally {
+      setIsWorkspaceBackupBusy(false);
+    }
+  }
+
+  async function handleExportWorkspace(format: 'json' | 'markdown') {
+    setWorkspaceBackupNotice(null);
+    setWorkspaceActionError(null);
+    setIsWorkspaceBackupBusy(true);
+    try {
+      const exportRecord = await exportWorkspaceSnapshot(format);
+      setLastWorkspaceExport(exportRecord);
+      setWorkspaceBackupNotice(`Exported ${format.toUpperCase()} snapshot to ${exportRecord.exportPath}`);
+    } catch (error) {
+      setWorkspaceActionError(error instanceof Error ? error.message : 'Failed to export workspace.');
+    } finally {
+      setIsWorkspaceBackupBusy(false);
+    }
+  }
+
+  async function handleRestoreWorkspaceBackup(backupId: string) {
+    const targetRootPath = restoreTargetRootInput.trim();
+    if (!targetRootPath) {
+      setWorkspaceActionError('Restore target root is required.');
+      return;
+    }
+
+    setWorkspaceBackupNotice(null);
+    setWorkspaceActionError(null);
+    setIsWorkspaceBackupBusy(true);
+    try {
+      const catalog = await restoreWorkspaceBackup({
+        backupId,
+        targetRootPath,
+        workspaceName: workspaceNameInput.trim() || undefined,
+      });
+      const nextSnapshot = await refreshWorkspaceState({
+        workspaceOverride: catalog.current,
+        catalogOverride: catalog,
+      });
+      resetWorkspaceSelection(nextSnapshot);
+      setRestoreTargetRootInput('');
+      setWorkspaceBackupNotice(`Restored backup ${backupId} into ${targetRootPath}`);
+    } catch (error) {
+      setWorkspaceActionError(error instanceof Error ? error.message : 'Failed to restore workspace backup.');
+    } finally {
+      setIsWorkspaceBackupBusy(false);
     }
   }
 
@@ -1937,6 +2136,122 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   <strong>{artifactsPath || 'Unavailable'}</strong>
                   <p>Filesystem storage for attachments and export-friendly files inside the workspace root.</p>
                 </article>
+                <article className="info-block">
+                  <span className="info-label">Exports</span>
+                  <strong>{exportsPath || 'Unavailable'}</strong>
+                  <p>Portable files written for handoff, backup inspection, and recovery workflows.</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">Backups</span>
+                  <strong>{backupsPath || 'Unavailable'}</strong>
+                  <p>Manual workspace snapshots live here before upgrades, restores, or device moves.</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">Safety</span>
+                  <strong>{workspaceSafetyWarnings.length ? `${workspaceSafetyWarnings.length} warning(s)` : 'clear'}</strong>
+                  <p>Session metadata and lock markers help keep cloud-folder use single-writer and inspectable.</p>
+                </article>
+              </div>
+            </section>
+          </div>
+          <div className="two-column-grid">
+            <section className="card page-card">
+              <div className="page-copy">
+                <span className="eyebrow">Safety</span>
+                <h3>Single-writer safety signals</h3>
+              </div>
+              <div className="info-grid three">
+                <article className="info-block">
+                  <span className="info-label">Machine</span>
+                  <strong>{workspace?.safety?.machineId ?? 'Unavailable'}</strong>
+                  <p>Current host recorded in the workspace session metadata.</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">Last opened</span>
+                  <strong>{workspace?.safety?.lastOpenedAt ? formatTime(workspace.safety.lastOpenedAt) : 'Unavailable'}</strong>
+                  <p>Most recent session-open marker written by the runtime.</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">Last clean close</span>
+                  <strong>{workspace?.safety?.lastCleanCloseAt ? formatTime(workspace.safety.lastCleanCloseAt) : 'Not recorded yet'}</strong>
+                  <p>Used to warn before writing into a workspace that may not have closed cleanly.</p>
+                </article>
+              </div>
+              {workspaceSafetyWarnings.length ? (
+                <div className="card-stack compact-stack">
+                  {workspaceSafetyWarnings.map((warning) => (
+                    <div key={warning.code} className="empty-state compact">
+                      {warning.message}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="notice">No active lock or unclean-close warning is currently attached to this workspace.</div>
+              )}
+            </section>
+            <section className="card page-card">
+              <div className="page-copy">
+                <span className="eyebrow">Backup and restore</span>
+                <h3>Protect the current workspace before risky moves</h3>
+              </div>
+              <form
+                className="capture-form compact-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleCreateWorkspaceBackup();
+                }}
+              >
+                <label className="search-box">
+                  <span>Snapshot label</span>
+                  <input
+                    value={backupLabelInput}
+                    onChange={(event) => setBackupLabelInput(event.target.value)}
+                    placeholder="before-upgrade"
+                  />
+                </label>
+                <label className="search-box">
+                  <span>Restore target root</span>
+                  <input
+                    value={restoreTargetRootInput}
+                    onChange={(event) => setRestoreTargetRootInput(event.target.value)}
+                    placeholder="/Users/name/Documents/RecallX-Restore"
+                  />
+                </label>
+                {workspaceActionError ? <div className="empty-state compact">{workspaceActionError}</div> : null}
+                {workspaceBackupNotice ? <div className="notice">{workspaceBackupNotice}</div> : null}
+                {lastWorkspaceExport ? <div className="notice">Latest export: {lastWorkspaceExport.exportPath}</div> : null}
+                <div className="action-row">
+                  <button type="submit" disabled={isWorkspaceBackupBusy}>
+                    {isWorkspaceBackupBusy ? 'Working...' : 'Create snapshot'}
+                  </button>
+                  <button type="button" className="ghost" disabled={isWorkspaceBackupBusy} onClick={() => void handleExportWorkspace('json')}>
+                    Export JSON
+                  </button>
+                  <button type="button" className="ghost" disabled={isWorkspaceBackupBusy} onClick={() => void handleExportWorkspace('markdown')}>
+                    Export Markdown
+                  </button>
+                </div>
+              </form>
+              <div className="card-stack compact-stack">
+                {workspaceBackups.length ? (
+                  workspaceBackups.slice(0, 5).map((backup) => (
+                    <button
+                      key={backup.id}
+                      type="button"
+                      className="route-card"
+                      disabled={isWorkspaceBackupBusy}
+                      onClick={() => void handleRestoreWorkspaceBackup(backup.id)}
+                    >
+                      <div>
+                        <strong>{backup.label}</strong>
+                        <span>{backup.backupPath}</span>
+                      </div>
+                      <em>{formatTime(backup.createdAt)}</em>
+                    </button>
+                  ))
+                ) : (
+                  <div className="empty-state compact">No snapshots yet. Create one before upgrades, imports, or device handoff.</div>
+                )}
               </div>
             </section>
           </div>
@@ -1985,8 +2300,11 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 />
               </label>
               <div className="chip-row">
-                <span className="chip chip-static">{noteNodes.length} visible</span>
+                <span className="chip chip-static">
+                  {deferredQuery.trim() ? `${searchPanel.total} server hits` : `${noteNodes.length} recent cards`}
+                </span>
                 <span className="chip chip-static">{workspaceName}</span>
+                {deferredQuery.trim() ? <span className="chip chip-static">nodes + activities</span> : null}
               </div>
             </section>
 
@@ -2036,6 +2354,9 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             </section>
           </div>
 
+          {searchPanel.error ? <div className="empty-state compact">{searchPanel.error}</div> : null}
+          {searchPanel.isLoading ? <div className="empty-state compact">Searching the full workspace...</div> : null}
+
           {noteNodes.length ? (
             <section className="notes-board">
               {noteNodes.map((node) => (
@@ -2045,15 +2366,15 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   className={`note-tile ${activeNoteNode?.id === node.id ? 'selected' : ''}`}
                   onClick={() => {
                     focusNode(node.id, 'recent');
-                    setIsNotePreviewOpen(true);
+                    setNotePreviewTargetId(node.id);
                   }}
                 >
                   <div className="result-card__top">
                     <span className={`pill ${badgeTone(node.status)}`}>{node.type}</span>
                     <span className="note-tile-time">{formatTime(node.updatedAt)}</span>
                   </div>
-                  <strong>{node.title}</strong>
-                  <p>{node.summary || node.body || 'No summary yet.'}</p>
+                  <strong>{node.title ?? node.id}</strong>
+                  <p>{node.summary || 'No summary yet.'}</p>
                   <div className="chip-row">
                     {node.tags.slice(0, 3).map((tag) => (
                       <span key={tag} className="chip">
@@ -2062,24 +2383,56 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     ))}
                   </div>
                   <div className="meta-row">
-                    <span>{node.sourceLabel}</span>
+                    <span>{node.sourceLabel ?? 'unknown'}</span>
                   </div>
                 </button>
               ))}
             </section>
           ) : (
             <div className="empty-state">
-              {snapshot?.nodes.length
+              {deferredQuery.trim()
+                ? 'No node hits matched this workspace query.'
+                : snapshot?.nodes.length
                 ? 'No cards match this query.'
                 : 'There are no saved memory cards in the current workspace yet.'}
             </div>
           )}
 
+          {noteActivityHits.length ? (
+            <section className="card page-card">
+              <div className="page-copy compact-copy">
+                <span className="eyebrow">Activity hits</span>
+                <h3>Recent movement that matched this search</h3>
+              </div>
+              <div className="card-stack compact-stack">
+                {noteActivityHits.map((activity) => (
+                  <button
+                    key={activity.id}
+                    type="button"
+                    className="route-card"
+                    onClick={() => {
+                      if (activity.targetNodeId) {
+                        focusNode(activity.targetNodeId, 'recent');
+                        setNotePreviewTargetId(activity.targetNodeId);
+                      }
+                    }}
+                  >
+                    <div>
+                      <strong>{activity.targetNodeTitle ?? activity.targetNodeId}</strong>
+                      <span>{activity.body || activity.activityType}</span>
+                    </div>
+                    <em>{formatTime(activity.createdAt)}</em>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
           {notePreviewNode ? (
             <div
               className="note-overlay"
               onClick={() => {
-                setIsNotePreviewOpen(false);
+                setNotePreviewTargetId(null);
               }}
             >
               <section
@@ -2099,7 +2452,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                       type="button"
                       className="ghost"
                       onClick={() => {
-                        setIsNotePreviewOpen(false);
+                        setNotePreviewTargetId(null);
                       }}
                     >
                       Close

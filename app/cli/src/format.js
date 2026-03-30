@@ -144,6 +144,20 @@ export function renderWorkspaces(data) {
     .join("\n\n")}\n`;
 }
 
+export function renderWorkspaceBackups(data) {
+  const items = data?.items || [];
+  if (!items.length) {
+    return "No backups.\n";
+  }
+
+  return `${items
+    .map(
+      (item, index) =>
+        `${index + 1}. ${item.label || item.id}\n  id: ${item.id}\n  created: ${item.createdAt}\n  path: ${item.backupPath}`,
+    )
+    .join("\n\n")}\n`;
+}
+
 export function renderUpdateResult(data) {
   const lines = [
     `package: ${data?.packageName || ""}`,

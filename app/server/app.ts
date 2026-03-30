@@ -12,10 +12,12 @@ import {
   attachArtifactSchema,
   buildContextBundleSchema,
   captureMemorySchema,
+  createWorkspaceBackupSchema,
   createWorkspaceSchema,
   createNodeSchema,
   createNodesSchema,
   createRelationSchema,
+  exportWorkspaceSchema,
   governanceIssuesQuerySchema,
   nodeSearchSchema,
   openWorkspaceSchema,
@@ -24,6 +26,7 @@ import {
   recomputeInferredRelationsSchema,
   relationTypes,
   registerIntegrationSchema,
+  restoreWorkspaceBackupSchema,
   sourceSchema,
   upsertInferredRelationSchema,
   updateIntegrationSchema,
@@ -677,6 +680,31 @@ function buildServiceIndex(workspaceInfo: {
         purpose: "Switch the running service to another existing workspace.",
         requestExample: {
           rootPath: "/Users/name/Documents/RecallX-Personal"
+        }
+      },
+      {
+        method: "POST",
+        path: "/api/v1/workspaces/backups",
+        purpose: "Create a manual workspace snapshot before risky changes.",
+        requestExample: {
+          label: "before-upgrade"
+        }
+      },
+      {
+        method: "POST",
+        path: "/api/v1/workspaces/restore",
+        purpose: "Restore a snapshot into a new workspace root and switch to it.",
+        requestExample: {
+          backupId: "20260330123000-before-upgrade",
+          targetRootPath: "/Users/name/Documents/RecallX-Restore"
+        }
+      },
+      {
+        method: "POST",
+        path: "/api/v1/workspaces/export",
+        purpose: "Export the active workspace to a portable file under exports/.",
+        requestExample: {
+          format: "json"
         }
       }
     ],
@@ -1771,6 +1799,42 @@ export function createRecallXApp(params: {
     const input = openWorkspaceSchema.parse(request.body ?? {});
     const workspace = params.workspaceSessionManager.openWorkspace(input.rootPath);
     commitWorkspaceMutation(response, workspace, "workspace.opened");
+  });
+
+  app.get("/api/v1/workspaces/backups", (_request, response) => {
+    response.json(
+      envelope(response.locals.requestId, {
+        items: params.workspaceSessionManager.listBackups()
+      })
+    );
+  });
+
+  app.post("/api/v1/workspaces/backups", (request, response) => {
+    const input = createWorkspaceBackupSchema.parse(request.body ?? {});
+    const backup = params.workspaceSessionManager.createBackup(input.label);
+    response.status(201).json(envelope(response.locals.requestId, { backup }));
+  });
+
+  app.post("/api/v1/workspaces/export", (request, response) => {
+    const input = exportWorkspaceSchema.parse(request.body ?? {});
+    const exportRecord = params.workspaceSessionManager.exportWorkspace(input.format);
+    response.status(201).json(envelope(response.locals.requestId, { export: exportRecord }));
+  });
+
+  app.post("/api/v1/workspaces/restore", (request, response) => {
+    const input = restoreWorkspaceBackupSchema.parse(request.body ?? {});
+    const workspace = params.workspaceSessionManager.restoreBackup(input.backupId, input.targetRootPath, input.workspaceName);
+    refreshWorkspaceState();
+    broadcastWorkspaceEvent({
+      reason: "workspace.restored",
+      entityType: "workspace"
+    });
+    response.status(201).json(
+      envelope(response.locals.requestId, {
+        restoredBackupId: input.backupId,
+        ...buildWorkspaceMutationPayload(workspace)
+      })
+    );
   });
 
   app.get("/api/v1/observability/summary", handleAsyncRoute(async (request, response) => {

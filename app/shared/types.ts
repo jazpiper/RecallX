@@ -48,11 +48,54 @@ export interface WorkspaceInfo {
   bindAddress: string;
   enabledIntegrationModes: string[];
   authMode: string;
+  paths?: {
+    dbPath: string;
+    artifactsDir: string;
+    exportsDir: string;
+    backupsDir: string;
+    configDir: string;
+    cacheDir: string;
+  };
+  safety?: WorkspaceSafetyStatus;
 }
 
 export interface WorkspaceCatalogItem extends WorkspaceInfo {
   isCurrent: boolean;
   lastOpenedAt: string;
+}
+
+export interface WorkspaceSafetyWarning {
+  code: "active_lock" | "unclean_shutdown" | "recent_other_machine";
+  message: string;
+}
+
+export interface WorkspaceSafetyStatus {
+  machineId: string;
+  sessionId: string;
+  lastOpenedAt: string;
+  lastCleanCloseAt: string | null;
+  lockPresent: boolean;
+  lockUpdatedAt: string | null;
+  activeSessionMachineId: string | null;
+  warnings: WorkspaceSafetyWarning[];
+}
+
+export interface WorkspaceBackupRecord {
+  id: string;
+  label: string;
+  createdAt: string;
+  backupPath: string;
+  workspaceRoot: string;
+  workspaceName: string;
+}
+
+export interface WorkspaceExportRecord {
+  id: string;
+  format: "json" | "markdown";
+  createdAt: string;
+  exportPath: string;
+  workspaceRoot: string;
+  workspaceName: string;
 }
 
 export interface NodeRecord {

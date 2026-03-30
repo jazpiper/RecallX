@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { ServerConfig } from "./config.js";
@@ -7,8 +8,16 @@ import { openDatabase } from "./db.js";
 import { AppError } from "./errors.js";
 import { bootstrapAutomaticGovernance } from "./governance.js";
 import { RecallXRepository } from "./repositories.js";
+import {
+  beginWorkspaceSession,
+  createWorkspaceBackup,
+  endWorkspaceSession,
+  exportWorkspaceSnapshot,
+  listWorkspaceBackups,
+  restoreWorkspaceBackup,
+} from "./workspace-ops.js";
 import { defaultWorkspaceName, ensureWorkspace, type WorkspacePaths } from "./workspace.js";
-import type { WorkspaceCatalogItem, WorkspaceInfo } from "../shared/types.js";
+import type { WorkspaceBackupRecord, WorkspaceCatalogItem, WorkspaceExportRecord, WorkspaceInfo } from "../shared/types.js";
 import { RECALLX_VERSION } from "../shared/version.js";
 
 interface WorkspaceSessionState {
@@ -23,6 +32,8 @@ export class WorkspaceSessionManager {
   private currentState: WorkspaceSessionState;
 
   private readonly history = new Map<string, WorkspaceCatalogItem>();
+
+  private readonly processSessionId = randomUUID();
 
   constructor(
     private readonly serverConfig: ServerConfig,
@@ -63,6 +74,71 @@ export class WorkspaceSessionManager {
     });
   }
 
+  listBackups(): WorkspaceBackupRecord[] {
+    return listWorkspaceBackups(this.currentState.paths);
+  }
+
+  createBackup(label?: string): WorkspaceBackupRecord {
+    return createWorkspaceBackup(this.currentState.paths, {
+      workspaceName: this.currentState.workspaceInfo.workspaceName,
+      appVersion: RECALLX_VERSION,
+      label,
+      now: new Date().toISOString(),
+    });
+  }
+
+  exportWorkspace(format: "json" | "markdown"): WorkspaceExportRecord {
+    const repository = this.currentState.repository;
+    const payload = {
+      workspace: this.currentState.workspaceInfo,
+      nodes: repository.listAllNodes(),
+      relations: repository.listAllRelations(),
+      activities: repository.listAllActivities(),
+      artifacts: repository.listAllArtifacts(),
+      integrations: repository.listIntegrations(),
+      settings: repository.getSettings(),
+    };
+    const markdown = [
+      `# ${this.currentState.workspaceInfo.workspaceName}`,
+      "",
+      `- exportedAt: ${new Date().toISOString()}`,
+      `- workspaceRoot: ${this.currentState.workspaceRoot}`,
+      `- nodes: ${payload.nodes.length}`,
+      `- relations: ${payload.relations.length}`,
+      `- activities: ${payload.activities.length}`,
+      `- artifacts: ${payload.artifacts.length}`,
+      `- integrations: ${payload.integrations.length}`,
+      "",
+      "## Recent Nodes",
+      ...payload.nodes.slice(0, 20).map((node) => `- ${node.title ?? node.id} (${node.type})`),
+    ].join("\n");
+
+    return exportWorkspaceSnapshot(this.currentState.paths, {
+      workspaceName: this.currentState.workspaceInfo.workspaceName,
+      appVersion: RECALLX_VERSION,
+      now: new Date().toISOString(),
+      format,
+      payload,
+      markdown,
+    });
+  }
+
+  restoreBackup(backupId: string, targetRootPath: string, workspaceName?: string): WorkspaceCatalogItem {
+    const manifest = restoreWorkspaceBackup(this.currentState.paths, {
+      backupId,
+      targetRootPath,
+    });
+
+    return this.swapWorkspace(targetRootPath, {
+      workspaceName: workspaceName?.trim() || manifest.workspaceName,
+      requireExistingRoot: true,
+    });
+  }
+
+  shutdown(): void {
+    this.closeState(this.currentState);
+  }
+
   private swapWorkspace(
     rootPath: string,
     options: {
@@ -74,7 +150,7 @@ export class WorkspaceSessionManager {
     const previousState = this.currentState;
     this.currentState = nextState;
     this.remember(nextState);
-    previousState.db.close();
+    this.closeState(previousState);
     return this.getWorkspaceCatalogItem(nextState);
   }
 
@@ -95,9 +171,10 @@ export class WorkspaceSessionManager {
     const repository = new RecallXRepository(db, resolvedRoot);
     const storedSettings = repository.getSettings(["workspace.name"]);
     const resolvedName =
-      typeof storedSettings["workspace.name"] === "string" && storedSettings["workspace.name"].trim()
+      options.workspaceName?.trim() ||
+      (typeof storedSettings["workspace.name"] === "string" && storedSettings["workspace.name"].trim()
         ? String(storedSettings["workspace.name"])
-        : options.workspaceName?.trim() || defaultWorkspaceName(resolvedRoot);
+        : defaultWorkspaceName(resolvedRoot));
 
     repository.setSetting("workspace.name", resolvedName);
     repository.setSetting("workspace.version", RECALLX_VERSION);
@@ -140,6 +217,12 @@ export class WorkspaceSessionManager {
     repository.ensureSearchTagIndex();
     repository.ensureActivitySearchIndex();
     bootstrapAutomaticGovernance(repository);
+    const now = new Date().toISOString();
+    const safety = beginWorkspaceSession(paths, {
+      sessionId: this.processSessionId,
+      appVersion: RECALLX_VERSION,
+      now,
+    });
 
     return {
       db,
@@ -153,8 +236,26 @@ export class WorkspaceSessionManager {
           workspaceName: resolvedName,
         },
         this.authMode,
+        {
+          dbPath: paths.dbPath,
+          artifactsDir: paths.artifactsDir,
+          exportsDir: paths.exportsDir,
+          backupsDir: paths.backupsDir,
+          configDir: paths.configDir,
+          cacheDir: paths.cacheDir,
+        },
+        safety,
       ),
     };
+  }
+
+  private closeState(state: WorkspaceSessionState): void {
+    endWorkspaceSession(state.paths, {
+      sessionId: this.processSessionId,
+      appVersion: RECALLX_VERSION,
+      now: new Date().toISOString(),
+    });
+    state.db.close();
   }
 
   private remember(state: WorkspaceSessionState): void {
@@ -165,7 +266,7 @@ export class WorkspaceSessionManager {
     return {
       ...state.workspaceInfo,
       isCurrent: state.workspaceRoot === this.currentState?.workspaceRoot,
-      lastOpenedAt: new Date().toISOString(),
+      lastOpenedAt: state.workspaceInfo.safety?.lastOpenedAt ?? new Date().toISOString(),
     };
   }
 }

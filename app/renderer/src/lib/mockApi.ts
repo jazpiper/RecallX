@@ -1,5 +1,6 @@
 import { mockWorkspace } from './mockWorkspace';
 import type {
+  ActivitySearchHit,
   Activity,
   Artifact,
   GovernanceEventRecord,
@@ -13,11 +14,15 @@ import type {
   ProjectGraphPayload,
   Relation,
   ContextBundlePreviewItem,
+  SearchNodeHit,
   Workspace,
+  WorkspaceBackupRecord,
   WorkspaceCatalogItem,
+  WorkspaceExportRecord,
   WorkspaceSeed,
 } from './types';
 import { RECALLX_VERSION } from '../../../shared/version';
+import { mapSearchNodeHit } from './searchResults';
 
 type LandingInfo = {
   storedAs: 'node' | 'relation' | 'activity';
@@ -90,6 +95,33 @@ function mapWorkspace(payload: any): Workspace {
     apiBind: data.bindAddress ?? data.apiBind ?? '127.0.0.1:8787',
     integrationModes: data.enabledIntegrationModes ?? data.integrationModes ?? ['read-only', 'append-only'],
     authMode: data.authMode === 'bearer' ? 'bearer' : 'optional',
+    paths: data.paths
+      ? {
+          dbPath: data.paths.dbPath ?? '',
+          artifactsDir: data.paths.artifactsDir ?? '',
+          exportsDir: data.paths.exportsDir ?? '',
+          backupsDir: data.paths.backupsDir ?? '',
+          configDir: data.paths.configDir ?? '',
+          cacheDir: data.paths.cacheDir ?? '',
+        }
+      : undefined,
+    safety: data.safety
+      ? {
+          machineId: data.safety.machineId ?? 'unknown-machine',
+          sessionId: data.safety.sessionId ?? 'unknown-session',
+          lastOpenedAt: data.safety.lastOpenedAt ?? new Date().toISOString(),
+          lastCleanCloseAt: data.safety.lastCleanCloseAt ?? null,
+          lockPresent: Boolean(data.safety.lockPresent),
+          lockUpdatedAt: data.safety.lockUpdatedAt ?? null,
+          activeSessionMachineId: data.safety.activeSessionMachineId ?? null,
+          warnings: Array.isArray(data.safety.warnings)
+            ? data.safety.warnings.map((warning: any) => ({
+                code: warning?.code ?? 'unclean_shutdown',
+                message: warning?.message ?? 'Workspace safety warning.',
+              }))
+            : [],
+        }
+      : undefined,
   };
 }
 
@@ -702,6 +734,127 @@ export async function openWorkspace(rootPath: string): Promise<WorkspaceCatalog>
   return mapWorkspaceCatalogResponse(payload);
 }
 
+export async function listWorkspaceBackups(): Promise<WorkspaceBackupRecord[]> {
+  const payload = await requestJson('/workspaces/backups');
+  return mapPayloadItems(payload, (raw: any) => ({
+    id: raw.id,
+    label: raw.label ?? raw.id,
+    createdAt: raw.createdAt ?? new Date().toISOString(),
+    backupPath: raw.backupPath ?? '',
+    workspaceRoot: raw.workspaceRoot ?? '',
+    workspaceName: raw.workspaceName ?? 'RecallX',
+  }));
+}
+
+export async function createWorkspaceBackup(label?: string): Promise<WorkspaceBackupRecord> {
+  const payload = await requestJson('/workspaces/backups', {
+    method: 'POST',
+    body: JSON.stringify(label ? { label } : {}),
+  });
+  const data = readPayloadData(payload);
+  return {
+    id: data?.backup?.id ?? '',
+    label: data?.backup?.label ?? data?.backup?.id ?? 'snapshot',
+    createdAt: data?.backup?.createdAt ?? new Date().toISOString(),
+    backupPath: data?.backup?.backupPath ?? '',
+    workspaceRoot: data?.backup?.workspaceRoot ?? '',
+    workspaceName: data?.backup?.workspaceName ?? 'RecallX',
+  };
+}
+
+export async function exportWorkspace(format: 'json' | 'markdown'): Promise<WorkspaceExportRecord> {
+  const payload = await requestJson('/workspaces/export', {
+    method: 'POST',
+    body: JSON.stringify({ format }),
+  });
+  const data = readPayloadData(payload);
+  return {
+    id: data?.export?.id ?? '',
+    format: data?.export?.format === 'markdown' ? 'markdown' : 'json',
+    createdAt: data?.export?.createdAt ?? new Date().toISOString(),
+    exportPath: data?.export?.exportPath ?? '',
+    workspaceRoot: data?.export?.workspaceRoot ?? '',
+    workspaceName: data?.export?.workspaceName ?? 'RecallX',
+  };
+}
+
+export async function restoreWorkspaceBackup(input: {
+  backupId: string;
+  targetRootPath: string;
+  workspaceName?: string;
+}): Promise<WorkspaceCatalog> {
+  const payload = await requestJson('/workspaces/restore', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  return mapWorkspaceCatalogResponse(payload);
+}
+
+export async function searchWorkspace(input: {
+  query: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{ nodes: SearchNodeHit[]; activities: ActivitySearchHit[]; total: number }> {
+  return withFallback(
+    async () => {
+      const payload = await requestJson('/search', {
+        method: 'POST',
+        body: JSON.stringify({
+          query: input.query,
+          scopes: ['nodes', 'activities'],
+          limit: input.limit ?? 24,
+          offset: input.offset ?? 0,
+          sort: 'smart',
+        }),
+      });
+      const data = readPayloadData(payload);
+      const items = Array.isArray(data?.items) ? data.items : [];
+      return {
+        nodes: items
+          .filter((item: any) => item?.resultType === 'node' && item.node)
+          .map((item: any) => mapSearchNodeHit(item.node)),
+        activities: items
+          .filter((item: any) => item?.resultType === 'activity' && item.activity)
+          .map((item: any) => ({
+            id: item.activity.id,
+            targetNodeId: item.activity.targetNodeId ?? item.activity.target_node_id,
+            targetNodeTitle: item.activity.targetNodeTitle ?? null,
+            targetNodeType: item.activity.targetNodeType ?? null,
+            targetNodeStatus: item.activity.targetNodeStatus ?? null,
+            activityType: item.activity.activityType ?? item.activity.activity_type,
+            body: item.activity.body ?? '',
+            sourceLabel: item.activity.sourceLabel ?? 'unknown',
+            createdAt: item.activity.createdAt ?? item.activity.created_at ?? new Date().toISOString(),
+          })),
+        total: typeof data?.total === 'number' ? data.total : items.length,
+      };
+    },
+    async () => {
+      const normalizedQuery = input.query.trim().toLowerCase();
+      const items = getFallbackState().nodes.filter((node) =>
+        [node.title, node.summary, node.body, node.tags.join(' ')].join(' ').toLowerCase().includes(normalizedQuery),
+      );
+      return {
+        nodes: items.map((node) => mapSearchNodeHit(node)),
+        activities: getFallbackState().activities
+          .filter((activity) => activity.body.toLowerCase().includes(normalizedQuery))
+          .map((activity) => ({
+            id: activity.id,
+            targetNodeId: activity.targetNodeId,
+            targetNodeTitle: getFallbackState().nodes.find((node) => node.id === activity.targetNodeId)?.title ?? null,
+            targetNodeType: getFallbackState().nodes.find((node) => node.id === activity.targetNodeId)?.type ?? null,
+            targetNodeStatus: getFallbackState().nodes.find((node) => node.id === activity.targetNodeId)?.status ?? null,
+            activityType: activity.activityType,
+            body: activity.body,
+            sourceLabel: activity.sourceLabel,
+            createdAt: activity.createdAt,
+          })),
+        total: items.length,
+      };
+    },
+  );
+}
+
 export async function getSnapshot(options?: { workspace?: Workspace }): Promise<WorkspaceSeed> {
   return withFallback(
     async () => {
@@ -712,7 +865,7 @@ export async function getSnapshot(options?: { workspace?: Workspace }): Promise<
           body: JSON.stringify({
             query: '',
             filters: {},
-            limit: 50,
+            limit: 100,
             offset: 0,
             sort: 'updated_at',
           }),
