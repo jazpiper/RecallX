@@ -300,3 +300,54 @@ Notes:
 - JetBrains expects the top-level `mcpServers` wrapper.
 - Prefer the stable launcher path over a bare `RecallX` command because GUI apps do not always inherit your shell `PATH`.
 - If the launcher script points at a packaged `RecallX.app`, open the app at least once first so the launcher is created.
+
+---
+
+## 8. Active LLM usage playbook
+
+Connecting RecallX over MCP is not enough by itself. The best results come when the agent is explicitly told to use RecallX early and throughout the task.
+
+### Default operating loop for coding agents
+
+1. Confirm the current workspace with `recallx_workspace_current`.
+2. If the target is still unclear, start broad with `recallx_search_workspace`.
+3. If the work is clearly project-shaped, search for an existing project with `recallx_search_nodes` and `type=project`.
+4. Once the relevant node or project is known, build a compact `recallx_context_bundle`.
+5. Do the real task.
+6. Write back a concise result with `recallx_append_activity` or targeted `recallx_capture_memory`.
+
+### Behaviors worth encouraging in the agent prompt
+
+- read context before making assumptions
+- prefer `recallx_search_workspace` over blind browsing when the target is still unclear
+- reuse existing project nodes instead of creating duplicates
+- keep routine logs attached to the project once one is known
+- prefer compact bundles over repeated wide searches
+- write back a concise summary after meaningful work
+
+### Copy-paste MCP instruction
+
+Use this when configuring another LLM or coding agent:
+
+```text
+Use RecallX through MCP as an active local memory layer during this task, not just for final write-back.
+Treat the current workspace as the default scope and do not switch workspaces unless I explicitly ask.
+Before making assumptions or starting meaningful work, read context first:
+- call recallx_workspace_current
+- use recallx_search_workspace when the target is still unclear
+- if the task is clearly project-shaped, search for an existing project with recallx_search_nodes and type=project
+- once the relevant node or project is known, build a compact recallx_context_bundle
+Prefer compact context over repeated broad browsing.
+Once a project is known, append routine work logs to that project instead of writing untargeted workspace captures.
+After meaningful work, write back a concise summary of what changed, what was verified, and any follow-up.
+```
+
+### Anti-patterns
+
+Avoid prompting the agent in ways that cause these behaviors:
+
+- only using RecallX for final logging
+- creating a new project node before checking whether one already exists
+- staying at workspace scope after a project node is already known
+- repeatedly searching broadly instead of anchoring on a known node with a context bundle
+- switching workspaces during a task without an explicit user request
