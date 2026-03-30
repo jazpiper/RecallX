@@ -23,6 +23,8 @@ import {
   saveRendererToken,
   searchWorkspace,
   subscribeWorkspaceEvents,
+  updateNode as updateNodeRequest,
+  archiveNode as archiveNodeRequest,
 } from './lib/mockApi';
 import { buildProjectGraphEmphasis, filterProjectGraphView, listProjectGraphRelationTypes } from './lib/projectGraph';
 import { buildRecentSelectableNodeIds, buildSearchResultNodeMap } from './lib/searchResults';
@@ -289,6 +291,12 @@ export default function App() {
   const [workspaceBackupNotice, setWorkspaceBackupNotice] = useState<string | null>(null);
   const [lastWorkspaceExport, setLastWorkspaceExport] = useState<WorkspaceExportRecord | null>(null);
   const [notePreviewTargetId, setNotePreviewTargetId] = useState<string | null>(null);
+  const [isEditingNote, setIsEditingNote] = useState(false);
+  const [noteEditTitle, setNoteEditTitle] = useState('');
+  const [noteEditBody, setNoteEditBody] = useState('');
+  const [noteEditError, setNoteEditError] = useState<string | null>(null);
+  const [isSavingNoteEdit, setIsSavingNoteEdit] = useState(false);
+  const [isArchivingNote, setIsArchivingNote] = useState(false);
   const [guideSectionId, setGuideSectionId] = useState('overview');
   const bundleUsageEventKeysRef = useRef(new Set<string>());
   const relationUsageSessionIdRef = useRef(
@@ -755,6 +763,20 @@ export default function App() {
     () => (deferredQuery.trim() ? searchPanel.activities.slice(0, 4) : []),
     [deferredQuery, searchPanel.activities],
   );
+
+  useEffect(() => {
+    if (!notePreviewNode) {
+      setIsEditingNote(false);
+      setNoteEditTitle('');
+      setNoteEditBody('');
+      setNoteEditError(null);
+      return;
+    }
+
+    setNoteEditTitle(notePreviewNode.title);
+    setNoteEditBody(notePreviewNode.body);
+    setNoteEditError(null);
+  }, [notePreviewNode]);
 
   useEffect(() => {
     let mounted = true;
@@ -1254,6 +1276,62 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       handleRequestFailure(error, 'Failed to refresh summary.');
     } finally {
       setIsRefreshingSummary(false);
+    }
+  }
+
+  async function handleSaveNoteEdit() {
+    if (!notePreviewNode) {
+      return;
+    }
+
+    if (!noteEditTitle.trim()) {
+      setNoteEditError('Title is required.');
+      return;
+    }
+
+    setNoteEditError(null);
+    setIsSavingNoteEdit(true);
+    try {
+      const updatedNode = await updateNodeRequest({
+        id: notePreviewNode.id,
+        title: noteEditTitle.trim(),
+        body: noteEditBody,
+      });
+      setDetail((current) => ({
+        ...current,
+        node: updatedNode,
+      }));
+      await refreshSnapshotState();
+      setCaptureNotice('Saved note changes.');
+      setIsEditingNote(false);
+      setLoadError(null);
+    } catch (error) {
+      handleRequestFailure(error, 'Failed to save note changes.');
+      setNoteEditError(error instanceof Error ? error.message : 'Failed to save note changes.');
+    } finally {
+      setIsSavingNoteEdit(false);
+    }
+  }
+
+  async function handleArchiveNote() {
+    if (!notePreviewNode) {
+      return;
+    }
+
+    setNoteEditError(null);
+    setIsArchivingNote(true);
+    try {
+      await archiveNodeRequest(notePreviewNode.id);
+      await refreshSnapshotState();
+      setCaptureNotice(`Archived ${notePreviewNode.title}.`);
+      setNotePreviewTargetId(null);
+      setIsEditingNote(false);
+      setLoadError(null);
+    } catch (error) {
+      handleRequestFailure(error, 'Failed to archive node.');
+      setNoteEditError(error instanceof Error ? error.message : 'Failed to archive node.');
+    } finally {
+      setIsArchivingNote(false);
     }
   }
 
@@ -2495,6 +2573,8 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               className="note-overlay"
               onClick={() => {
                 setNotePreviewTargetId(null);
+                setIsEditingNote(false);
+                setNoteEditError(null);
               }}
             >
               <section
@@ -2506,7 +2586,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 <div className="section-head section-head--compact">
                   <div>
                     <span className="eyebrow">Selected note</span>
-                    <h3>{notePreviewNode.title}</h3>
+                    <h3>{isEditingNote ? 'Edit note' : notePreviewNode.title}</h3>
                   </div>
                   <div className="note-modal-actions">
                     <span className={`pill ${badgeTone(notePreviewNode.status)}`}>{notePreviewNode.type}</span>
@@ -2515,13 +2595,40 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                       className="ghost"
                       onClick={() => {
                         setNotePreviewTargetId(null);
+                        setIsEditingNote(false);
+                        setNoteEditError(null);
                       }}
                     >
                       Close
                     </button>
                   </div>
                 </div>
-                <div className="note-reading-pane">{notePreviewNode.body || notePreviewNode.summary}</div>
+                {isEditingNote ? (
+                  <div className="capture-form compact-form">
+                    <label className="search-box" htmlFor="note-edit-title-input">
+                      <span>Title</span>
+                      <input
+                        id="note-edit-title-input"
+                        value={noteEditTitle}
+                        onChange={(event) => setNoteEditTitle(event.target.value)}
+                        placeholder="Short durable title"
+                      />
+                    </label>
+                    <label className="search-box notes-capture-body" htmlFor="note-edit-body-input">
+                      <span>Body</span>
+                      <textarea
+                        id="note-edit-body-input"
+                        value={noteEditBody}
+                        onChange={(event) => setNoteEditBody(event.target.value)}
+                        placeholder="Keep the memory concise and attributable."
+                        rows={8}
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <div className="note-reading-pane">{notePreviewNode.body || notePreviewNode.summary}</div>
+                )}
+                {noteEditError ? <div className="empty-state compact">{noteEditError}</div> : null}
                 <div className="chip-row">
                   {notePreviewNode.tags.map((tag) => (
                     <span key={tag} className="chip">
@@ -2530,12 +2637,59 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   ))}
                 </div>
                 <div className="action-row">
-                  <button type="button" onClick={() => openNodeInGraph(notePreviewNode.id)}>
-                    Inspect in graph
-                  </button>
-                  <button type="button" className="ghost" onClick={() => void handleRefreshSummary()} disabled={isRefreshingSummary}>
-                    {isRefreshingSummary ? 'Refreshing...' : 'Refresh summary'}
-                  </button>
+                  {isEditingNote ? (
+                    <>
+                      <button type="button" onClick={() => void handleSaveNoteEdit()} disabled={isSavingNoteEdit || isArchivingNote}>
+                        {isSavingNoteEdit ? 'Saving...' : 'Save changes'}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => {
+                          setIsEditingNote(false);
+                          setNoteEditTitle(notePreviewNode.title);
+                          setNoteEditBody(notePreviewNode.body);
+                          setNoteEditError(null);
+                        }}
+                        disabled={isSavingNoteEdit || isArchivingNote}
+                      >
+                        Cancel
+                      </button>
+                      <button type="button" className="ghost" onClick={() => void handleArchiveNote()} disabled={isSavingNoteEdit || isArchivingNote}>
+                        {isArchivingNote ? 'Archiving...' : 'Archive'}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" onClick={() => openNodeInGraph(notePreviewNode.id)}>
+                        Inspect in graph
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => void handleRefreshSummary()}
+                        disabled={isRefreshingSummary}
+                      >
+                        {isRefreshingSummary ? 'Refreshing...' : 'Refresh summary'}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => {
+                          setIsEditingNote(true);
+                          setNoteEditTitle(notePreviewNode.title);
+                          setNoteEditBody(notePreviewNode.body);
+                          setNoteEditError(null);
+                        }}
+                        disabled={isArchivingNote}
+                      >
+                        Edit
+                      </button>
+                      <button type="button" className="ghost" onClick={() => void handleArchiveNote()} disabled={isArchivingNote}>
+                        {isArchivingNote ? 'Archiving...' : 'Archive'}
+                      </button>
+                    </>
+                  )}
                 </div>
                 <div className="card-stack compact-stack">
                   {detail.bundleItems.slice(0, 2).map((item) => (

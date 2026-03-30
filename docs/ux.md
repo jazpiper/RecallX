@@ -167,7 +167,9 @@ Recent is the quickest way back to recently touched nodes.
 ### Current behavior
 - simple list of recently touched nodes
 - summary-first cards
-- click-through to selected node detail
+- click-through to a Recent note modal with lightweight curation actions
+- selected note can be edited inline for title/body corrections
+- selected note can be archived without leaving the Recent surface
 
 ### Design rule
 Keep this page minimal.
@@ -264,10 +266,12 @@ The right rail is the main context inspector.
 ### Current actions
 - Inspect in Graph
 - Refresh summary
+- Edit title/body from the Recent note modal
+- Archive from the Recent note modal
 - Reindex selected node
 
 ### Design rule
-The node detail should present one durable object clearly, not turn into an all-in-one editor.
+The node detail should present one durable object clearly, and lightweight curation should stay bounded to fast corrections rather than expand into a full editing workspace.
 
 ## 6.2 Context rail
 
@@ -397,7 +401,7 @@ These are not current UX commitments:
 - full project dashboard
 - advanced search filtering UI
 - edit-then-approve review workflow
-- archive/dismiss review flows
+- archive/dismiss review queue
 - dedicated semantic admin page
 - broad settings matrix for internal retrieval tuning
 
