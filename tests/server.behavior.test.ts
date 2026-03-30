@@ -4627,6 +4627,116 @@ describe("inferred relation API integration", () => {
     }
   });
 
+  it("skips no_strong_node_hit semantic fallback when a node title covers half the query terms", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+    const { repository, db } = workspaceSessionManager.getCurrent();
+    repository.setSetting("search.semantic.enabled", true);
+    repository.setSetting("search.semantic.provider", "local-ngram");
+    repository.setSetting("search.semantic.model", "chargram-v1");
+    repository.setSetting("search.semantic.indexBackend", "sqlite-vec");
+    repository.setSetting("search.semantic.workspaceFallback.enabled", true);
+    repository.setSetting("search.semantic.workspaceFallback.mode", "no_strong_node_hit");
+    repository.setSetting("observability.enabled", true);
+
+    const source = {
+      actorType: "agent" as const,
+      actorLabel: "Codex",
+      toolName: "codex",
+    };
+    const titleHitNode = repository.createNode({
+      type: "note",
+      title: "Service rollback runbook",
+      body: "Operator notes with unrelated implementation details.",
+      source,
+      tags: ["ops"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const semanticNode = repository.createNode({
+      type: "note",
+      title: "Alpha operations memo",
+      body: "Durable operations note with no direct lexical overlap.",
+      source,
+      tags: ["ops"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const distractorNode = repository.createNode({
+      type: "note",
+      title: "Design archive",
+      body: "Unrelated design content.",
+      source,
+      tags: ["design"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const semanticQuery = "service rollback recovery restart";
+    await seedSemanticEmbeddings({
+      db,
+      repository,
+      query: semanticQuery,
+      relatedNodeId: semanticNode.id,
+      distractorNodeId: distractorNode.id
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const response = await fetch(`${baseUrl}/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: semanticQuery,
+          scopes: ["nodes"],
+          limit: 10,
+          offset: 0,
+          sort: "smart",
+        }),
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload.data.items.some((item: { resultType: string; node?: { id: string; lexicalQuality?: string } }) =>
+        item.resultType === "node" &&
+        item.node?.id === titleHitNode.id &&
+        item.node?.lexicalQuality === "strong"
+      )).toBe(true);
+      expect(payload.data.items.some((item: { resultType: string; node?: { id: string; matchReason?: { strategy: string } } }) =>
+        item.resultType === "node" &&
+        item.node?.id === semanticNode.id &&
+        item.node?.matchReason?.strategy === "semantic"
+      )).toBe(false);
+
+      const summaryPayload = await waitFor(async () => {
+        const summaryResponse = await fetch(`${baseUrl}/observability/summary?since=24h`);
+        const summary = await summaryResponse.json();
+        return summary.data?.semanticFallbackRate ? summary : null;
+      });
+      expect(summaryPayload.data.semanticFallbackRate).toMatchObject({
+        eligibleCount: 0,
+        attemptedCount: 0,
+        hitCount: 0
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
   it("uses sqlite semantic fallback when sqlite-vec is not the active backend", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
     tempRoots.push(root);

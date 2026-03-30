@@ -156,6 +156,7 @@ type SearchFieldSignals = {
   matchedFields: string[];
   exactFields: string[];
   matchedTermCount: number;
+  matchedTermCounts: Record<string, number>;
   totalTermCount: number;
 };
 
@@ -190,6 +191,7 @@ function collectSearchFieldSignals(
       matchedFields: [],
       exactFields: [],
       matchedTermCount: 0,
+      matchedTermCounts: {},
       totalTermCount: 0
     };
   }
@@ -197,6 +199,7 @@ function collectSearchFieldSignals(
   const matchedFields = new Set<string>();
   const exactFields = new Set<string>();
   const matchedTerms = new Set<string>();
+  const matchedTermCounts: Record<string, number> = {};
 
   for (const candidate of candidates) {
     const haystack = normalizeSearchText(candidate.value);
@@ -211,6 +214,7 @@ function collectSearchFieldSignals(
     }
 
     matchedFields.add(candidate.field);
+    matchedTermCounts[candidate.field] = termMatches.length;
     if (exactMatch) {
       exactFields.add(candidate.field);
     }
@@ -223,6 +227,7 @@ function collectSearchFieldSignals(
     matchedFields: [...matchedFields],
     exactFields: [...exactFields],
     matchedTermCount: matchedTerms.size,
+    matchedTermCounts,
     totalTermCount: matcher.matchTerms.length
   };
 }
@@ -234,9 +239,6 @@ function classifyNodeLexicalQuality(
   if (strategy === "browse" || strategy === "semantic" || !signals.matchedFields.length) {
     return "none";
   }
-  if (strategy === "fallback_token") {
-    return "weak";
-  }
 
   const strongExactFields = new Set(["title", "summary", "tags", "body"]);
   if (signals.exactFields.some((field) => strongExactFields.has(field))) {
@@ -244,6 +246,14 @@ function classifyNodeLexicalQuality(
   }
 
   const termCoverage = signals.totalTermCount > 0 ? signals.matchedTermCount / signals.totalTermCount : 0;
+  const titleCoverage =
+    signals.totalTermCount > 0 ? (signals.matchedTermCounts.title ?? 0) / signals.totalTermCount : 0;
+  if (strategy === "fallback_token") {
+    return titleCoverage >= 0.5 ? "strong" : "weak";
+  }
+  if (strategy === "fts" && titleCoverage >= 0.5) {
+    return "strong";
+  }
   if (strategy === "fts" && termCoverage >= 0.6 && signals.matchedFields.some((field) => strongExactFields.has(field))) {
     return "strong";
   }
