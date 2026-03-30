@@ -7,6 +7,17 @@ import { createRecallXMcpServer } from "../app/mcp/server.js";
 describe("RecallX MCP server", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
+  function getTextContent(result: unknown) {
+    const content = Array.isArray((result as { content?: unknown })?.content)
+      ? ((result as { content: Array<{ type?: string; text?: string }> }).content)
+      : [];
+
+    return content
+      .filter((item) => item.type === "text" && typeof item.text === "string")
+      .map((item) => item.text ?? "")
+      .join("\n");
+  }
+
   function findToolDescription(toolList: { tools: Array<{ name: string; description?: string }> }, name: string) {
     const tool = toolList.tools.find((candidate) => candidate.name === name);
     expect(tool).toBeDefined();
@@ -131,8 +142,8 @@ describe("RecallX MCP server", () => {
 
   it("maps search tool calls onto the RecallX HTTP API contract", async () => {
     const searchPost = vi.fn().mockResolvedValue({
-      items: [{ id: "node_1", title: "Agent memory", type: "note" }],
-      total: 1,
+      items: [{ id: "node_1", title: "Agent memory", type: "note", summary: "Working memory summary" }],
+      total: 7,
       limit: 10,
       offset: 0
     });
@@ -158,8 +169,12 @@ describe("RecallX MCP server", () => {
       })
     );
     expect("structuredContent" in result && result.structuredContent).toMatchObject({
-      total: 1
+      total: 7
     });
+    expect(getTextContent(result)).toContain("Results: 1 shown of 7 total.");
+    expect(getTextContent(result)).toContain("1. [note] Agent memory (id: node_1) - Working memory summary");
+    expect(getTextContent(result)).toContain("More available: 6 additional result(s).");
+    expect(getTextContent(result)).not.toContain("\"items\"");
   });
 
   it("allows recallx_health calls with an optional input object and preserves detailed health payloads", async () => {
@@ -347,18 +362,37 @@ describe("RecallX MCP server", () => {
     const searchPost = vi
       .fn()
       .mockResolvedValueOnce({
-        items: [{ id: "activity_1", targetNodeId: "node_1", activityType: "agent_run_summary" }],
+        items: [
+          {
+            id: "activity_1",
+            targetNodeId: "node_1",
+            targetNodeTitle: "RecallX",
+            activityType: "agent_run_summary",
+            body: "Tracked retrieval work for the MCP bridge."
+          }
+        ],
         total: 1
       })
       .mockResolvedValueOnce({
-        items: [{ resultType: "activity", activity: { id: "activity_1", targetNodeId: "node_1" } }],
+        items: [
+          {
+            resultType: "activity",
+            activity: {
+              id: "activity_1",
+              targetNodeId: "node_1",
+              targetNodeTitle: "RecallX",
+              activityType: "agent_run_summary",
+              body: "Tracked retrieval work for the MCP bridge."
+            }
+          }
+        ],
         total: 1
       });
     const { client } = await connectTestClient({
       post: searchPost
     });
 
-    await client.callTool({
+    const activityResult = await client.callTool({
       name: "recallx_search_activities",
       arguments: {
         query: "what changed",
@@ -368,7 +402,7 @@ describe("RecallX MCP server", () => {
       }
     });
 
-    await client.callTool({
+    const workspaceResult = await client.callTool({
       name: "recallx_search_workspace",
       arguments: {
         query: "cleanup",
@@ -401,6 +435,10 @@ describe("RecallX MCP server", () => {
         sort: "smart"
       })
     );
+    expect(getTextContent(activityResult)).toContain("Results: 1 shown of 1 total.");
+    expect(getTextContent(activityResult)).toContain("[agent_run_summary] RecallX (id: activity_1) - Tracked retrieval work for the MCP bridge.");
+    expect(getTextContent(workspaceResult)).toContain("Results: 1 shown of 1 total.");
+    expect(getTextContent(workspaceResult)).toContain("[agent_run_summary] RecallX (id: activity_1) - Tracked retrieval work for the MCP bridge.");
   });
 
   it("normalizes activity and workspace search aliases before calling the HTTP API", async () => {
@@ -1023,6 +1061,11 @@ describe("RecallX MCP server", () => {
         ]
       }
     });
+    expect(getTextContent(result)).toContain("Context bundle: Target [node].");
+    expect(getTextContent(result)).toContain("Mode: compact, for-assistant.");
+    expect(getTextContent(result)).toContain("Summary: Bundle summary");
+    expect(getTextContent(result)).toContain("Items: 1.");
+    expect(getTextContent(result)).toContain("1. [note] Related note (id: node_2) - Related summary");
   });
 
   it("allows workspace-entry context bundles without a target id", async () => {
