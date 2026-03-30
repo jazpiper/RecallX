@@ -75,17 +75,31 @@ function readLockMetadata(paths: WorkspacePaths): WorkspaceLockMetadata | null {
   return readJsonFile<WorkspaceLockMetadata>(lockMetadataPath(paths));
 }
 
-function buildSafetyWarnings(previous: WorkspaceSessionMetadata | null, lock: WorkspaceLockMetadata | null, machineId: string): WorkspaceSafetyWarning[] {
+function buildSafetyWarnings(
+  previous: WorkspaceSessionMetadata | null,
+  lock: WorkspaceLockMetadata | null,
+  machineId: string,
+  sessionId: string,
+): WorkspaceSafetyWarning[] {
   const warnings: WorkspaceSafetyWarning[] = [];
+  const isSameActiveSession =
+    previous?.sessionId === sessionId &&
+    previous.machineId === machineId &&
+    lock?.sessionId === sessionId &&
+    lock.machineId === machineId;
 
-  if (lock) {
+  if (lock && !isSameActiveSession) {
     warnings.push({
       code: "active_lock",
       message: `Workspace lock marker is still present from ${lock.machineId}. Another session may still be active.`
     });
   }
 
-  if (previous && (!previous.lastCleanCloseAt || previous.lastCleanCloseAt < previous.lastOpenedAt)) {
+  if (
+    previous &&
+    !isSameActiveSession &&
+    (!previous.lastCleanCloseAt || previous.lastCleanCloseAt < previous.lastOpenedAt)
+  ) {
     warnings.push({
       code: "unclean_shutdown",
       message: "The previous session does not appear to have closed cleanly. Create a backup before heavy edits."
@@ -114,7 +128,7 @@ export function beginWorkspaceSession(paths: WorkspacePaths, params: {
   const machineId = os.hostname() || "unknown-machine";
   const previous = readSessionMetadata(paths);
   const lock = readLockMetadata(paths);
-  const warnings = buildSafetyWarnings(previous, lock, machineId);
+  const warnings = buildSafetyWarnings(previous, lock, machineId, params.sessionId);
   const nextSession: WorkspaceSessionMetadata = {
     machineId,
     sessionId: params.sessionId,

@@ -6969,6 +6969,19 @@ describe("workspace switching", () => {
     expect(warnings.some((warning) => warning.code === "active_lock")).toBe(true);
     expect(warnings.some((warning) => warning.code === "unclean_shutdown")).toBe(true);
   });
+
+  it("does not surface self-lock warnings when reopening the same workspace in the same session manager", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+
+    const session = createWorkspaceSessionManager(root);
+    session.openWorkspace(root);
+
+    const warnings = session.getCurrent().workspaceInfo.safety?.warnings ?? [];
+
+    expect(warnings.some((warning) => warning.code === "active_lock")).toBe(false);
+    expect(warnings.some((warning) => warning.code === "unclean_shutdown")).toBe(false);
+  });
 });
 
 describe("workspace event stream", () => {
