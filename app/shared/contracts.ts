@@ -356,6 +356,12 @@ export const exportWorkspaceSchema = z.object({
   format: z.enum(["json", "markdown"]).default("json")
 });
 
+export const importWorkspaceSchema = z.object({
+  format: z.enum(["recallx_json", "markdown"]),
+  sourcePath: z.string().min(1),
+  label: z.string().min(1).max(120).optional()
+});
+
 export const restoreWorkspaceBackupSchema = z.object({
   backupId: z.string().min(1),
   targetRootPath: z.string().min(1),
@@ -405,4 +411,5 @@ export type CreateWorkspaceInput = z.infer<typeof createWorkspaceSchema>;
 export type OpenWorkspaceInput = z.infer<typeof openWorkspaceSchema>;
 export type CreateWorkspaceBackupInput = z.infer<typeof createWorkspaceBackupSchema>;
 export type ExportWorkspaceInput = z.infer<typeof exportWorkspaceSchema>;
+export type ImportWorkspaceInput = z.infer<typeof importWorkspaceSchema>;
 export type RestoreWorkspaceBackupInput = z.infer<typeof restoreWorkspaceBackupSchema>;

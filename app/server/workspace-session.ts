@@ -16,8 +16,9 @@ import {
   listWorkspaceBackups,
   restoreWorkspaceBackup,
 } from "./workspace-ops.js";
+import { importIntoWorkspace } from "./workspace-import.js";
 import { defaultWorkspaceName, ensureWorkspace, type WorkspacePaths } from "./workspace.js";
-import type { WorkspaceBackupRecord, WorkspaceCatalogItem, WorkspaceExportRecord, WorkspaceInfo } from "../shared/types.js";
+import type { WorkspaceBackupRecord, WorkspaceCatalogItem, WorkspaceExportRecord, WorkspaceImportRecord, WorkspaceInfo } from "../shared/types.js";
 import { RECALLX_VERSION } from "../shared/version.js";
 
 interface WorkspaceSessionState {
@@ -120,6 +121,19 @@ export class WorkspaceSessionManager {
       format,
       payload,
       markdown,
+    });
+  }
+
+  importWorkspace(format: "recallx_json" | "markdown", sourcePath: string, label?: string): WorkspaceImportRecord {
+    const backup = this.createBackup(label ? `before-import ${label}` : "before-import");
+    return importIntoWorkspace({
+      repository: this.currentState.repository,
+      paths: this.currentState.paths,
+      format,
+      sourcePath,
+      label,
+      now: new Date().toISOString(),
+      backup,
     });
   }
 
@@ -240,6 +254,7 @@ export class WorkspaceSessionManager {
           dbPath: paths.dbPath,
           artifactsDir: paths.artifactsDir,
           exportsDir: paths.exportsDir,
+          importsDir: paths.importsDir,
           backupsDir: paths.backupsDir,
           configDir: paths.configDir,
           cacheDir: paths.cacheDir,
