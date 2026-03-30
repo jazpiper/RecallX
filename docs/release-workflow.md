@@ -17,6 +17,7 @@ npm run changeset
 ```
 
 Choose the release type you want for `recallx`, write a short summary, and commit the generated markdown file under `.changeset/`.
+Do not add `recallx-headless` to changeset frontmatter. The headless package is generated and published from the same repo version rather than versioned as a first-class Changesets workspace package.
 
 Good candidates for a changeset:
 
@@ -62,6 +63,8 @@ npm run version:release
 npm run release:verify
 npm run release:publish
 ```
+
+`npm run changeset:status` is also a useful pre-merge guard when touching release notes or workflow plumbing because it catches invalid package names in pending changesets.
 
 ## Notes
 
