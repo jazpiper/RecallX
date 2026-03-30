@@ -889,6 +889,18 @@ export default function App() {
   const importsPath = workspace?.paths?.importsDir ?? (workspaceRoot ? `${workspaceRoot}/imports` : '');
   const backupsPath = workspace?.paths?.backupsDir ?? (workspaceRoot ? `${workspaceRoot}/backups` : '');
   const workspaceSafetyWarnings = workspace?.safety?.warnings ?? [];
+  const hasRecentOtherMachineWarning = workspaceSafetyWarnings.some((warning) => warning.code === 'recent_other_machine');
+  const hasUncleanShutdownWarning = workspaceSafetyWarnings.some((warning) => warning.code === 'unclean_shutdown');
+  const safeHandoffSteps = [
+    'Close RecallX on the current machine before opening the same workspace somewhere else.',
+    'Wait for Dropbox, Drive, or iCloud sync to finish before switching devices.',
+    hasRecentOtherMachineWarning
+      ? 'This workspace was opened recently on another machine, so treat the next open as read carefully and avoid concurrent writes.'
+      : 'Open the workspace on the next machine only after the previous session finished and sync is complete.',
+    hasUncleanShutdownWarning
+      ? 'Create a snapshot before heavier edits because the previous session may not have closed cleanly.'
+      : 'Create a manual snapshot if anything about the handoff felt uncertain.',
+  ];
   const defaultMcpCommand = `node dist/server/app/mcp/index.js --api ${apiBase}`;
   const mcpCommand = defaultMcpCommand;
   const genericMcpConfig = `{
@@ -1467,18 +1479,22 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
     setWorkspaceActionError(null);
     setIsWorkspaceBackupBusy(true);
     try {
-      const catalog = await restoreWorkspaceBackup({
+      const restoreResult = await restoreWorkspaceBackup({
         backupId,
         targetRootPath,
         workspaceName: workspaceNameInput.trim() || undefined,
       });
       const nextSnapshot = await refreshWorkspaceState({
-        workspaceOverride: catalog.current,
-        catalogOverride: catalog,
+        workspaceOverride: restoreResult.catalog.current,
+        catalogOverride: restoreResult.catalog,
       });
       resetWorkspaceSelection(nextSnapshot);
       setRestoreTargetRootInput('');
-      setWorkspaceBackupNotice(`Restored backup ${backupId} into ${targetRootPath}`);
+      setWorkspaceBackupNotice(
+        restoreResult.autoBackup
+          ? `Created safety snapshot ${restoreResult.autoBackup.id} before restoring ${backupId} into ${targetRootPath}.`
+          : `Restored backup ${backupId} into ${targetRootPath}.`,
+      );
     } catch (error) {
       setWorkspaceActionError(error instanceof Error ? error.message : 'Failed to restore workspace backup.');
     } finally {
@@ -2360,6 +2376,36 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               ) : (
                 <div className="notice">No active lock or unclean-close warning is currently attached to this workspace.</div>
               )}
+            </section>
+            <section className="card page-card">
+              <div className="page-copy">
+                <span className="eyebrow">Safe handoff</span>
+                <h3>Switch devices in a calm, sequential order</h3>
+              </div>
+              <div className="card-stack compact-stack">
+                {safeHandoffSteps.map((step) => (
+                  <article key={step} className="mini-card">
+                    <p>{step}</p>
+                  </article>
+                ))}
+              </div>
+              <div className="info-grid three">
+                <article className="info-block">
+                  <span className="info-label">Model</span>
+                  <strong>Single writer</strong>
+                  <p>Cloud-synced folders are supported as transport, not concurrent collaboration.</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">Warning state</span>
+                  <strong>{workspaceSafetyWarnings.length ? 'needs care' : 'clear'}</strong>
+                  <p>Warnings describe recent cross-machine activity and incomplete shutdown signals.</p>
+                </article>
+                <article className="info-block">
+                  <span className="info-label">Best next step</span>
+                  <strong>{workspaceSafetyWarnings.length ? 'snapshot first' : 'handoff normally'}</strong>
+                  <p>Use a backup before heavier edits whenever the handoff path felt uncertain.</p>
+                </article>
+              </div>
             </section>
             <section className="card page-card">
               <div className="page-copy">

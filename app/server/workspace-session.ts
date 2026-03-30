@@ -29,6 +29,11 @@ interface WorkspaceSessionState {
   paths: WorkspacePaths;
 }
 
+type RestoreWorkspaceResult = {
+  workspace: WorkspaceCatalogItem;
+  autoBackup: WorkspaceBackupRecord;
+};
+
 export class WorkspaceSessionManager {
   private currentState: WorkspaceSessionState;
 
@@ -137,16 +142,20 @@ export class WorkspaceSessionManager {
     });
   }
 
-  restoreBackup(backupId: string, targetRootPath: string, workspaceName?: string): WorkspaceCatalogItem {
+  restoreBackup(backupId: string, targetRootPath: string, workspaceName?: string): RestoreWorkspaceResult {
+    const autoBackup = this.createBackup(workspaceName ? `before-restore ${workspaceName}` : "before-restore");
     const manifest = restoreWorkspaceBackup(this.currentState.paths, {
       backupId,
       targetRootPath,
     });
 
-    return this.swapWorkspace(targetRootPath, {
-      workspaceName: workspaceName?.trim() || manifest.workspaceName,
-      requireExistingRoot: true,
-    });
+    return {
+      workspace: this.swapWorkspace(targetRootPath, {
+        workspaceName: workspaceName?.trim() || manifest.workspaceName,
+        requireExistingRoot: true,
+      }),
+      autoBackup,
+    };
   }
 
   shutdown(): void {

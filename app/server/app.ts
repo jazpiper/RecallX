@@ -1882,7 +1882,7 @@ export function createRecallXApp(params: {
 
   app.post("/api/v1/workspaces/restore", (request, response) => {
     const input = restoreWorkspaceBackupSchema.parse(request.body ?? {});
-    const workspace = params.workspaceSessionManager.restoreBackup(input.backupId, input.targetRootPath, input.workspaceName);
+    const result = params.workspaceSessionManager.restoreBackup(input.backupId, input.targetRootPath, input.workspaceName);
     refreshWorkspaceState();
     broadcastWorkspaceEvent({
       reason: "workspace.restored",
@@ -1891,7 +1891,8 @@ export function createRecallXApp(params: {
     response.status(201).json(
       envelope(response.locals.requestId, {
         restoredBackupId: input.backupId,
-        ...buildWorkspaceMutationPayload(workspace)
+        autoBackup: result.autoBackup,
+        ...buildWorkspaceMutationPayload(result.workspace)
       })
     );
   });

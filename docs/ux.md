@@ -239,11 +239,12 @@ Settings should stay practical and workspace-oriented.
 - workspace create/open controls
 - current workspace metadata
 - import onboarding for Markdown and RecallX JSON exports
+- safe handoff guidance for single-writer multi-device use
 - semantic and operational settings routed through the local API
 - recent workspaces
 
 ### Important note
-Settings focus more on workspace switching, import onboarding, and operational control than on speculative product preferences.
+Settings focus more on workspace switching, import onboarding, handoff safety, and operational control than on speculative product preferences.
 
 ### Design rule
 Only expose settings users can actually act on.
