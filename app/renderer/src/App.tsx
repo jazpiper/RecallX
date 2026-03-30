@@ -19,6 +19,7 @@ import {
   listWorkspaceBackups,
   openWorkspace as openWorkspaceSession,
   refreshNodeSummary as refreshNodeSummaryRequest,
+  importWorkspace as importWorkspaceRequest,
   restoreWorkspaceBackup,
   saveRendererToken,
   searchWorkspace,
@@ -45,6 +46,7 @@ import type {
   WorkspaceBackupRecord,
   WorkspaceCatalogItem,
   WorkspaceExportRecord,
+  WorkspaceImportRecord,
   WorkspaceSeed,
 } from './lib/types';
 
@@ -284,12 +286,18 @@ export default function App() {
   const [workspaceNameInput, setWorkspaceNameInput] = useState('');
   const [restoreTargetRootInput, setRestoreTargetRootInput] = useState('');
   const [backupLabelInput, setBackupLabelInput] = useState('');
+  const [importSourcePathInput, setImportSourcePathInput] = useState('');
+  const [importLabelInput, setImportLabelInput] = useState('');
+  const [importFormat, setImportFormat] = useState<'recallx_json' | 'markdown'>('markdown');
   const [workspaceActionError, setWorkspaceActionError] = useState<string | null>(null);
+  const [workspaceImportError, setWorkspaceImportError] = useState<string | null>(null);
   const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false);
   const [workspaceBackups, setWorkspaceBackups] = useState<WorkspaceBackupRecord[]>([]);
   const [isWorkspaceBackupBusy, setIsWorkspaceBackupBusy] = useState(false);
+  const [isWorkspaceImportBusy, setIsWorkspaceImportBusy] = useState(false);
   const [workspaceBackupNotice, setWorkspaceBackupNotice] = useState<string | null>(null);
   const [lastWorkspaceExport, setLastWorkspaceExport] = useState<WorkspaceExportRecord | null>(null);
+  const [lastWorkspaceImport, setLastWorkspaceImport] = useState<WorkspaceImportRecord | null>(null);
   const [notePreviewTargetId, setNotePreviewTargetId] = useState<string | null>(null);
   const [isEditingNote, setIsEditingNote] = useState(false);
   const [noteEditTitle, setNoteEditTitle] = useState('');
@@ -878,6 +886,7 @@ export default function App() {
   const workspaceDbPath = workspace?.paths?.dbPath ?? (workspaceRoot ? `${workspaceRoot}/workspace.db` : '');
   const artifactsPath = workspace?.paths?.artifactsDir ?? (workspaceRoot ? `${workspaceRoot}/artifacts` : '');
   const exportsPath = workspace?.paths?.exportsDir ?? (workspaceRoot ? `${workspaceRoot}/exports` : '');
+  const importsPath = workspace?.paths?.importsDir ?? (workspaceRoot ? `${workspaceRoot}/imports` : '');
   const backupsPath = workspace?.paths?.backupsDir ?? (workspaceRoot ? `${workspaceRoot}/backups` : '');
   const workspaceSafetyWarnings = workspace?.safety?.warnings ?? [];
   const defaultMcpCommand = `node dist/server/app/mcp/index.js --api ${apiBase}`;
@@ -1474,6 +1483,35 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       setWorkspaceActionError(error instanceof Error ? error.message : 'Failed to restore workspace backup.');
     } finally {
       setIsWorkspaceBackupBusy(false);
+    }
+  }
+
+  async function handleImportWorkspace() {
+    const sourcePath = importSourcePathInput.trim();
+    if (!sourcePath) {
+      setWorkspaceImportError('Import source path is required.');
+      return;
+    }
+
+    setWorkspaceImportError(null);
+    setWorkspaceActionError(null);
+    setWorkspaceBackupNotice(null);
+    setIsWorkspaceImportBusy(true);
+    try {
+      const importRecord = await importWorkspaceRequest({
+        format: importFormat,
+        sourcePath,
+        label: importLabelInput.trim() || undefined,
+      });
+      await refreshWorkspaceState();
+      setLastWorkspaceImport(importRecord);
+      setImportSourcePathInput('');
+      setImportLabelInput('');
+      setWorkspaceBackupNotice(`Created snapshot ${importRecord.backupId} before import.`);
+    } catch (error) {
+      setWorkspaceImportError(error instanceof Error ? error.message : 'Failed to import into workspace.');
+    } finally {
+      setIsWorkspaceImportBusy(false);
     }
   }
 
@@ -2271,6 +2309,11 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   <p>Portable files written for handoff, backup inspection, and recovery workflows.</p>
                 </article>
                 <article className="info-block">
+                  <span className="info-label">Imports</span>
+                  <strong>{importsPath || 'Unavailable'}</strong>
+                  <p>Copied source material lands here so onboarding imports stay inspectable.</p>
+                </article>
+                <article className="info-block">
                   <span className="info-label">Backups</span>
                   <strong>{backupsPath || 'Unavailable'}</strong>
                   <p>Manual workspace snapshots live here before upgrades, restores, or device moves.</p>
@@ -2384,6 +2427,85 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               </div>
             </section>
           </div>
+          <section className="card page-card">
+            <div className="page-copy">
+              <span className="eyebrow">Import onboarding</span>
+              <h3>Bring existing notes or RecallX exports into this workspace</h3>
+            </div>
+            <form
+              className="capture-form compact-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleImportWorkspace();
+              }}
+            >
+              <label className="search-box">
+                <span>Import format</span>
+                <select value={importFormat} onChange={(event) => setImportFormat(event.target.value as 'recallx_json' | 'markdown')}>
+                  <option value="markdown">Markdown file or folder</option>
+                  <option value="recallx_json">RecallX JSON export</option>
+                </select>
+              </label>
+              <label className="search-box">
+                <span>Local source path</span>
+                <input
+                  value={importSourcePathInput}
+                  onChange={(event) => setImportSourcePathInput(event.target.value)}
+                  placeholder={
+                    importFormat === 'markdown'
+                      ? '/Users/name/Documents/notes'
+                      : '/Users/name/Downloads/recallx-export.json'
+                  }
+                />
+              </label>
+              <label className="search-box">
+                <span>Import label</span>
+                <input
+                  value={importLabelInput}
+                  onChange={(event) => setImportLabelInput(event.target.value)}
+                  placeholder="Imported project notes"
+                />
+              </label>
+              {workspaceImportError ? <div className="empty-state compact">{workspaceImportError}</div> : null}
+              {lastWorkspaceImport ? (
+                <div className="notice">
+                  Imported {lastWorkspaceImport.nodesCreated} nodes, {lastWorkspaceImport.relationsCreated} relations, and{' '}
+                  {lastWorkspaceImport.activitiesCreated} activities from {lastWorkspaceImport.sourcePath}.
+                </div>
+              ) : null}
+              <div className="action-row">
+                <button type="submit" disabled={isWorkspaceImportBusy}>
+                  {isWorkspaceImportBusy ? 'Importing...' : 'Run import'}
+                </button>
+              </div>
+            </form>
+            <div className="info-grid three">
+              <article className="info-block">
+                <span className="info-label">Safety</span>
+                <strong>Snapshot first</strong>
+                <p>RecallX creates a backup before import mutates the active workspace.</p>
+              </article>
+              <article className="info-block">
+                <span className="info-label">Provenance</span>
+                <strong>{importsPath || 'Unavailable'}</strong>
+                <p>Source files are copied into the workspace imports folder for later inspection.</p>
+              </article>
+              <article className="info-block">
+                <span className="info-label">Scope</span>
+                <strong>v1 inbound path</strong>
+                <p>Markdown content and RecallX JSON exports are supported in this first onboarding loop.</p>
+              </article>
+            </div>
+            {lastWorkspaceImport?.warnings.length ? (
+              <div className="card-stack compact-stack">
+                {lastWorkspaceImport.warnings.map((warning) => (
+                  <div key={warning} className="empty-state compact">
+                    {warning}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </section>
           <section id="mcp-status-card" tabIndex={-1} className="card page-card">
             <div className="page-copy">
               <span className="eyebrow">Launchers</span>

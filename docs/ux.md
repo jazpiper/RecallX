@@ -238,11 +238,12 @@ Settings should stay practical and workspace-oriented.
 ### Current sections
 - workspace create/open controls
 - current workspace metadata
+- import onboarding for Markdown and RecallX JSON exports
 - semantic and operational settings routed through the local API
 - recent workspaces
 
 ### Important note
-Settings focus more on workspace switching and operational control than on speculative product preferences.
+Settings focus more on workspace switching, import onboarding, and operational control than on speculative product preferences.
 
 ### Design rule
 Only expose settings users can actually act on.
@@ -402,6 +403,7 @@ These are not current UX commitments:
 - advanced search filtering UI
 - edit-then-approve review workflow
 - archive/dismiss review queue
+- full migration wizard
 - dedicated semantic admin page
 - broad settings matrix for internal retrieval tuning
 

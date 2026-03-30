@@ -52,6 +52,7 @@ export interface WorkspaceInfo {
     dbPath: string;
     artifactsDir: string;
     exportsDir: string;
+    importsDir: string;
     backupsDir: string;
     configDir: string;
     cacheDir: string;
@@ -96,6 +97,20 @@ export interface WorkspaceExportRecord {
   exportPath: string;
   workspaceRoot: string;
   workspaceName: string;
+}
+
+export interface WorkspaceImportRecord {
+  format: "recallx_json" | "markdown";
+  label: string;
+  sourcePath: string;
+  importedPath: string;
+  createdAt: string;
+  backupId: string;
+  backupPath: string;
+  nodesCreated: number;
+  relationsCreated: number;
+  activitiesCreated: number;
+  warnings: string[];
 }
 
 export interface NodeRecord {

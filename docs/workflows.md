@@ -21,9 +21,11 @@ Use the `recallx` wrapper to inspect and switch workspaces against the running l
 
 Current product behavior:
 
-- the renderer Workspace page exposes backup, export, and restore actions over the same local API
+- the renderer Workspace page exposes backup, export, restore, and import onboarding actions over the same local API
 - backups are point-in-time workspace snapshots stored under `backups/`
 - exports currently support `json` and `markdown`
+- import onboarding currently supports RecallX JSON export files plus Markdown file or folder imports into the active workspace
+- imported source files are copied into the workspace `imports/` directory for provenance-friendly inspection
 - workspace status may include single-writer safety warnings such as active lock, unclean shutdown, or recent open on another machine
 
 ## 1a. Repo branch hygiene

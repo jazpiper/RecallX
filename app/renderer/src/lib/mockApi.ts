@@ -19,6 +19,7 @@ import type {
   WorkspaceBackupRecord,
   WorkspaceCatalogItem,
   WorkspaceExportRecord,
+  WorkspaceImportRecord,
   WorkspaceSeed,
 } from './types';
 import { RECALLX_VERSION } from '../../../shared/version';
@@ -100,6 +101,7 @@ function mapWorkspace(payload: any): Workspace {
           dbPath: data.paths.dbPath ?? '',
           artifactsDir: data.paths.artifactsDir ?? '',
           exportsDir: data.paths.exportsDir ?? '',
+          importsDir: data.paths.importsDir ?? '',
           backupsDir: data.paths.backupsDir ?? '',
           configDir: data.paths.configDir ?? '',
           cacheDir: data.paths.cacheDir ?? '',
@@ -775,6 +777,31 @@ export async function exportWorkspace(format: 'json' | 'markdown'): Promise<Work
     exportPath: data?.export?.exportPath ?? '',
     workspaceRoot: data?.export?.workspaceRoot ?? '',
     workspaceName: data?.export?.workspaceName ?? 'RecallX',
+  };
+}
+
+export async function importWorkspace(input: {
+  format: 'recallx_json' | 'markdown';
+  sourcePath: string;
+  label?: string;
+}): Promise<WorkspaceImportRecord> {
+  const payload = await requestJson('/workspaces/import', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  const data = readPayloadData(payload);
+  return {
+    format: data?.import?.format === 'markdown' ? 'markdown' : 'recallx_json',
+    label: data?.import?.label ?? 'Workspace import',
+    sourcePath: data?.import?.sourcePath ?? '',
+    importedPath: data?.import?.importedPath ?? '',
+    createdAt: data?.import?.createdAt ?? new Date().toISOString(),
+    backupId: data?.import?.backupId ?? '',
+    backupPath: data?.import?.backupPath ?? '',
+    nodesCreated: typeof data?.import?.nodesCreated === 'number' ? data.import.nodesCreated : 0,
+    relationsCreated: typeof data?.import?.relationsCreated === 'number' ? data.import.relationsCreated : 0,
+    activitiesCreated: typeof data?.import?.activitiesCreated === 'number' ? data.import.activitiesCreated : 0,
+    warnings: Array.isArray(data?.import?.warnings) ? data.import.warnings.filter((item: unknown): item is string => typeof item === 'string') : [],
   };
 }
 

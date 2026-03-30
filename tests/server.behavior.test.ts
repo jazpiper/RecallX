@@ -6956,6 +6956,178 @@ describe("workspace switching", () => {
     }
   });
 
+  it("imports markdown files into the active workspace and creates a safety snapshot first", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    const markdownRoot = mkdtempSync(path.join(tmpdir(), "recallx-import-md-"));
+    tempRoots.push(root, markdownRoot);
+    mkdirSync(path.join(markdownRoot, "nested"), { recursive: true });
+    writeFileSync(path.join(markdownRoot, "overview.md"), "# Architecture Overview\n\nLocal-first memory notes.");
+    writeFileSync(path.join(markdownRoot, "nested", "decisions.md"), "# Decision Log\n\nTrack the import path.");
+
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      const importResponse = await fetch(`${baseUrl}/workspaces/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          format: "markdown",
+          sourcePath: markdownRoot,
+          label: "Imported notes",
+        }),
+      });
+      const importBody = await importResponse.json();
+
+      const searchResponse = await fetch(`${baseUrl}/nodes/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "Architecture Overview",
+          filters: {},
+          limit: 10,
+          offset: 0,
+          sort: "relevance",
+        }),
+      });
+      const searchBody = await searchResponse.json();
+
+      expect(importResponse.status).toBe(201);
+      expect(importBody.data.import.nodesCreated).toBe(2);
+      expect(importBody.data.import.relationsCreated).toBe(0);
+      expect(importBody.data.import.activitiesCreated).toBe(1);
+      expect(existsSync(importBody.data.import.backupPath as string)).toBe(true);
+      expect(existsSync(importBody.data.import.importedPath as string)).toBe(true);
+      expect(searchBody.data.items.map((item: { title: string }) => item.title)).toContain("Architecture Overview");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("imports RecallX JSON exports into the active workspace with node and relation counts", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const source = {
+        actorType: "human",
+        actorLabel: "juhwan",
+        toolName: "recallx-test",
+      };
+
+      const projectResponse = await fetch(`${baseUrl}/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "project",
+          title: "Imported Workspace Project",
+          body: "Source workspace project.",
+          source,
+          metadata: {},
+        }),
+      });
+      const projectBody = await projectResponse.json();
+      const projectId = projectBody.data.node.id as string;
+
+      const noteResponse = await fetch(`${baseUrl}/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "note",
+          title: "Imported Workspace Note",
+          body: "Source workspace note.",
+          source,
+          metadata: {},
+        }),
+      });
+      const noteBody = await noteResponse.json();
+      const noteId = noteBody.data.node.id as string;
+
+      await fetch(`${baseUrl}/relations`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          fromNodeId: noteId,
+          toNodeId: projectId,
+          relationType: "relevant_to",
+          source,
+          metadata: {},
+        }),
+      });
+
+      const exportResponse = await fetch(`${baseUrl}/workspaces/export`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          format: "json",
+        }),
+      });
+      const exportBody = await exportResponse.json();
+      const exportPath = exportBody.data.export.exportPath as string;
+
+      const importResponse = await fetch(`${baseUrl}/workspaces/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          format: "recallx_json",
+          sourcePath: exportPath,
+          label: "Workspace export import",
+        }),
+      });
+      const importBody = await importResponse.json();
+
+      const searchResponse = await fetch(`${baseUrl}/nodes/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "Imported Workspace Project",
+          filters: {},
+          limit: 10,
+          offset: 0,
+          sort: "relevance",
+        }),
+      });
+      const searchBody = await searchResponse.json();
+
+      expect(exportResponse.status).toBe(201);
+      expect(importResponse.status).toBe(201);
+      expect(importBody.data.import.nodesCreated).toBeGreaterThanOrEqual(2);
+      expect(importBody.data.import.relationsCreated).toBeGreaterThanOrEqual(1);
+      expect(importBody.data.import.activitiesCreated).toBeGreaterThanOrEqual(1);
+      expect(existsSync(importBody.data.import.backupPath as string)).toBe(true);
+      expect(existsSync(importBody.data.import.importedPath as string)).toBe(true);
+      expect(searchBody.data.items.map((item: { title: string }) => item.title)).toContain("Imported Workspace Project");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
   it("surfaces workspace safety warnings when another session left an active lock", () => {
     const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
     tempRoots.push(root);
