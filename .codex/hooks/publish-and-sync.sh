@@ -162,6 +162,12 @@ if [ "$PR_IS_DRAFT" = "true" ]; then
   gh pr ready "$PR_URL"
 fi
 
+echo "[publish-and-sync] waiting for required GitHub checks"
+if ! gh pr checks "$PR_URL" --watch --required --fail-fast; then
+  echo "[publish-and-sync] required GitHub checks did not pass" >&2
+  exit 1
+fi
+
 DELETE_FLAG=""
 if [ "$DELETE_BRANCH" -eq 1 ]; then
   DELETE_FLAG="--delete-branch"

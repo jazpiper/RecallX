@@ -11,14 +11,20 @@ Use this as the default skill for work inside the RecallX repo.
 
 1. Read `AGENTS.md`.
 2. Recall relevant context from RecallX memory before making assumptions.
-3. Run:
+3. Prefer:
+
+```bash
+./.codex/hooks/start-task.sh <task-name>
+```
+
+4. If you are already inside the task branch, run:
 
 ```bash
 npm run branch:check
 npm run version:check
 ```
 
-4. Read only the docs and files needed for the requested task.
+5. Read only the docs and files needed for the requested task.
 
 ## Execution Loop
 
@@ -62,3 +68,4 @@ Before wrapping up:
 9. After push or PR creation, run `./.codex/hooks/return-to-main.sh` unless you are intentionally continuing the same task branch.
 10. If the user explicitly wants the full publish path, default to `./.codex/hooks/publish-and-sync.sh`.
 11. Only use `--no-merge` when the user explicitly wants to review or merge manually.
+12. If the user wants maximum automation, prefer `./.codex/hooks/finish-task.sh`.
