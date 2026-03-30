@@ -118,6 +118,19 @@ Rules:
 - For `recallx_search_workspace`, prefer `scopes: ["nodes", "activities"]` for mixed search, or `scope: "activities"` for a single scope. Do not send `"nodes,activities"` as one string.
 - When you do not already know the target node, prefer `recallx_search_workspace` as the default entry point. Use `recallx_search_nodes` for durable-only narrowing and `recallx_search_activities` for recent operational narrowing.
 
+### Tool result rendering
+
+- `structuredContent` remains the authoritative machine-readable payload for every tool result.
+- `content` should stay present for MCP clients that still rely on text-first rendering.
+- Prefer compact deterministic summaries in `content.text` over pretty-printed JSON dumps.
+- Do not run model-based summarization in the MCP hot path. Rendering should be local, predictable, and inspectable.
+- Summaries should preserve identifiers and next-step hints that help agents continue without reopening the full payload immediately.
+- For list-shaped results, summarize counts and the top few items instead of dumping every field.
+- For write results, summarize what landed, where it landed, and any governance state.
+- If a payload shape is unknown, fall back to a compact plain-text projection rather than multiline pretty JSON.
+
+This keeps MCP compatible for clients that want `structuredContent` while reducing prompt noise for agents that mainly read `content.text`.
+
 ### Workspace vs project
 
 - `workspace` is the top-level storage container and the default MCP working scope.

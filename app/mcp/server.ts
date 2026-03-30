@@ -87,8 +87,299 @@ function coerceBooleanSchema(defaultValue: boolean) {
   }, z.boolean().default(defaultValue));
 }
 
+type JsonRecord = Record<string, unknown>;
+const textSummaryItemLimit = 5;
+const textSummaryLength = 140;
+const textTitleLength = 80;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function cleanInlineText(value: string, maxLength = textSummaryLength) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) {
+    return compact;
+  }
+  return `${compact.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function formatKeyLabel(key: string) {
+  return key
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim();
+}
+
+function capitalize(value: string) {
+  return value ? `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}` : value;
+}
+
+function pickString(record: JsonRecord, keys: string[]) {
+  for (const key of keys) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function summarizeValue(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) {
+    return cleanInlineText(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return `${value.length} item(s)`;
+  }
+  if (isRecord(value)) {
+    const title = pickString(value, ["title", "name", "id", "nodeId"]);
+    if (title) {
+      return cleanInlineText(title);
+    }
+    return `${Object.keys(value).length} field(s)`;
+  }
+  return undefined;
+}
+
+function unwrapSummaryRecord(record: JsonRecord) {
+  const resultType = typeof record.resultType === "string" ? record.resultType : undefined;
+  if (resultType && isRecord(record[resultType])) {
+    const nested = record[resultType] as JsonRecord;
+    return {
+      kind:
+        (resultType === "activity" ? pickString(nested, ["activityType"]) : undefined) ??
+        (resultType === "node" ? pickString(nested, ["type"]) : undefined) ??
+        resultType,
+      value: nested
+    };
+  }
+  if (isRecord(record.node)) {
+    return {
+      kind: resultType ?? "node",
+      value: record.node
+    };
+  }
+  if (isRecord(record.activity)) {
+    return {
+      kind: resultType ?? "activity",
+      value: record.activity
+    };
+  }
+  return {
+    kind:
+      pickString(record, ["type", "activityType", "status"]) ??
+      (typeof record.resultType === "string" ? record.resultType : undefined),
+    value: record
+  };
+}
+
+function summarizeRecordLine(record: JsonRecord, index: number) {
+  const { kind, value } = unwrapSummaryRecord(record);
+  const title = pickString(value, ["title", "targetNodeTitle", "name", "workspaceName", "rootPath", "id", "nodeId"]);
+  const identifier = pickString(value, ["id", "nodeId", "targetNodeId"]);
+  const detail = pickString(value, ["summary", "reason", "body", "message", "staleReason", "workspaceRoot"]);
+  const parts = [`${index}.`];
+
+  if (kind) {
+    parts.push(`[${kind}]`);
+  }
+  if (title) {
+    parts.push(cleanInlineText(title, textTitleLength));
+  }
+  if (identifier && identifier !== title) {
+    parts.push(`(id: ${cleanInlineText(identifier, textTitleLength)})`);
+  }
+
+  let line = parts.join(" ");
+  if (detail) {
+    line += ` - ${cleanInlineText(detail)}`;
+  }
+  return line;
+}
+
+function formatItemsSummary(payload: JsonRecord) {
+  const rawItems = payload.items;
+  if (!Array.isArray(rawItems)) {
+    return null;
+  }
+
+  const items = rawItems.filter(isRecord);
+  const shown = Math.min(items.length, textSummaryItemLimit);
+  const total = typeof payload.total === "number" ? payload.total : items.length;
+  const lines = [`Results: ${shown} shown of ${total} total.`];
+
+  if (!items.length) {
+    lines.push("No results.");
+  } else {
+    for (const [index, item] of items.slice(0, textSummaryItemLimit).entries()) {
+      lines.push(summarizeRecordLine(item, index + 1));
+    }
+  }
+
+  if (total > shown) {
+    lines.push(`More available: ${total - shown} additional result(s).`);
+  } else if (items.length > shown) {
+    lines.push(`More available: ${items.length - shown} additional item(s).`);
+  }
+
+  if (typeof payload.nextCursor === "string" && payload.nextCursor.trim()) {
+    lines.push(`Next cursor: ${cleanInlineText(payload.nextCursor, textTitleLength)}`);
+  }
+
+  return lines.join("\n");
+}
+
+function formatBundleSummary(payload: JsonRecord) {
+  const bundle = isRecord(payload.bundle) ? payload.bundle : payload;
+  if (!isRecord(payload.bundle) && !isRecord(bundle.target)) {
+    return null;
+  }
+
+  const target = isRecord(bundle.target) ? bundle.target : null;
+  const type = target ? pickString(target, ["type"]) : undefined;
+  const mode = pickString(bundle, ["mode"]);
+  const preset = pickString(bundle, ["preset"]);
+  const summary = pickString(bundle, ["summary"]);
+  const items = Array.isArray(bundle.items) ? bundle.items.filter(isRecord) : [];
+  const decisions = Array.isArray(bundle.decisions) ? bundle.decisions : [];
+  const openQuestions = Array.isArray(bundle.openQuestions) ? bundle.openQuestions : [];
+  const activityDigest = Array.isArray(bundle.activityDigest) ? bundle.activityDigest : [];
+  const lines = [`Context bundle: Target${type ? ` [${type}]` : ""}.`];
+
+  if (mode || preset) {
+    lines.push(`Mode: ${[mode, preset].filter(Boolean).join(", ")}.`);
+  }
+  if (summary) {
+    lines.push(`Summary: ${cleanInlineText(summary)}`);
+  }
+
+  lines.push(`Items: ${items.length}.`);
+  for (const [index, item] of items.slice(0, textSummaryItemLimit).entries()) {
+    lines.push(summarizeRecordLine(item, index + 1));
+  }
+  if (items.length > textSummaryItemLimit) {
+    lines.push(`More bundle items: ${items.length - textSummaryItemLimit}.`);
+  }
+  if (activityDigest.length) {
+    lines.push(`Activity digest: ${activityDigest.length} entr${activityDigest.length === 1 ? "y" : "ies"}.`);
+  }
+  if (decisions.length) {
+    lines.push(`Decisions: ${decisions.length}.`);
+  }
+  if (openQuestions.length) {
+    lines.push(`Open questions: ${openQuestions.length}.`);
+  }
+
+  return lines.join("\n");
+}
+
+function formatWriteSummary(payload: JsonRecord) {
+  const primaryKey = ["node", "activity", "relation"].find((key) => isRecord(payload[key]));
+  if (!primaryKey && !isRecord(payload.landing)) {
+    return null;
+  }
+
+  const lines: string[] = [];
+  if (primaryKey && isRecord(payload[primaryKey])) {
+    lines.push(`${capitalize(primaryKey)} stored: ${summarizeRecordLine(payload[primaryKey], 1).replace(/^1\.\s*/, "")}`);
+  }
+
+  if (isRecord(payload.landing)) {
+    const landing = payload.landing;
+    const parts = [
+      typeof landing.storedAs === "string" ? `storedAs=${landing.storedAs}` : null,
+      typeof landing.canonicality === "string" ? `canonicality=${landing.canonicality}` : null,
+      typeof landing.status === "string" ? `status=${landing.status}` : null,
+      typeof landing.governanceState === "string" ? `governance=${landing.governanceState}` : null
+    ].filter((value): value is string => Boolean(value));
+
+    if (parts.length) {
+      lines.push(`Landing: ${parts.join(", ")}.`);
+    }
+    if (typeof landing.reason === "string" && landing.reason.trim()) {
+      lines.push(`Reason: ${cleanInlineText(landing.reason)}`);
+    }
+  }
+
+  return lines.length ? lines.join("\n") : null;
+}
+
+function formatObjectSummary(payload: JsonRecord) {
+  const preferredKeys = [
+    "status",
+    "message",
+    "workspaceName",
+    "workspaceRoot",
+    "rootPath",
+    "schemaVersion",
+    "authMode",
+    "bindAddress",
+    "queued",
+    "queuedCount",
+    "nodeId",
+    "id",
+    "title",
+    "type",
+    "summary",
+    "reason",
+    "nextCursor"
+  ];
+  const orderedKeys = Array.from(
+    new Set([...preferredKeys.filter((key) => key in payload), ...Object.keys(payload).filter((key) => !preferredKeys.includes(key))])
+  );
+  const lines: string[] = [];
+
+  for (const key of orderedKeys) {
+    const summary = summarizeValue(payload[key]);
+    if (!summary) {
+      continue;
+    }
+    lines.push(`${formatKeyLabel(key)}: ${summary}`);
+    if (lines.length >= 8) {
+      break;
+    }
+  }
+
+  return lines.length ? lines.join("\n") : "Structured response returned.";
+}
+
+function formatArraySummary(items: unknown[]) {
+  const recordItems = items.filter(isRecord);
+  if (!recordItems.length) {
+    return `Items: ${items.length}.`;
+  }
+  const lines = [`Items: ${recordItems.length}.`];
+  for (const [index, item] of recordItems.slice(0, textSummaryItemLimit).entries()) {
+    lines.push(summarizeRecordLine(item, index + 1));
+  }
+  if (recordItems.length > textSummaryItemLimit) {
+    lines.push(`More available: ${recordItems.length - textSummaryItemLimit} additional item(s).`);
+  }
+  return lines.join("\n");
+}
+
 function formatStructuredContent(content: unknown) {
-  return JSON.stringify(content, null, 2);
+  if (Array.isArray(content)) {
+    return formatArraySummary(content);
+  }
+  if (isRecord(content)) {
+    return formatBundleSummary(content) ?? formatItemsSummary(content) ?? formatWriteSummary(content) ?? formatObjectSummary(content);
+  }
+  if (typeof content === "string" && content.trim()) {
+    return cleanInlineText(content);
+  }
+  if (typeof content === "number" || typeof content === "boolean") {
+    return String(content);
+  }
+  return "Structured response returned.";
+}
+
+function renderToolText(_toolName: string, structuredContent: unknown) {
+  return formatStructuredContent(structuredContent);
 }
 
 function formatInvalidBundleModeMessage(input: unknown) {
@@ -119,12 +410,12 @@ function bundlePresetSchema(defaultValue: (typeof bundlePresets)[number]) {
   ).default(defaultValue);
 }
 
-function toolResult<T>(structuredContent: T) {
+function toolResult<T>(toolName: string, structuredContent: T) {
   return {
     content: [
       {
         type: "text" as const,
-        text: formatStructuredContent(structuredContent)
+        text: renderToolText(toolName, structuredContent)
       }
     ],
     structuredContent
@@ -174,20 +465,21 @@ const readOnlyToolAnnotations = {
   idempotentHint: true
 } as const;
 
-function createGetToolHandler(apiClient: Pick<RecallXApiClient, "get">, path: string) {
-  return async () => toolResult(await apiClient.get<Record<string, unknown>>(path));
+function createGetToolHandler(toolName: string, apiClient: Pick<RecallXApiClient, "get">, path: string) {
+  return async () => toolResult(toolName, await apiClient.get<Record<string, unknown>>(path));
 }
 
-function createPostToolHandler(apiClient: Pick<RecallXApiClient, "post">, path: string) {
-  return async (input: Record<string, unknown>) => toolResult(await apiClient.post<Record<string, unknown>>(path, input));
+function createPostToolHandler(toolName: string, apiClient: Pick<RecallXApiClient, "post">, path: string) {
+  return async (input: Record<string, unknown>) => toolResult(toolName, await apiClient.post<Record<string, unknown>>(path, input));
 }
 
 function createNormalizedPostToolHandler<TInput extends Record<string, unknown>>(
+  toolName: string,
   apiClient: Pick<RecallXApiClient, "post">,
   path: string,
   normalize: (input: TInput) => Record<string, unknown>
 ) {
-  return async (input: TInput) => toolResult(await apiClient.post<Record<string, unknown>>(path, normalize(input)));
+  return async (input: TInput) => toolResult(toolName, await apiClient.post<Record<string, unknown>>(path, normalize(input)));
 }
 
 function withReadOnlyAnnotations(config: any) {
@@ -556,7 +848,7 @@ export function createRecallXMcpServer(params?: {
       }),
       outputSchema: healthOutputSchema
     },
-    async () => toolResult(await apiClient.get<Record<string, unknown>>("/health"))
+    async () => toolResult("recallx_health", await apiClient.get<Record<string, unknown>>("/health"))
   );
 
   registerReadOnlyTool(
@@ -568,7 +860,7 @@ export function createRecallXMcpServer(params?: {
         "Read the currently active RecallX workspace and auth mode. Use this to confirm the default workspace scope before deciding whether an explicit user request justifies switching workspaces.",
       outputSchema: workspaceInfoSchema
     },
-    createGetToolHandler(apiClient, "/workspace")
+    createGetToolHandler("recallx_workspace_current", apiClient, "/workspace")
   );
 
   registerReadOnlyTool(
@@ -582,7 +874,7 @@ export function createRecallXMcpServer(params?: {
         items: z.array(workspaceInfoSchema.extend({ isCurrent: z.boolean(), lastOpenedAt: z.string() }))
       })
     },
-    createGetToolHandler(apiClient, "/workspaces")
+    createGetToolHandler("recallx_workspace_list", apiClient, "/workspaces")
   );
 
   registerTool(
@@ -597,7 +889,7 @@ export function createRecallXMcpServer(params?: {
         workspaceName: z.string().min(1).optional().describe("Human-friendly workspace name.")
       }
     },
-    createPostToolHandler(apiClient, "/workspaces")
+    createPostToolHandler("recallx_workspace_create", apiClient, "/workspaces")
   );
 
   registerTool(
@@ -611,7 +903,7 @@ export function createRecallXMcpServer(params?: {
         rootPath: z.string().min(1).describe("Existing workspace root path to open.")
       }
     },
-    createPostToolHandler(apiClient, "/workspaces/open")
+    createPostToolHandler("recallx_workspace_open", apiClient, "/workspaces/open")
   );
 
   registerReadOnlyTool(
@@ -635,7 +927,7 @@ export function createRecallXMcpServer(params?: {
         })
       })
     },
-    createGetToolHandler(apiClient, "/semantic/status")
+    createGetToolHandler("recallx_semantic_status", apiClient, "/semantic/status")
   );
 
   registerReadOnlyTool(
@@ -671,7 +963,7 @@ export function createRecallXMcpServer(params?: {
       if (statuses?.length) {
         params.set("statuses", statuses.join(","));
       }
-      return toolResult(await apiClient.get(`/semantic/issues?${params.toString()}`));
+      return toolResult("recallx_semantic_issues", await apiClient.get(`/semantic/issues?${params.toString()}`));
     }
   );
 
@@ -702,7 +994,7 @@ export function createRecallXMcpServer(params?: {
         sort: z.enum(["relevance", "updated_at"]).default("relevance")
       }
     },
-    createNormalizedPostToolHandler(apiClient, "/nodes/search", normalizeNodeSearchInput)
+    createNormalizedPostToolHandler("recallx_search_nodes", apiClient, "/nodes/search", normalizeNodeSearchInput)
   );
 
   registerReadOnlyTool(
@@ -731,7 +1023,7 @@ export function createRecallXMcpServer(params?: {
         sort: z.enum(["relevance", "updated_at"]).default("relevance")
       }
     },
-    createNormalizedPostToolHandler(apiClient, "/activities/search", normalizeActivitySearchInput)
+    createNormalizedPostToolHandler("recallx_search_activities", apiClient, "/activities/search", normalizeActivitySearchInput)
   );
 
   registerReadOnlyTool(
@@ -768,7 +1060,7 @@ export function createRecallXMcpServer(params?: {
         sort: z.enum(["relevance", "updated_at", "smart"]).default("relevance")
       }
     },
-    createNormalizedPostToolHandler(apiClient, "/search", normalizeWorkspaceSearchInput)
+    createNormalizedPostToolHandler("recallx_search_workspace", apiClient, "/search", normalizeWorkspaceSearchInput)
   );
 
   registerReadOnlyTool(
@@ -781,7 +1073,7 @@ export function createRecallXMcpServer(params?: {
         nodeId: z.string().min(1).describe("Target node id.")
       }
     },
-    async ({ nodeId }) => toolResult(await apiClient.get(`/nodes/${encodeURIComponent(nodeId)}`))
+    async ({ nodeId }) => toolResult("recallx_get_node", await apiClient.get(`/nodes/${encodeURIComponent(nodeId)}`))
   );
 
   registerReadOnlyTool(
@@ -807,7 +1099,7 @@ export function createRecallXMcpServer(params?: {
       if (relationTypeFilter.length) {
         query.set("types", relationTypeFilter.join(","));
       }
-      return toolResult(await apiClient.get(`/nodes/${encodeURIComponent(nodeId)}/neighborhood?${query.toString()}`));
+      return toolResult("recallx_get_related", await apiClient.get(`/nodes/${encodeURIComponent(nodeId)}/neighborhood?${query.toString()}`));
     }
   );
 
@@ -831,7 +1123,7 @@ export function createRecallXMcpServer(params?: {
         metadata: jsonRecordSchema
       }
     },
-    createPostToolHandler(apiClient, "/inferred-relations")
+    createPostToolHandler("recallx_upsert_inferred_relation", apiClient, "/inferred-relations")
   );
 
   registerTool(
@@ -851,7 +1143,7 @@ export function createRecallXMcpServer(params?: {
         metadata: jsonRecordSchema
       }
     },
-    createPostToolHandler(apiClient, "/relation-usage-events")
+    createPostToolHandler("recallx_append_relation_usage_event", apiClient, "/relation-usage-events")
   );
 
   registerTool(
@@ -872,7 +1164,7 @@ export function createRecallXMcpServer(params?: {
         metadata: jsonRecordSchema
       }
     },
-    createPostToolHandler(apiClient, "/search-feedback-events")
+    createPostToolHandler("recallx_append_search_feedback", apiClient, "/search-feedback-events")
   );
 
   registerTool(
@@ -887,7 +1179,7 @@ export function createRecallXMcpServer(params?: {
         limit: z.number().int().min(1).max(500).default(100)
       }
     },
-    createPostToolHandler(apiClient, "/inferred-relations/recompute")
+    createPostToolHandler("recallx_recompute_inferred_relations", apiClient, "/inferred-relations/recompute")
   );
 
   registerTool(
@@ -905,7 +1197,7 @@ export function createRecallXMcpServer(params?: {
         metadata: jsonRecordSchema
       }
     },
-    createPostToolHandler(apiClient, "/activities")
+    createPostToolHandler("recallx_append_activity", apiClient, "/activities")
   );
 
   registerTool(
@@ -926,7 +1218,7 @@ export function createRecallXMcpServer(params?: {
         metadata: jsonRecordSchema
       }
     },
-    createPostToolHandler(apiClient, "/capture")
+    createPostToolHandler("recallx_capture_memory", apiClient, "/capture")
   );
 
   registerTool(
@@ -950,7 +1242,7 @@ export function createRecallXMcpServer(params?: {
     },
     async (input: Record<string, unknown>) => {
       try {
-        return toolResult(await apiClient.post<Record<string, unknown>>("/nodes", input));
+        return toolResult("recallx_create_node", await apiClient.post<Record<string, unknown>>("/nodes", input));
       } catch (error) {
         if (
           error instanceof RecallXApiError &&
@@ -994,7 +1286,8 @@ export function createRecallXMcpServer(params?: {
           .max(100)
       }
     },
-    async (input: Record<string, unknown>) => toolResult(await apiClient.post<Record<string, unknown>>("/nodes/batch", input))
+    async (input: Record<string, unknown>) =>
+      toolResult("recallx_create_nodes", await apiClient.post<Record<string, unknown>>("/nodes/batch", input))
   );
 
   registerTool(
@@ -1012,7 +1305,7 @@ export function createRecallXMcpServer(params?: {
         metadata: jsonRecordSchema
       }
     },
-    createPostToolHandler(apiClient, "/relations")
+    createPostToolHandler("recallx_create_relation", apiClient, "/relations")
   );
 
   registerReadOnlyTool(
@@ -1031,7 +1324,7 @@ export function createRecallXMcpServer(params?: {
         states: states.join(","),
         limit: String(limit)
       });
-      return toolResult(await apiClient.get(`/governance/issues?${query.toString()}`));
+      return toolResult("recallx_list_governance_issues", await apiClient.get(`/governance/issues?${query.toString()}`));
     }
   );
 
@@ -1047,7 +1340,10 @@ export function createRecallXMcpServer(params?: {
       }
     },
     async ({ entityType, entityId }) =>
-      toolResult(await apiClient.get(`/governance/state/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`))
+      toolResult(
+        "recallx_get_governance_state",
+        await apiClient.get(`/governance/state/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`)
+      )
   );
 
   registerTool(
@@ -1062,7 +1358,7 @@ export function createRecallXMcpServer(params?: {
         limit: z.number().int().min(1).max(500).default(100)
       }
     },
-    createPostToolHandler(apiClient, "/governance/recompute")
+    createPostToolHandler("recallx_recompute_governance", apiClient, "/governance/recompute")
   );
 
   registerReadOnlyTool(
@@ -1099,6 +1395,7 @@ export function createRecallXMcpServer(params?: {
     },
     async ({ targetId, ...input }) =>
       toolResult(
+        "recallx_context_bundle",
         await apiClient.post("/context/bundles", {
           ...input,
           ...(targetId
@@ -1122,7 +1419,7 @@ export function createRecallXMcpServer(params?: {
         limit: coerceIntegerSchema(250, 1, 1000)
       }
     },
-    createPostToolHandler(apiClient, "/semantic/reindex")
+    createPostToolHandler("recallx_semantic_reindex", apiClient, "/semantic/reindex")
   );
 
   registerTool(
@@ -1135,7 +1432,8 @@ export function createRecallXMcpServer(params?: {
         nodeId: z.string().min(1)
       }
     },
-    async ({ nodeId }) => toolResult(await apiClient.post(`/semantic/reindex/${encodeURIComponent(nodeId)}`, {}))
+    async ({ nodeId }) =>
+      toolResult("recallx_semantic_reindex_node", await apiClient.post(`/semantic/reindex/${encodeURIComponent(nodeId)}`, {}))
   );
 
   registerReadOnlyTool(
@@ -1151,7 +1449,7 @@ export function createRecallXMcpServer(params?: {
         targetNodeId: z.string().optional()
       }
     },
-    createPostToolHandler(apiClient, "/retrieval/rank-candidates")
+    createPostToolHandler("recallx_rank_candidates", apiClient, "/retrieval/rank-candidates")
   );
 
   return server;

@@ -69,7 +69,9 @@ $PATHS
 EOF
 run_validation_plan
 
-printf '%s\n' "$PATHS" | stage_paths
+stage_paths <<EOF
+$PATHS
+EOF
 
 if [ -z "$COMMIT_MESSAGE" ]; then
   COMMIT_MESSAGE="$(derive_default_commit_subject)"
