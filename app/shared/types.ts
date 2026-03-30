@@ -437,7 +437,9 @@ export interface TelemetrySummaryResponse {
   generatedAt: string;
   logsPath: string;
   totalEvents: number;
+  slowRequestThresholdMs: number;
   operationSummaries: TelemetryOperationSummary[];
+  hotOperations: TelemetryOperationSummary[];
   slowOperations: TelemetryOperationSummary[];
   mcpToolFailures: Array<{
     operation: string;
