@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildRecentSelectableNodeIds, buildSearchNodeStub, buildSearchResultNodeMap } from '../app/renderer/src/lib/searchResults.js';
+import {
+  buildRecentSelectableNodeIds,
+  buildSearchNodeStub,
+  buildSearchResultNodeMap,
+  buildSearchSourceOptions,
+  filterSearchWorkspaceResults,
+  pushRecentEntry,
+} from '../app/renderer/src/lib/searchResults.js';
 import type { ActivitySearchHit, Node, SearchNodeHit } from '../app/renderer/src/lib/types.js';
 
 function makeSnapshotNode(overrides: Partial<Node> = {}): Node {
@@ -96,5 +103,34 @@ describe('renderer search result helpers', () => {
 
     expect(stub.createdAt).toBe('2021-04-05T06:07:08.000Z');
     expect(stub.updatedAt).toBe('2021-04-05T06:07:08.000Z');
+  });
+
+  it('builds source options and filters mixed search results with lightweight chips', () => {
+    const nodeHits = [
+      makeSearchNodeHit({ id: 'project_hit', type: 'project', sourceLabel: 'Codex' }),
+      makeSearchNodeHit({ id: 'decision_hit', type: 'decision', sourceLabel: 'human' }),
+    ];
+    const activityHits = [
+      makeActivityHit({ id: 'activity_codex', sourceLabel: 'Codex' }),
+      makeActivityHit({ id: 'activity_system', sourceLabel: 'system' }),
+    ];
+
+    expect(buildSearchSourceOptions(nodeHits, activityHits)).toEqual(['Codex', 'human', 'system']);
+
+    const filtered = filterSearchWorkspaceResults(nodeHits, activityHits, {
+      scope: 'all',
+      nodeType: 'project',
+      sourceLabel: 'Codex',
+    });
+
+    expect(filtered.nodes.map((item) => item.id)).toEqual(['project_hit']);
+    expect(filtered.activities.map((item) => item.id)).toEqual(['activity_codex']);
+    expect(filtered.total).toBe(2);
+  });
+
+  it('keeps recent entries deduplicated and bounded', () => {
+    const updated = pushRecentEntry(['Open Graph', 'Open Notes', 'Review Governance'], 'open graph', 3);
+
+    expect(updated).toEqual(['open graph', 'Open Notes', 'Review Governance']);
   });
 });

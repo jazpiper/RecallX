@@ -30,7 +30,14 @@ import {
   archiveNode as archiveNodeRequest,
 } from './lib/mockApi';
 import { buildProjectGraphEmphasis, filterProjectGraphView, listProjectGraphRelationTypes } from './lib/projectGraph';
-import { buildRecentSelectableNodeIds, buildSearchResultNodeMap } from './lib/searchResults';
+import {
+  buildRecentSelectableNodeIds,
+  buildSearchResultNodeMap,
+  buildSearchSourceOptions,
+  filterSearchWorkspaceResults,
+  pushRecentEntry,
+  type SearchResultScope,
+} from './lib/searchResults';
 import type {
   Activity,
   ActivitySearchHit,
@@ -70,8 +77,11 @@ type SearchPanelState = {
 };
 
 type GraphMode = 'neighborhood' | 'project-map';
+type PaletteSection = 'routes' | 'searches' | 'nodes';
 const BEARER_RECENT_POLL_INTERVAL_MS = 15000;
 const ACTIVE_PROJECT_SETTING_KEY = 'workspace.activeProjectId';
+const RECENT_SEARCHES_STORAGE_KEY = 'recallx.recent-searches';
+const RECENT_COMMANDS_STORAGE_KEY = 'recallx.recent-commands';
 const EMPTY_ACTIVE_PROJECT_DIGEST = {
   bundleItems: [] as ContextBundlePreviewItem[],
   activities: [] as Activity[],
@@ -231,6 +241,36 @@ function resolveInitialView(): NavView {
   }
 }
 
+function readStoredHistory(key: string): string[] {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredHistory(key: string, items: string[]) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(key, JSON.stringify(items));
+  } catch {
+    // Ignore storage failures in the renderer so the command palette stays usable.
+  }
+}
+
 type GuideSection = {
   id: string;
   group: string;
@@ -270,6 +310,9 @@ export default function App() {
   const [selectedNodeId, setSelectedNodeId] = useState<string>('node_recallx');
   const [query, setQuery] = useState('');
   const deferredQuery = useDeferredValue(query);
+  const [searchScopeFilter, setSearchScopeFilter] = useState<SearchResultScope>('all');
+  const [searchNodeTypeFilter, setSearchNodeTypeFilter] = useState<Node['type'] | 'all'>('all');
+  const [searchSourceFilter, setSearchSourceFilter] = useState<string | 'all'>('all');
   const [searchPanel, setSearchPanel] = useState<SearchPanelState>({
     nodes: [],
     activities: [],
@@ -277,6 +320,11 @@ export default function App() {
     isLoading: false,
     error: null,
   });
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [paletteSection, setPaletteSection] = useState<PaletteSection>('routes');
+  const [paletteQuery, setPaletteQuery] = useState('');
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const [recentCommands, setRecentCommands] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState(false);
@@ -322,6 +370,7 @@ export default function App() {
   const bundleUsageEventKeysRef = useRef(new Set<string>());
   const activeProjectBundleUsageEventKeysRef = useRef(new Set<string>());
   const captureProjectAutofillRef = useRef<string | null>(null);
+  const commandPaletteInputRef = useRef<HTMLInputElement | null>(null);
   const relationUsageSessionIdRef = useRef(
     globalThis.crypto?.randomUUID?.() ?? `recallx-renderer-${Date.now()}`
   );
@@ -538,6 +587,88 @@ export default function App() {
     };
   }, [authRequired, deferredQuery, isLoading, isRecallBrowseView]);
 
+  const searchSourceOptions = useMemo(
+    () => buildSearchSourceOptions(searchPanel.nodes, searchPanel.activities).slice(0, 4),
+    [searchPanel.activities, searchPanel.nodes],
+  );
+  const searchNodeTypeOptions = useMemo(
+    () =>
+      Array.from(new Set(searchPanel.nodes.map((node) => node.type))).sort((left, right) => left.localeCompare(right)),
+    [searchPanel.nodes],
+  );
+  const filteredSearchResults = useMemo(
+    () =>
+      filterSearchWorkspaceResults(searchPanel.nodes, searchPanel.activities, {
+        scope: searchScopeFilter,
+        nodeType: searchNodeTypeFilter,
+        sourceLabel: searchSourceFilter,
+      }),
+    [searchNodeTypeFilter, searchPanel.activities, searchPanel.nodes, searchScopeFilter, searchSourceFilter],
+  );
+  const filteredSearchNodes = filteredSearchResults.nodes;
+  const filteredSearchActivityHits = filteredSearchResults.activities;
+  const filteredSearchTotal = filteredSearchResults.total;
+
+  useEffect(() => {
+    setRecentSearches(readStoredHistory(RECENT_SEARCHES_STORAGE_KEY));
+    setRecentCommands(readStoredHistory(RECENT_COMMANDS_STORAGE_KEY));
+  }, []);
+
+  useEffect(() => {
+    if (searchSourceFilter === 'all') {
+      return;
+    }
+
+    if (!searchSourceOptions.includes(searchSourceFilter)) {
+      setSearchSourceFilter('all');
+    }
+  }, [searchSourceFilter, searchSourceOptions]);
+
+  useEffect(() => {
+    if (searchNodeTypeFilter === 'all') {
+      return;
+    }
+
+    if (!searchNodeTypeOptions.includes(searchNodeTypeFilter)) {
+      setSearchNodeTypeFilter('all');
+    }
+  }, [searchNodeTypeFilter, searchNodeTypeOptions]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setIsCommandPaletteOpen(true);
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        setIsCommandPaletteOpen(false);
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isCommandPaletteOpen) {
+      setPaletteQuery('');
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      commandPaletteInputRef.current?.focus();
+      commandPaletteInputRef.current?.select();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [isCommandPaletteOpen]);
+
   const nodeMap = useMemo(
     () => buildSearchResultNodeMap(snapshot?.nodes ?? [], searchPanel.nodes, searchPanel.activities),
     [searchPanel.activities, searchPanel.nodes, snapshot],
@@ -750,9 +881,12 @@ export default function App() {
       return searchableNoteNodes;
     }
 
-    return searchPanel.nodes;
-  }, [deferredQuery, searchPanel.nodes, searchableNoteNodes]);
-  const noteActivityHits = useMemo(() => (deferredQuery.trim() ? searchPanel.activities : []), [deferredQuery, searchPanel.activities]);
+    return filteredSearchNodes;
+  }, [deferredQuery, filteredSearchNodes, searchableNoteNodes]);
+  const noteActivityHits = useMemo(
+    () => (deferredQuery.trim() ? filteredSearchActivityHits : []),
+    [deferredQuery, filteredSearchActivityHits],
+  );
   const activeNoteNode = useMemo(
     () => noteNodes.find((node) => node.id === selectedNodeId) ?? null,
     [noteNodes, selectedNodeId],
@@ -786,13 +920,30 @@ export default function App() {
 
     return searchableNoteNodes.filter((node) => !pinnedIds.has(node.id)).slice(0, 4);
   }, [nodeMap, pinnedProjectNodes, searchableNoteNodes, snapshot?.recentNodeIds]);
+  const paletteRecentNodes = useMemo(() => {
+    const orderedNodes = [
+      activeProjectNode,
+      ...pinnedProjectNodes,
+      ...homeRecentNodes,
+      ...(snapshot?.recentNodeIds ?? []).map((nodeId) => nodeMap.get(nodeId) ?? null),
+    ].filter((node): node is Node => node !== null);
+
+    const seen = new Set<string>();
+    return orderedNodes.filter((node) => {
+      if (seen.has(node.id)) {
+        return false;
+      }
+      seen.add(node.id);
+      return true;
+    }).slice(0, 6);
+  }, [activeProjectNode, homeRecentNodes, nodeMap, pinnedProjectNodes, snapshot?.recentNodeIds]);
   const homeSearchNodes = useMemo(
-    () => (deferredQuery.trim() ? searchPanel.nodes.slice(0, 5) : []),
-    [deferredQuery, searchPanel.nodes],
+    () => (deferredQuery.trim() ? filteredSearchNodes.slice(0, 5) : []),
+    [deferredQuery, filteredSearchNodes],
   );
   const homeSearchActivityHits = useMemo(
-    () => (deferredQuery.trim() ? searchPanel.activities.slice(0, 4) : []),
-    [deferredQuery, searchPanel.activities],
+    () => (deferredQuery.trim() ? filteredSearchActivityHits.slice(0, 4) : []),
+    [deferredQuery, filteredSearchActivityHits],
   );
   const homeSuggestedProjectNode = useMemo(
     () => activeProjectNode ?? pinnedProjectNodes[0] ?? projectNodes[0] ?? null,
@@ -1751,6 +1902,191 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
     focusNode(nodeId, 'recent');
     setNotePreviewTargetId(nodeId);
   }
+
+  function rememberSearch(value: string) {
+    setRecentSearches((current) => {
+      const next = pushRecentEntry(current, value);
+      writeStoredHistory(RECENT_SEARCHES_STORAGE_KEY, next);
+      return next;
+    });
+  }
+
+  function rememberCommand(value: string) {
+    setRecentCommands((current) => {
+      const next = pushRecentEntry(current, value);
+      writeStoredHistory(RECENT_COMMANDS_STORAGE_KEY, next);
+      return next;
+    });
+  }
+
+  function handleOpenSearchResult(nodeId: string) {
+    const normalizedQuery = deferredQuery.trim();
+    if (normalizedQuery) {
+      rememberSearch(normalizedQuery);
+    }
+    openNodeInRecent(nodeId);
+  }
+
+  function handleApplyRecentSearch(value: string) {
+    rememberSearch(value);
+    setQuery(value);
+    selectView('home');
+    setIsCommandPaletteOpen(false);
+    setPaletteSection('searches');
+  }
+
+  function handleRunPaletteCommand(command: { label: string; run: () => void }) {
+    rememberCommand(command.label);
+    setIsCommandPaletteOpen(false);
+    command.run();
+  }
+
+  function handleOpenPaletteNode(nodeId: string) {
+    setIsCommandPaletteOpen(false);
+    openNodeInRecent(nodeId);
+  }
+
+  function renderSearchRefinementControls(location: 'home' | 'notes') {
+    if (!deferredQuery.trim()) {
+      return null;
+    }
+
+    return (
+      <section className="card search-refinement-card">
+        <div className="page-copy compact-copy">
+          <span className="eyebrow">Search refinement</span>
+          <h3>{location === 'home' ? 'Keep Home search narrow and fast' : 'Trim mixed search results without rerunning the backend'}</h3>
+        </div>
+        <div className="search-refinement-groups">
+          <div className="search-filter-group">
+            <span className="search-filter-label">Scope</span>
+            <div className="chip-row">
+              {[
+                ['all', 'All'],
+                ['nodes', 'Nodes'],
+                ['activities', 'Activity'],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`chip-button ${searchScopeFilter === value ? 'active' : ''}`}
+                  onClick={() => setSearchScopeFilter(value as SearchResultScope)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="search-filter-group">
+            <span className="search-filter-label">Node type</span>
+            <div className="chip-row">
+              <button type="button" className={`chip-button ${searchNodeTypeFilter === 'all' ? 'active' : ''}`} onClick={() => setSearchNodeTypeFilter('all')}>
+                All
+              </button>
+              {searchNodeTypeOptions.map((type) => (
+                <button
+                  key={type}
+                  type="button"
+                  className={`chip-button ${searchNodeTypeFilter === type ? 'active' : ''}`}
+                  onClick={() => setSearchNodeTypeFilter(type)}
+                  disabled={searchScopeFilter === 'activities'}
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="search-filter-group">
+            <span className="search-filter-label">Source</span>
+            <div className="chip-row">
+              <button type="button" className={`chip-button ${searchSourceFilter === 'all' ? 'active' : ''}`} onClick={() => setSearchSourceFilter('all')}>
+                All
+              </button>
+              {searchSourceOptions.map((sourceLabel) => (
+                <button
+                  key={sourceLabel}
+                  type="button"
+                  className={`chip-button ${searchSourceFilter === sourceLabel ? 'active' : ''}`}
+                  onClick={() => setSearchSourceFilter(sourceLabel)}
+                >
+                  {sourceLabel}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="chip-row">
+          <span className="chip chip-static">{filteredSearchTotal} filtered hits</span>
+          <span className="chip chip-static">{searchPanel.total} backend hits</span>
+          <span className="chip chip-static">Cmd/Ctrl+K opens the palette</span>
+        </div>
+      </section>
+    );
+  }
+
+  const commandPaletteRouteCommands = useMemo(
+    () =>
+      [
+        { label: 'Open Home', hint: 'Return to the re-entry surface', run: () => selectView('home') },
+        { label: 'Open Guide', hint: 'Read API and MCP guidance', run: () => selectView('search') },
+        { label: 'Open Notes', hint: 'Jump to recent cards and quick capture', run: () => selectView('recent') },
+        {
+          label: 'Open Graph',
+          hint: 'Inspect the broader memory graph',
+          run: () => {
+            setGraphMode('neighborhood');
+            selectView('graph');
+          },
+        },
+        { label: 'Review Governance', hint: 'Inspect trust and review signals', run: () => selectView('governance') },
+        { label: 'Open Workspace', hint: 'Open backup, import, and safety tools', run: () => selectView('settings') },
+        ...(activeProjectNode
+          ? [
+              {
+                label: `Open ${activeProjectNode.title} project map`,
+                hint: 'Jump straight to the active project graph',
+                run: () => openNodeInGraph(activeProjectNode.id),
+              },
+            ]
+          : []),
+      ].sort((left, right) => left.label.localeCompare(right.label)),
+    [activeProjectNode],
+  );
+  const normalizedPaletteQuery = paletteQuery.trim().toLowerCase();
+  const filteredPaletteRouteCommands = useMemo(
+    () =>
+      commandPaletteRouteCommands.filter((command) =>
+        !normalizedPaletteQuery
+          || [command.label, command.hint].join(' ').toLowerCase().includes(normalizedPaletteQuery),
+      ),
+    [commandPaletteRouteCommands, normalizedPaletteQuery],
+  );
+  const recentPaletteCommands = useMemo(
+    () =>
+      recentCommands
+        .map((label) =>
+          commandPaletteRouteCommands.find((command) => command.label.trim().toLowerCase() === label.trim().toLowerCase()) ?? null,
+        )
+        .filter((command, index, items): command is (typeof commandPaletteRouteCommands)[number] =>
+          command !== null
+          && (!normalizedPaletteQuery
+            || [command.label, command.hint].join(' ').toLowerCase().includes(normalizedPaletteQuery))
+          && items.findIndex((item) => item?.label === command.label) === index,
+        ),
+    [commandPaletteRouteCommands, normalizedPaletteQuery, recentCommands],
+  );
+  const filteredPaletteRecentSearches = useMemo(
+    () => recentSearches.filter((item) => !normalizedPaletteQuery || item.toLowerCase().includes(normalizedPaletteQuery)),
+    [normalizedPaletteQuery, recentSearches],
+  );
+  const filteredPaletteRecentNodes = useMemo(
+    () =>
+      paletteRecentNodes.filter((node) =>
+        !normalizedPaletteQuery
+          || [node.title, node.summary, node.type].join(' ').toLowerCase().includes(normalizedPaletteQuery),
+      ),
+    [normalizedPaletteQuery, paletteRecentNodes],
+  );
 
   const pageContent = (() => {
     if (isLoading) {
@@ -2799,10 +3135,13 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               </label>
               <div className="chip-row">
                 <span className="chip chip-static">
-                  {deferredQuery.trim() ? `${searchPanel.total} server hits` : `${noteNodes.length} recent cards`}
+                  {deferredQuery.trim() ? `${filteredSearchTotal} filtered hits` : `${noteNodes.length} recent cards`}
                 </span>
                 <span className="chip chip-static">{workspaceName}</span>
-                {deferredQuery.trim() ? <span className="chip chip-static">nodes + activities</span> : null}
+                {deferredQuery.trim() ? <span className="chip chip-static">{searchPanel.total} backend hits</span> : null}
+                <button type="button" className="chip-button" onClick={() => setIsCommandPaletteOpen(true)}>
+                  Cmd/Ctrl+K
+                </button>
               </div>
             </section>
 
@@ -2863,6 +3202,8 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             </section>
           </div>
 
+          {renderSearchRefinementControls('notes')}
+
           {searchPanel.error ? <div className="empty-state compact">{searchPanel.error}</div> : null}
           {searchPanel.isLoading ? <div className="empty-state compact">Searching the full workspace...</div> : null}
 
@@ -2874,8 +3215,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   type="button"
                   className={`note-tile ${activeNoteNode?.id === node.id ? 'selected' : ''}`}
                   onClick={() => {
-                    focusNode(node.id, 'recent');
-                    setNotePreviewTargetId(node.id);
+                    handleOpenSearchResult(node.id);
                   }}
                 >
                   <div className="result-card__top">
@@ -2921,8 +3261,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     className="route-card"
                     onClick={() => {
                       if (activity.targetNodeId) {
-                        focusNode(activity.targetNodeId, 'recent');
-                        setNotePreviewTargetId(activity.targetNodeId);
+                        handleOpenSearchResult(activity.targetNodeId);
                       }
                     }}
                   >
@@ -3112,11 +3451,14 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               <span className="chip chip-static">{homeRecentNodes.length} recent nodes</span>
               <span className="chip chip-static">{governanceIssues.length} review signals</span>
               <span className="chip chip-static">{activeProjectNode ? `focus ${activeProjectNode.title}` : 'no active project'}</span>
-              {deferredQuery.trim() ? <span className="chip chip-static">{searchPanel.total} mixed hits</span> : null}
+              {deferredQuery.trim() ? <span className="chip chip-static">{filteredSearchTotal} filtered hits</span> : null}
             </div>
             <div className="hero-actions">
               <button type="button" className="hero-button hero-button--primary" onClick={() => selectView('search')}>
                 Open Guide
+              </button>
+              <button type="button" className="hero-button hero-button--secondary" onClick={() => setIsCommandPaletteOpen(true)}>
+                Command Palette
               </button>
               <button type="button" className="hero-button hero-button--secondary" onClick={() => selectView('graph')}>
                 Open Graph
@@ -3166,6 +3508,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
 
         {searchPanel.error ? <div className="empty-state compact">{searchPanel.error}</div> : null}
         {searchPanel.isLoading ? <div className="empty-state compact">Searching the full workspace...</div> : null}
+        {renderSearchRefinementControls('home')}
 
         {deferredQuery.trim() ? (
           <section className="home-results-grid">
@@ -3179,7 +3522,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               </div>
               <div className="card-stack">
                 {homeSearchNodes.map((node) => (
-                  <button key={node.id} type="button" className="route-card" onClick={() => openNodeInRecent(node.id)}>
+                  <button key={node.id} type="button" className="route-card" onClick={() => handleOpenSearchResult(node.id)}>
                     <div>
                       <strong>{node.title ?? node.id}</strong>
                       <span>{node.summary ?? 'No summary yet.'}</span>
@@ -3212,7 +3555,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     className="route-card"
                     onClick={() => {
                       if (activity.targetNodeId) {
-                        openNodeInRecent(activity.targetNodeId);
+                        handleOpenSearchResult(activity.targetNodeId);
                       }
                     }}
                   >
@@ -3451,6 +3794,144 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
         </header>
         {loadError && snapshot ? <div className="banner">{loadError}</div> : null}
         <div className="workspace-body">{pageContent}</div>
+        {isCommandPaletteOpen ? (
+          <div
+            className="command-palette-overlay"
+            onClick={() => {
+              setIsCommandPaletteOpen(false);
+            }}
+          >
+            <section
+              className="card command-palette-modal"
+              onClick={(event) => {
+                event.stopPropagation();
+              }}
+            >
+              <div className="section-head section-head--compact">
+                <div>
+                  <span className="eyebrow">Command palette</span>
+                  <h3>Jump quickly without changing the product shape</h3>
+                </div>
+                <button type="button" className="ghost" onClick={() => setIsCommandPaletteOpen(false)}>
+                  Close
+                </button>
+              </div>
+              <label className="search-box" htmlFor="command-palette-input">
+                <span>Query</span>
+                <input
+                  id="command-palette-input"
+                  ref={commandPaletteInputRef}
+                  value={paletteQuery}
+                  onChange={(event) => setPaletteQuery(event.target.value)}
+                  placeholder="routes, recent searches, recent nodes"
+                />
+              </label>
+              <div className="command-palette-tabs">
+                {[
+                  ['routes', 'Routes'],
+                  ['searches', 'Recent searches'],
+                  ['nodes', 'Recent nodes'],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`chip-button ${paletteSection === value ? 'active' : ''}`}
+                    onClick={() => setPaletteSection(value as PaletteSection)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="command-palette-results">
+                {paletteSection === 'routes' ? (
+                  <>
+                    {recentPaletteCommands.length ? (
+                      <div className="command-palette-group">
+                        <span className="search-filter-label">Recent commands</span>
+                        <div className="card-stack compact-stack">
+                          {recentPaletteCommands.map((command) => (
+                            <button
+                              key={`recent-${command.label}`}
+                              type="button"
+                              className="route-card command-palette-result"
+                              onClick={() => handleRunPaletteCommand(command)}
+                            >
+                              <div>
+                                <strong>{command.label}</strong>
+                                <span>{command.hint}</span>
+                              </div>
+                              <em>Recent</em>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {filteredPaletteRouteCommands.map((command) => (
+                      <button
+                        key={command.label}
+                        type="button"
+                        className="route-card command-palette-result"
+                        onClick={() => handleRunPaletteCommand(command)}
+                      >
+                        <div>
+                          <strong>{command.label}</strong>
+                          <span>{command.hint}</span>
+                        </div>
+                        <em>Run</em>
+                      </button>
+                    ))}
+                  </>
+                ) : null}
+                {paletteSection === 'searches'
+                  ? filteredPaletteRecentSearches.map((item) => (
+                      <button
+                        key={item}
+                        type="button"
+                        className="route-card command-palette-result"
+                        onClick={() => handleApplyRecentSearch(item)}
+                      >
+                        <div>
+                          <strong>{item}</strong>
+                          <span>Reuse a recent workspace query</span>
+                        </div>
+                        <em>Search</em>
+                      </button>
+                    ))
+                  : null}
+                {paletteSection === 'nodes'
+                  ? filteredPaletteRecentNodes.map((node) => (
+                      <button
+                        key={node.id}
+                        type="button"
+                        className="route-card command-palette-result"
+                        onClick={() => handleOpenPaletteNode(node.id)}
+                      >
+                        <div>
+                          <strong>{node.title}</strong>
+                          <span>{node.summary || node.type}</span>
+                        </div>
+                        <em>{node.type}</em>
+                      </button>
+                    ))
+                  : null}
+                {paletteSection === 'routes' && !filteredPaletteRouteCommands.length ? (
+                  <div className="empty-state compact">No route commands matched this palette query.</div>
+                ) : null}
+                {paletteSection === 'searches' && !filteredPaletteRecentSearches.length ? (
+                  <div className="empty-state compact">No recent searches are stored yet.</div>
+                ) : null}
+                {paletteSection === 'nodes' && !filteredPaletteRecentNodes.length ? (
+                  <div className="empty-state compact">No recent nodes matched this palette query.</div>
+                ) : null}
+              </div>
+              <div className="chip-row">
+                <span className="chip chip-static">Cmd/Ctrl+K</span>
+                <span className="chip chip-static">{recentCommands.length} recent commands</span>
+                <span className="chip chip-static">{recentSearches.length} recent searches</span>
+              </div>
+            </section>
+          </div>
+        ) : null}
       </main>
     </div>
   );

@@ -709,6 +709,36 @@ pre {
   color: var(--muted-strong);
 }
 
+.chip-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted-strong);
+  font-size: 0.76rem;
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
+}
+
+.chip-button:hover,
+.chip-button.active {
+  transform: translateY(-1px);
+  border-color: rgba(123, 224, 182, 0.34);
+  background: rgba(123, 224, 182, 0.12);
+  color: #ebfff5;
+}
+
+.chip-button:disabled {
+  opacity: 0.48;
+  transform: none;
+}
+
 .tool-chip--active,
 .hero-button--secondary,
 .ghost {
@@ -953,6 +983,29 @@ pre {
   border-radius: 999px;
 }
 
+.search-refinement-card {
+  display: grid;
+  gap: 16px;
+}
+
+.search-refinement-groups {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.search-filter-group {
+  display: grid;
+  gap: 10px;
+}
+
+.search-filter-label {
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
 .home-hero h2 {
   max-width: 11ch;
   font-size: clamp(2.6rem, 6vw, 4.9rem);
@@ -1072,6 +1125,45 @@ pre {
   overflow: auto;
   display: grid;
   gap: 18px;
+}
+
+.command-palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(3, 8, 18, 0.72);
+  backdrop-filter: blur(20px);
+}
+
+.command-palette-modal {
+  width: min(840px, 100%);
+  max-height: calc(100vh - 56px);
+  overflow: auto;
+  display: grid;
+  gap: 18px;
+}
+
+.command-palette-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.command-palette-results {
+  display: grid;
+  gap: 12px;
+}
+
+.command-palette-group {
+  display: grid;
+  gap: 10px;
+}
+
+.command-palette-result {
+  width: 100%;
 }
 
 .note-modal-actions {
@@ -1273,6 +1365,10 @@ pre {
 
   .project-graph-controls,
   .graph-section-grid--project {
+    grid-template-columns: 1fr;
+  }
+
+  .search-refinement-groups {
     grid-template-columns: 1fr;
   }
 

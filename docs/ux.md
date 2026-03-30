@@ -124,12 +124,15 @@ It should answer:
 ### Current sections
 - workspace summary card
 - workspace-wide search field
+- command palette entry point
+- lightweight search filter chips for scope, node type, and source
 - quick actions for Guide, Graph, Governance, and Notes
 - recent project cards
 - recent movement / mixed-search result panels
 
 ### Important notes
 - Home now includes a workspace-wide search bar and keeps quick actions secondary
+- Home search refinement should stay client-visible and small, not turn into an advanced query builder
 - Home is a retrieval-first re-entry surface, not the primary node-creation surface
 - semantic indexing still belongs on Home as an operational aid, not as a dedicated page
 
@@ -353,9 +356,15 @@ The active project may prefill the project selector, but it should still be easy
 ## 9.1 Search-to-context flow
 1. user searches
    Search can begin from Home or Recent
-2. user selects a node
-3. right rail shows surrounding context
-4. user optionally opens graph or acts on bundle preview
+2. user optionally narrows scope, node type, or source with lightweight chips
+3. user can also open the command palette for route jump, recent search reuse, or recent-node jump
+4. user selects a node
+5. right rail shows surrounding context
+6. user optionally opens graph or acts on bundle preview
+
+### Design rule
+Refinement should speed up the existing deterministic loop.
+It should not hide the underlying result shape or replace the normal search surface.
 
 ## 9.2 Governance inspection flow
 1. tool or maintenance pass writes or updates state
