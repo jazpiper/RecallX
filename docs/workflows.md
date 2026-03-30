@@ -14,6 +14,17 @@ Use the `recallx` wrapper to inspect and switch workspaces against the running l
 - `recallx workspace list`
 - `recallx workspace create --root /path/to/workspace [--name "Personal"]`
 - `recallx workspace open --root /path/to/workspace`
+- `recallx workspace backups`
+- `recallx workspace backup [--label "before-upgrade"]`
+- `recallx workspace export [--format json|markdown]`
+- `recallx workspace restore --backup <id> --root /path/to/restore [--name "Recovered"]`
+
+Current product behavior:
+
+- the renderer Workspace page exposes backup, export, and restore actions over the same local API
+- backups are point-in-time workspace snapshots stored under `backups/`
+- exports currently support `json` and `markdown`
+- workspace status may include single-writer safety warnings such as active lock, unclean shutdown, or recent open on another machine
 
 ## 1a. Repo branch hygiene
 
@@ -57,7 +68,8 @@ A non-agent client can bootstrap from health and bootstrap, then use the API dir
 
 For agent tooling that prefers structured tool calls, the MCP bridge is available through:
 
-- `npm run mcp`
+- `npm run dev:mcp` for source development
+- `npm run build:server && npm run mcp` for the built source-run entrypoint
 - `node dist/server/app/mcp/index.js --api http://127.0.0.1:8787/api/v1`
 - `recallx-mcp --api http://127.0.0.1:8787/api/v1`
 - `~/.recallx/bin/recallx-mcp`

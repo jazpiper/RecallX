@@ -1,7 +1,7 @@
 # RecallX — Backup & Sync Strategy
 
 > Strategy reference for backup, restore, and future sync posture.
-> This document describes the intended operating stance, not a claim that full sync is already shipped.
+> This document mixes shipped backup/safety behavior with the intended operating stance for future sync work.
 > For current product behavior, prefer `README.md` and the current app/runtime documentation.
 
 ## At A Glance
@@ -10,6 +10,26 @@
 - The recommended near-term model is backup-friendly local storage plus single-writer multi-device use.
 - Cloud folders may be used as transport or backup locations, but they should not be described as real-time multi-writer sync.
 - Safety, rebuildability, and local ownership matter more than early sync complexity.
+
+## Current shipped behavior
+
+RecallX already ships these backup and safety surfaces:
+
+- workspace backup snapshots via the renderer Workspace page, local API, and CLI
+- workspace export to `json` or `markdown`
+- workspace restore into a chosen target root
+- workspace session metadata and lock markers surfaced as workspace safety warnings
+
+Representative CLI commands:
+
+```bash
+recallx workspace backups
+recallx workspace backup --label "before-upgrade"
+recallx workspace export --format json
+recallx workspace restore --backup <id> --root /path/to/restore
+```
+
+These features support backup, restore, and sequential multi-device use. They do not change the product stance against promising concurrent multi-writer sync.
 
 ## 1. Purpose
 
