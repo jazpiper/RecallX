@@ -49,7 +49,7 @@ That batch shipped:
 - compact decision logging tied to provenance when a human accepts or rejects a suggestion
 - no full moderation inbox, no large workflow engine, no background auto-resolution
 
-The next recommended product batch is now:
+The latest shipped batch is now:
 
 5. relation governance follow-through and decision-log polish
 
@@ -59,12 +59,29 @@ Why this is next now:
 - the product now logs human trust decisions, so the next leverage is making those decisions easier to review and filter afterward
 - this extends the same trust loop without opening a separate admin surface
 
-Recommended scope for the next item:
+That batch shipped:
 
 - direct accept, reject, or archive actions for relation issues
 - a small recent decision history slice on Governance
-- decision-note filtering or grouping for recent review activity
+- compact decision-note support inside relation governance actions
 - no bulk moderation tools, no workflow engine, no hidden background resolution
+
+The next recommended product batch is now:
+
+6. governance feed refinement and cross-entity review recall
+
+Why this is next now:
+
+- node and relation manual actions now exist, but recent governance history is still only visible one issue at a time
+- the next leverage is making trust decisions easier to revisit across sessions without creating a moderation inbox
+- this extends the same compact governance model instead of broadening navigation
+
+Recommended scope for the next item:
+
+- a small multi-issue recent decision feed on Governance or Home
+- filters for manual governance decisions by entity type or action
+- better link-out from recent decisions back into nodes, graph, or relation context
+- no bulk review actions, no queue mechanics, no separate admin surface
 
 ## Impact x Effort
 

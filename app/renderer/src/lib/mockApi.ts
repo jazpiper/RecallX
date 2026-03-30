@@ -13,6 +13,8 @@ import type {
   NodeGovernanceAction,
   Node,
   ProjectGraphPayload,
+  RelationDetail,
+  RelationGovernanceAction,
   Relation,
   ContextBundlePreviewItem,
   SearchNodeHit,
@@ -207,6 +209,21 @@ function mapActivity(raw: any): Activity {
   };
 }
 
+function mapRelation(raw: any): Relation {
+  return {
+    id: raw.id,
+    fromNodeId: raw.fromNodeId ?? raw.from_node_id,
+    toNodeId: raw.toNodeId ?? raw.to_node_id,
+    relationType: raw.relationType ?? raw.relation_type,
+    status: raw.status ?? 'suggested',
+    createdBy: raw.createdBy ?? raw.created_by ?? raw.sourceLabel ?? 'unknown',
+    sourceType: raw.sourceType ?? raw.source_type ?? 'system',
+    sourceLabel: raw.sourceLabel ?? raw.source_label ?? 'system',
+    createdAt: raw.createdAt ?? raw.created_at ?? new Date().toISOString(),
+    metadata: raw.metadata ?? {},
+  };
+}
+
 function mapGovernanceState(raw: any): GovernanceStateRecord {
   return {
     entityType: raw.entityType ?? raw.entity_type,
@@ -241,6 +258,8 @@ function mapGovernanceEvent(raw: any): GovernanceEventRecord {
     reason: raw.reason ?? 'No governance reason available.',
     createdAt: raw.createdAt ?? raw.created_at ?? new Date().toISOString(),
     metadata: raw.metadata ?? {},
+    title: raw.title ?? raw.display_title ?? undefined,
+    subtitle: raw.subtitle ?? raw.display_subtitle ?? undefined,
   };
 }
 
@@ -1074,6 +1093,80 @@ export async function getNodeDetail(id: string): Promise<NodeDetail | undefined>
   );
 }
 
+export async function getRelationDetail(id: string): Promise<RelationDetail | undefined> {
+  return withFallback(
+    async () => {
+      const payload = await requestJson(`/relations/${encodeURIComponent(id)}`);
+      const data = readPayloadData(payload);
+      return {
+        relation: data?.relation ? mapRelation(data.relation) : null,
+        fromNode: data?.fromNode ? mapNode(data.fromNode) : null,
+        toNode: data?.toNode ? mapNode(data.toNode) : null,
+        governance: mapGovernancePayload(data?.governance),
+      };
+    },
+    async () => {
+      const fallback = getFallbackState();
+      const relation = fallback.relations.find((item) => item.id === id);
+      if (!relation) {
+        return undefined;
+      }
+      const governanceState =
+        relation.status === 'suggested'
+          ? {
+              entityType: 'relation' as const,
+              entityId: relation.id,
+              state: 'low_confidence' as const,
+              confidence: 0.54,
+              reasons: ['Suggested relation still needs stronger confirmation or a direct human decision.'],
+              lastEvaluatedAt: relation.createdAt,
+              lastTransitionAt: relation.createdAt,
+              metadata: {
+                source: 'fallback',
+              },
+            }
+          : {
+              entityType: 'relation' as const,
+              entityId: relation.id,
+              state: 'healthy' as const,
+              confidence: 0.9,
+              reasons: ['Relation is stable in the fallback workspace.'],
+              lastEvaluatedAt: relation.createdAt,
+              lastTransitionAt: relation.createdAt,
+              metadata: {
+                source: 'fallback',
+              },
+            };
+      return {
+        relation,
+        fromNode: fallback.nodes.find((item) => item.id === relation.fromNodeId) ?? null,
+        toNode: fallback.nodes.find((item) => item.id === relation.toNodeId) ?? null,
+        governance: {
+          state: governanceState,
+          events: [
+            {
+              id: `gov-fallback:${relation.id}`,
+              entityType: 'relation',
+              entityId: relation.id,
+              eventType: governanceState.state === 'healthy' ? 'promoted' : 'evaluated',
+              previousState: null,
+              nextState: governanceState.state,
+              confidence: governanceState.confidence,
+              reason: governanceState.reasons[0] ?? 'Fallback governance evaluation.',
+              createdAt: relation.createdAt,
+              metadata: {
+                source: 'fallback',
+              },
+              title: `${relation.fromNodeId} ${relation.relationType} ${relation.toNodeId}`,
+              subtitle: relation.status,
+            },
+          ],
+        },
+      };
+    },
+  );
+}
+
 function getFallbackRelatedConnections(state: WorkspaceSeed, id: string): GraphConnection[] {
   const nodeById = new Map(state.nodes.map((node) => [node.id, node] as const));
   return state.relations.reduce<GraphConnection[]>((connections, relation) => {
@@ -1506,6 +1599,98 @@ export async function applyNodeGovernanceAction(input: {
         node: updatedNode,
         governance,
         activity,
+      };
+    },
+  );
+}
+
+export async function applyRelationGovernanceAction(input: {
+  id: string;
+  action: RelationGovernanceAction;
+  note?: string;
+}): Promise<{ relation: Relation; governance: GovernancePayload }> {
+  return withFallback(
+    async () => {
+      const payload = await requestJson(`/relations/${encodeURIComponent(input.id)}/governance-action`, {
+        method: 'POST',
+        body: JSON.stringify({
+          action: input.action,
+          ...(input.note?.trim() ? { note: input.note.trim() } : {}),
+          source: DEFAULT_SOURCE,
+        }),
+      });
+      return {
+        relation: mapRelation(payload?.data?.relation),
+        governance: mapGovernancePayload(payload?.data?.governance),
+      };
+    },
+    async () => {
+      const fallback = getFallbackState();
+      const index = fallback.relations.findIndex((item) => item.id === input.id);
+      if (index < 0) {
+        throw new Error(`Relation ${input.id} not found.`);
+      }
+      const relation = fallback.relations[index];
+      const now = new Date().toISOString();
+      const note = input.note?.trim() ? input.note.trim() : '';
+      const updated: Relation = {
+        ...relation,
+        status: input.action === 'accept' ? 'active' : input.action === 'reject' ? 'rejected' : 'archived',
+        metadata: {
+          ...relation.metadata,
+          manualGovernanceAction: input.action,
+          manualGovernanceAt: now,
+        },
+      };
+      fallback.relations[index] = updated;
+      const reason =
+        input.action === 'accept'
+          ? note
+            ? `Human accepted this relation. ${note}`
+            : 'Human accepted this relation from the governance surface.'
+          : input.action === 'reject'
+            ? note
+              ? `Human rejected this relation. ${note}`
+              : 'Human rejected this relation from the governance surface.'
+            : note
+              ? `Human archived this relation from governance. ${note}`
+              : 'Human archived this relation from the governance surface.';
+      return {
+        relation: updated,
+        governance: {
+          state: {
+            entityType: 'relation',
+            entityId: updated.id,
+            state: 'healthy',
+            confidence: input.action === 'accept' ? 0.94 : input.action === 'reject' ? 0.9 : 0.88,
+            reasons: [reason],
+            lastEvaluatedAt: now,
+            lastTransitionAt: now,
+            metadata: {
+              source: 'fallback',
+              manualAction: input.action,
+            },
+          },
+          events: [
+            {
+              id: `gov-fallback:${updated.id}:${now}`,
+              entityType: 'relation',
+              entityId: updated.id,
+              eventType: input.action === 'accept' ? 'promoted' : 'demoted',
+              previousState: relation.status === 'suggested' ? 'low_confidence' : 'healthy',
+              nextState: 'healthy',
+              confidence: input.action === 'accept' ? 0.94 : input.action === 'reject' ? 0.9 : 0.88,
+              reason,
+              createdAt: now,
+              metadata: {
+                source: 'fallback',
+                manualAction: input.action,
+              },
+              title: `${updated.fromNodeId} ${updated.relationType} ${updated.toNodeId}`,
+              subtitle: updated.status,
+            },
+          ],
+        },
       };
     },
   );

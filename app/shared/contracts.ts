@@ -217,6 +217,13 @@ export const governanceNodeActionSchema = z.object({
   metadata: z.record(z.any()).default({})
 });
 
+export const governanceRelationActionSchema = z.object({
+  action: z.enum(["accept", "reject", "archive"]),
+  note: z.string().max(280).optional(),
+  source: sourceSchema,
+  metadata: z.record(z.any()).default({})
+});
+
 export const createRelationSchema = z.object({
   fromNodeId: z.string().min(1),
   toNodeId: z.string().min(1),
@@ -410,6 +417,7 @@ export type CreateNodeInput = z.infer<typeof createNodeSchema>;
 export type CreateNodesInput = z.infer<typeof createNodesSchema>;
 export type UpdateNodeInput = z.infer<typeof updateNodeSchema>;
 export type GovernanceNodeActionInput = z.infer<typeof governanceNodeActionSchema>;
+export type GovernanceRelationActionInput = z.infer<typeof governanceRelationActionSchema>;
 export type CreateRelationInput = z.infer<typeof createRelationSchema>;
 export type UpdateRelationInput = z.infer<typeof updateRelationSchema>;
 export type AppendActivityInput = z.infer<typeof appendActivitySchema>;

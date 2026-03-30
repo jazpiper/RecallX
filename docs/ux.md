@@ -226,7 +226,9 @@ Governance protects trust without reviving the old review queue.
 - current state summary and confidence explanation
 - click-through into the affected node or relation context
 - direct promote, contest, and archive actions for node issues from Governance and node detail
+- direct accept, reject, and archive actions for relation issues from Governance
 - optional short decision notes with compact review-action logging
+- recent decision history for the selected governance issue
 - bounded recompute/inspection flows backed by automatic governance state, not a manual approval inbox
 
 ### Design rule
@@ -372,8 +374,8 @@ It should not hide the underlying result shape or replace the normal search surf
 1. tool or maintenance pass writes or updates state
 2. surfaced governance issues appear when confidence or trust needs inspection
 3. user inspects the issue and decides whether a follow-up action is needed
-4. user can promote, contest, or archive the node in place
-5. the decision is logged in compact governance and activity history without opening a queue
+4. user can promote, contest, or archive a node in place, or accept, reject, or archive a relation in place
+5. the decision is logged in compact governance history without opening a queue
 
 ## 9.3 Context inspection flow
 1. user selects a node
