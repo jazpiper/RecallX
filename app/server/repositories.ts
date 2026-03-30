@@ -3205,9 +3205,34 @@ export class RecallXRepository {
     const rows = this.db
       .prepare(
         `SELECT
-           r.*,
-           CASE WHEN r.from_node_id = ? THEN r.to_node_id ELSE r.from_node_id END AS related_id
+           r.id,
+           r.from_node_id,
+           r.to_node_id,
+           r.relation_type,
+           r.status,
+           r.created_by,
+           r.source_type,
+           r.source_label,
+           r.created_at,
+           r.metadata_json,
+           n.id AS node_id,
+           n.type AS node_type,
+           n.status AS node_status,
+           n.canonicality AS node_canonicality,
+           n.visibility AS node_visibility,
+           n.title AS node_title,
+           n.body AS node_body,
+           n.summary AS node_summary,
+           n.created_by AS node_created_by,
+           n.source_type AS node_source_type,
+           n.source_label AS node_source_label,
+           n.created_at AS node_created_at,
+           n.updated_at AS node_updated_at,
+           n.tags_json AS node_tags_json,
+           n.metadata_json AS node_metadata_json
          FROM relations r
+         JOIN nodes n
+           ON n.id = CASE WHEN r.from_node_id = ? THEN r.to_node_id ELSE r.from_node_id END
          WHERE (r.from_node_id = ? OR r.to_node_id = ?)
            AND r.status != 'archived'
            ${relationWhere}
@@ -3215,19 +3240,26 @@ export class RecallXRepository {
       )
       .all(nodeId, nodeId, nodeId, ...(relationFilter ?? [])) as Record<string, unknown>[];
 
-    const relatedNodes = this.getNodesByIds(rows.map((row) => String(row.related_id)));
-
-    return rows.flatMap((row) => {
-      const node = relatedNodes.get(String(row.related_id));
-      if (!node) {
-        return [];
+    return rows.map((row) => ({
+      relation: mapRelation(row),
+      node: {
+        id: String(row.node_id),
+        type: row.node_type as NodeRecord["type"],
+        status: row.node_status as NodeRecord["status"],
+        canonicality: row.node_canonicality as NodeRecord["canonicality"],
+        visibility: String(row.node_visibility),
+        title: row.node_title ? String(row.node_title) : null,
+        body: row.node_body ? String(row.node_body) : null,
+        summary: row.node_summary ? String(row.node_summary) : null,
+        createdBy: row.node_created_by ? String(row.node_created_by) : null,
+        sourceType: row.node_source_type ? String(row.node_source_type) : null,
+        sourceLabel: row.node_source_label ? String(row.node_source_label) : null,
+        createdAt: String(row.node_created_at),
+        updatedAt: String(row.node_updated_at),
+        tags: parseJson<string[]>(row.node_tags_json as string | null, []),
+        metadata: parseJson<JsonMap>(row.node_metadata_json as string | null, {})
       }
-
-      return [{
-        relation: mapRelation(row),
-        node
-      }];
-    });
+    }));
   }
 
   listProjectMemberNodes(projectId: string, limit: number): Array<{ relation: RelationRecord; node: NodeRecord }> {
