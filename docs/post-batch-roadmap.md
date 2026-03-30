@@ -24,6 +24,31 @@ This order keeps the product focused on the shortest continuity loop:
 2. find the right memory quickly
 3. bring outside material in without making a mess
 
+## Current status
+
+Items 1 through 3 in the original follow-up order have now shipped:
+
+1. active project mode and project digest
+2. search refinement and command palette
+3. import normalization with dry-run and duplicate handling
+
+The next recommended product batch is now:
+
+4. lightweight governance actions beyond archive
+
+Why this is next now:
+
+- it follows naturally after item 08 by helping users clean up and promote imported or suggested content
+- it improves trust without opening a large moderation or review queue
+- it stays compatible with the current local-first and renderer-first product shape
+
+Recommended scope for the next item:
+
+- promote action for suggested nodes from Governance and node detail
+- dismiss or reject action for low-confidence suggestions
+- compact decision logging tied to provenance when a human accepts or rejects a suggestion
+- no full moderation inbox, no large workflow engine, no background auto-resolution
+
 ## Impact x Effort
 
 ### 1. Active project mode and digest
