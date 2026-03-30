@@ -266,7 +266,7 @@ describe("RecallX MCP server", () => {
         workspaceRoot: "/tmp/workspace-a",
         workspaceName: "Workspace A",
         retentionDays: 14,
-        slowRequestMs: 250,
+        slowRequestMs: 50,
         capturePayloadShape: true
       })
       .mockResolvedValueOnce({
@@ -274,7 +274,7 @@ describe("RecallX MCP server", () => {
         workspaceRoot: "/tmp/workspace-b",
         workspaceName: "Workspace B",
         retentionDays: 14,
-        slowRequestMs: 250,
+        slowRequestMs: 50,
         capturePayloadShape: true
       });
     const { client } = await connectTestClient(

@@ -737,7 +737,7 @@ export function createRecallXApp(params: {
       workspaceRoot: currentWorkspaceRoot(),
       workspaceName: currentWorkspaceInfo().workspaceName,
       retentionDays: Math.max(1, parseNumberSetting(settings["observability.retentionDays"], 14)),
-      slowRequestMs: Math.max(1, parseNumberSetting(settings["observability.slowRequestMs"], 250)),
+      slowRequestMs: Math.max(1, parseNumberSetting(settings["observability.slowRequestMs"], 50)),
       capturePayloadShape: parseBooleanSetting(settings["observability.capturePayloadShape"], true)
     };
   };

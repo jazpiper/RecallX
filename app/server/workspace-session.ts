@@ -133,7 +133,7 @@ export class WorkspaceSessionManager {
       "relations.autoRecompute.lastRunAt": null,
       "observability.enabled": false,
       "observability.retentionDays": 14,
-      "observability.slowRequestMs": 250,
+      "observability.slowRequestMs": 50,
       "observability.capturePayloadShape": true,
       "export.defaultFormat": "markdown",
     });
