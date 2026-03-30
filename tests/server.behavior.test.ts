@@ -227,6 +227,39 @@ describe("search punctuation handling", () => {
     expect(results.items[0]?.title).toBe("Graph retrieval note");
   });
 
+  it("treats exact body phrase hits as strong lexical node matches", () => {
+    const repository = createRepository();
+    repository.createNode({
+      type: "note",
+      title: "Rollback notes",
+      body: "Service rollback recovery restart sequencing checklist for operators.",
+      tags: ["ops"],
+      source: {
+        actorType: "human",
+        actorLabel: "juhwan",
+        toolName: "recallx-test"
+      },
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+
+    const results = repository.searchNodes({
+      query: "service rollback recovery restart sequencing",
+      filters: {},
+      limit: 10,
+      offset: 0,
+      sort: "relevance"
+    });
+
+    expect(results.total).toBe(1);
+    expect(results.items[0]?.lexicalQuality).toBe("strong");
+    expect(results.items[0]?.matchReason).toMatchObject({
+      strategy: "fts",
+      strength: "strong"
+    });
+  });
+
   it("backfills legacy activities into the activity FTS index", () => {
     const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
     tempRoots.push(root);
@@ -4465,6 +4498,130 @@ describe("inferred relation API integration", () => {
           hitRatio: 1
         }
       ]);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("skips no_strong_node_hit semantic fallback when a node has an exact body phrase match", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+    const { repository, db } = workspaceSessionManager.getCurrent();
+    repository.setSetting("search.semantic.enabled", true);
+    repository.setSetting("search.semantic.provider", "local-ngram");
+    repository.setSetting("search.semantic.model", "chargram-v1");
+    repository.setSetting("search.semantic.indexBackend", "sqlite-vec");
+    repository.setSetting("search.semantic.workspaceFallback.enabled", true);
+    repository.setSetting("search.semantic.workspaceFallback.mode", "no_strong_node_hit");
+    repository.setSetting("observability.enabled", true);
+
+    const source = {
+      actorType: "agent" as const,
+      actorLabel: "Codex",
+      toolName: "codex",
+    };
+    const exactBodyNode = repository.createNode({
+      type: "note",
+      title: "Rollback notes",
+      body: "Service rollback recovery restart sequencing checklist for operators.",
+      source,
+      tags: ["ops"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const semanticNode = repository.createNode({
+      type: "note",
+      title: "Alpha operations memo",
+      body: "Durable operations note with no direct overlap.",
+      source,
+      tags: ["ops"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const distractorNode = repository.createNode({
+      type: "note",
+      title: "Design archive",
+      body: "Unrelated design content.",
+      source,
+      tags: ["design"],
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const semanticQuery = "service rollback recovery restart sequencing";
+    await seedSemanticEmbeddings({
+      db,
+      repository,
+      query: semanticQuery,
+      relatedNodeId: semanticNode.id,
+      distractorNodeId: distractorNode.id
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const response = await fetch(`${baseUrl}/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: semanticQuery,
+          scopes: ["nodes"],
+          limit: 10,
+          offset: 0,
+          sort: "smart",
+        }),
+      });
+      const payload = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(payload.data.items.some((item: { resultType: string; node?: { id: string; lexicalQuality?: string } }) =>
+        item.resultType === "node" &&
+        item.node?.id === exactBodyNode.id &&
+        item.node?.lexicalQuality === "strong"
+      )).toBe(true);
+      expect(payload.data.items.some((item: { resultType: string; node?: { id: string; matchReason?: { strategy: string } } }) =>
+        item.resultType === "node" &&
+        item.node?.id === semanticNode.id &&
+        item.node?.matchReason?.strategy === "semantic"
+      )).toBe(false);
+
+      const summaryPayload = await waitFor(async () => {
+        const summaryResponse = await fetch(`${baseUrl}/observability/summary?since=24h`);
+        const summary = await summaryResponse.json();
+        return summary.data?.workspaceFallbackModeRate ? summary : null;
+      });
+      expect(summaryPayload.data.workspaceFallbackModeRate).toEqual({
+        strictZeroCount: 0,
+        noStrongNodeHitCount: 1,
+        sampleCount: 1,
+        operations: [
+          {
+            surface: "api",
+            operation: "workspace.search",
+            strictZeroCount: 0,
+            noStrongNodeHitCount: 1,
+            sampleCount: 1
+          }
+        ]
+      });
+      expect(summaryPayload.data.semanticFallbackRate).toMatchObject({
+        eligibleCount: 0,
+        attemptedCount: 0,
+        hitCount: 0
+      });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

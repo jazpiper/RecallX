@@ -238,7 +238,7 @@ function classifyNodeLexicalQuality(
     return "weak";
   }
 
-  const strongExactFields = new Set(["title", "summary", "tags"]);
+  const strongExactFields = new Set(["title", "summary", "tags", "body"]);
   if (signals.exactFields.some((field) => strongExactFields.has(field))) {
     return "strong";
   }
