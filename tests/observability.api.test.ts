@@ -117,6 +117,9 @@ describe("observability API", () => {
       });
 
       expect(summary.data?.operationSummaries.some((item: { operation: string }) => item.operation === "nodes.search")).toBe(true);
+      expect(summary.data?.slowRequestThresholdMs).toBe(1);
+      expect(Array.isArray(summary.data?.hotOperations)).toBe(true);
+      expect(summary.data?.hotOperations?.some((item: { operation: string }) => item.operation === "nodes.search")).toBe(true);
       expect(summary.data?.mcpToolFailures).toEqual([]);
       expect(errorsPayload.data?.items?.some((item) => item.errorKind === "validation_error")).toBe(true);
 

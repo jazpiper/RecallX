@@ -206,7 +206,17 @@ export function renderTelemetrySummary(data) {
     `since: ${data?.since || ""}`,
     `logs: ${data?.logsPath || ""}`,
     `events: ${data?.totalEvents ?? 0}`,
+    `slow threshold: ${data?.slowRequestThresholdMs ?? ""}ms`,
   ];
+
+  const hot = Array.isArray(data?.hotOperations) ? data.hotOperations : [];
+  if (hot.length > 0) {
+    lines.push("");
+    lines.push("Hot operations:");
+    for (const item of hot.slice(0, 5)) {
+      lines.push(`- [${item.surface}] ${item.operation} p95=${item.p95DurationMs ?? ""}ms errors=${item.errorCount}/${item.count}`);
+    }
+  }
 
   const slow = Array.isArray(data?.slowOperations) ? data.slowOperations : [];
   if (slow.length > 0) {

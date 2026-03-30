@@ -919,7 +919,9 @@ export class ObservabilityWriter {
       generatedAt: nowIso(),
       logsPath,
       totalEvents: events.length,
+      slowRequestThresholdMs: state.slowRequestMs,
       operationSummaries,
+      hotOperations: operationSummaries.slice(0, 10),
       slowOperations: operationSummaries
         .filter((item) => (item.p95DurationMs ?? 0) >= state.slowRequestMs)
         .slice(0, 10),

@@ -31,6 +31,20 @@ describe("renderTelemetrySummary", () => {
       since: "24h",
       logsPath: "/tmp/telemetry",
       totalEvents: 3,
+      slowRequestThresholdMs: 50,
+      hotOperations: [
+        {
+          surface: "api",
+          operation: "workspace.search",
+          count: 3,
+          errorCount: 0,
+          errorRate: 0,
+          avgDurationMs: 8,
+          p50DurationMs: 6,
+          p95DurationMs: 15,
+          p99DurationMs: 18
+        }
+      ],
       slowOperations: [],
       mcpToolFailures: [],
       ftsFallbackRate: { fallbackCount: 0, sampleCount: 0, ratio: null },
@@ -102,6 +116,9 @@ describe("renderTelemetrySummary", () => {
 
     expect(output.match(/feedback mode \[no_strong_node_hit\]/g)).toHaveLength(1);
     expect(output.match(/fallback mode \[no_strong_node_hit\]/g)).toHaveLength(1);
+    expect(output).toContain("slow threshold: 50ms");
+    expect(output).toContain("Hot operations:");
+    expect(output).toContain("- [api] workspace.search p95=15ms errors=0/3");
     expect(output).toContain("semantic fallback: eligible=1, attempted=1, hit=1, hit_ratio=1");
   });
 });
