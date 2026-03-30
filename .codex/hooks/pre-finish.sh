@@ -40,6 +40,7 @@ echo "- confirm the requested behavior or docs change is actually present"
 echo "- confirm the relevant validation commands were rerun"
 echo "- note residual risks or follow-ups"
 echo "- write a concise RecallX activity summary if the task was meaningful"
+echo "- reuse or close any sub-agents opened for this task so no stale agents remain"
 echo "- run recallx-harness-self-improve and update AGENTS.md or .codex only if the lesson is reusable"
 echo "- optionally run ./.codex/hooks/finish-report.sh for a concise closeout draft, or add --verbose to include changed paths"
 
