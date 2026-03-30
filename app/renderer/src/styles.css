@@ -301,7 +301,7 @@ pre {
 
 .home-section {
   min-height: calc(100vh - 180px);
-  align-items: center;
+  align-items: stretch;
 }
 
 .page-heading,
@@ -874,6 +874,55 @@ pre {
   box-shadow: var(--shadow);
 }
 
+.home-shell,
+.home-results-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  gap: 20px;
+}
+
+.home-hero-card,
+.home-summary-card {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+}
+
+.home-hero-card {
+  background:
+    radial-gradient(circle at top left, rgba(121, 171, 255, 0.16), transparent 0 34%),
+    linear-gradient(180deg, rgba(9, 16, 30, 0.92), rgba(6, 10, 20, 0.82));
+}
+
+.home-summary-card {
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.06), transparent 0 28%),
+    linear-gradient(180deg, rgba(14, 14, 14, 0.94), rgba(8, 8, 8, 0.92));
+}
+
+.home-hero-card h2 {
+  max-width: 12ch;
+  font-size: clamp(2.6rem, 5vw, 4.4rem);
+  line-height: 0.96;
+}
+
+.home-search-box input {
+  padding: 16px 18px;
+  border-color: rgba(148, 174, 210, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 1rem;
+}
+
+.home-project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.home-project-card {
+  min-height: 260px;
+}
+
 .home-hero h2 {
   max-width: 11ch;
   font-size: clamp(2.6rem, 6vw, 4.9rem);
@@ -1183,6 +1232,8 @@ pre {
   .two-column-grid,
   .guide-shell,
   .notes-toolbar,
+  .home-shell,
+  .home-results-grid,
   .graph-summary-grid,
   .graph-section-grid,
   .governance-layout,

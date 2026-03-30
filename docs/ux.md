@@ -122,17 +122,16 @@ It should answer:
 - how do I capture something quickly?
 
 ### Current sections
-- workspace / summary cards
-- API & MCP connection examples
-- semantic indexing status card
-- file and app path cards
-- quick capture form
-- recent activity trail
+- workspace summary card
+- workspace-wide search field
+- quick actions for Guide, Graph, Governance, and Notes
+- recent project cards
+- recent movement / mixed-search result panels
 
 ### Important notes
-- Home currently does not include a search bar
-- Home intentionally mixes product usage and local operations because RecallX is both an app and a local memory service
-- semantic indexing belongs here as an operational card, not as a dedicated page
+- Home now includes a workspace-wide search bar and keeps quick actions secondary
+- Home is a retrieval-first re-entry surface, not the primary node-creation surface
+- semantic indexing still belongs on Home as an operational aid, not as a dedicated page
 
 ### Design rule
 Home should remain a compact re-entry surface, not expand into analytics or system-monitor sprawl.
@@ -325,7 +324,7 @@ Semantic issue UX should feel like lightweight triage, not a complex admin dashb
 Capture should stay friction-light while still producing useful durable nodes.
 
 ### Current behavior
-- available on Home
+- available on Recent
 - node type selector
 - title
 - body
@@ -346,6 +345,7 @@ If more fields are added later, they should remain optional by default.
 
 ## 9.1 Search-to-context flow
 1. user searches
+   Search can begin from Home or Recent
 2. user selects a node
 3. right rail shows surrounding context
 4. user optionally opens graph or acts on bundle preview
