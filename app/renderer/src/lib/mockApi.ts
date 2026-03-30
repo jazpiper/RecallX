@@ -1156,3 +1156,27 @@ export async function refreshNodeSummary(id: string): Promise<Node> {
   });
   return mapNode(payload?.data?.node);
 }
+
+export async function updateNode(input: {
+  id: string;
+  title?: string;
+  body?: string;
+}): Promise<Node> {
+  const payload = await requestJson(`/nodes/${encodeURIComponent(input.id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.body !== undefined ? { body: input.body } : {}),
+      source: DEFAULT_SOURCE,
+    }),
+  });
+  return mapNode(payload?.data?.node);
+}
+
+export async function archiveNode(id: string): Promise<Node> {
+  const payload = await requestJson(`/nodes/${encodeURIComponent(id)}/archive`, {
+    method: 'POST',
+    body: JSON.stringify({ source: DEFAULT_SOURCE }),
+  });
+  return mapNode(payload?.data?.node);
+}
