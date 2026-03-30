@@ -43,6 +43,7 @@ const DEFAULT_SOURCE = {
   toolVersion: RECALLX_VERSION,
 } as const;
 let rendererToken: string | null = null;
+const fallbackSettings = new Map<string, unknown>();
 
 class ApiRequestError extends Error {
   kind: 'http' | 'network';
@@ -650,6 +651,48 @@ export async function getBootstrap(): Promise<BootstrapInfo> {
       authMode: 'optional',
       hasToken: false,
     }),
+  );
+}
+
+export async function getSettings(keys?: string[]): Promise<Record<string, unknown>> {
+  return withFallback(
+    async () => {
+      const query = keys?.length ? `?keys=${encodeURIComponent(keys.join(','))}` : '';
+      const payload = await requestJson(`/settings${query}`);
+      const data = readPayloadData(payload);
+      return typeof data?.values === 'object' && data?.values !== null ? data.values : {};
+    },
+    async () => {
+      if (!keys?.length) {
+        return Object.fromEntries(fallbackSettings.entries());
+      }
+
+      return keys.reduce<Record<string, unknown>>((acc, key) => {
+        if (fallbackSettings.has(key)) {
+          acc[key] = fallbackSettings.get(key);
+        }
+        return acc;
+      }, {});
+    },
+  );
+}
+
+export async function updateSettings(values: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return withFallback(
+    async () => {
+      const payload = await requestJson('/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ values }),
+      });
+      const data = readPayloadData(payload);
+      return typeof data?.values === 'object' && data?.values !== null ? data.values : {};
+    },
+    async () => {
+      Object.entries(values).forEach(([key, value]) => {
+        fallbackSettings.set(key, value);
+      });
+      return values;
+    },
   );
 }
 

@@ -923,6 +923,36 @@ pre {
   min-height: 260px;
 }
 
+.home-digest-card {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+}
+
+.home-digest-copy {
+  margin: 0;
+  color: var(--muted-strong);
+  line-height: 1.7;
+}
+
+.home-project-card {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.home-project-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: auto;
+}
+
+.home-project-card-actions button {
+  padding: 11px 14px;
+  border-radius: 999px;
+}
+
 .home-hero h2 {
   max-width: 11ch;
   font-size: clamp(2.6rem, 6vw, 4.9rem);

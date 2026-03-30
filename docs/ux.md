@@ -332,7 +332,7 @@ Capture should stay friction-light while still producing useful durable nodes.
 ### Current behavior
 - available on Recent
 - node type selector
-- optional project association selector
+- optional project association selector with active-project default when one is set
 - title
 - body
 - one-step create action
@@ -344,6 +344,7 @@ Capture should stay friction-light while still producing useful durable nodes.
 ### Design rule
 Quick capture should stay short and structured.
 If more fields are added later, they should remain optional by default.
+The active project may prefill the project selector, but it should still be easy to clear or override.
 
 ---
 
@@ -372,6 +373,16 @@ If more fields are added later, they should remain optional by default.
 2. user copies HTTP or MCP configuration
 3. user verifies file locations and runtime mode
 4. user reindexes semantic state if local retrieval maintenance is needed
+
+## 9.5 Active project continuity flow
+1. user sets one active project from Home
+2. Home shows a lightweight digest with nearby context and recent activity
+3. quick capture defaults to that project unless the user overrides it
+4. project map falls back to that project when there is no more specific focus
+
+### Design rule
+This is a continuity loop, not a second navigation system.
+The active project should reduce reselection work without hiding other projects.
 
 ---
 
