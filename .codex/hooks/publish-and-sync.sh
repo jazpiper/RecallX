@@ -187,6 +187,41 @@ wait_for_any_checks() {
   done
 }
 
+no_checks_reported() {
+  case "$1" in
+    *"no checks reported on the '"$CURRENT_BRANCH"' branch"*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+wait_for_reported_checks() {
+  start_ts="$(date +%s)"
+  while :; do
+    watch_output="$(gh pr checks "$PR_URL" --watch --fail-fast 2>&1)" && {
+      printf '%s\n' "$watch_output"
+      return 0
+    }
+
+    if ! no_checks_reported "$watch_output"; then
+      printf '%s\n' "$watch_output" >&2
+      return 1
+    fi
+
+    now_ts="$(date +%s)"
+    elapsed=$((now_ts - start_ts))
+    if [ "$elapsed" -ge "$CHECK_DISCOVERY_SECONDS" ]; then
+      echo "[publish-and-sync] reported PR checks never became watchable within ${CHECK_DISCOVERY_SECONDS}s; continuing without check gating"
+      return 0
+    fi
+
+    sleep 5
+  done
+}
+
 echo "[publish-and-sync] waiting for GitHub checks to appear"
 if wait_for_any_checks; then
   if gh pr checks "$PR_URL" --required >/dev/null 2>&1; then
@@ -197,7 +232,7 @@ if wait_for_any_checks; then
     fi
   else
     echo "[publish-and-sync] no required checks configured; waiting on reported PR checks"
-    if ! gh pr checks "$PR_URL" --watch --fail-fast; then
+    if ! wait_for_reported_checks; then
       echo "[publish-and-sync] reported PR checks did not pass" >&2
       exit 1
     fi
