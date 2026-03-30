@@ -7182,6 +7182,81 @@ describe("node governance behavior", () => {
     }
   });
 
+  it("creates a relevant_to project relation when node metadata includes projectId", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const source = {
+        actorType: "human" as const,
+        actorLabel: "juhwan",
+        toolName: "recallx-renderer",
+      };
+
+      const projectResponse = await fetch(`${baseUrl}/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "project",
+          title: "Renderer Refresh",
+          body: "Project root",
+          source,
+          tags: [],
+          metadata: {},
+        }),
+      });
+      const projectPayload = await projectResponse.json();
+      const projectId = projectPayload.data.node.id as string;
+
+      const noteResponse = await fetch(`${baseUrl}/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "note",
+          title: "Search-first capture",
+          body: "Capture should attach directly to the active project.",
+          source,
+          tags: [],
+          metadata: {
+            projectId,
+          },
+        }),
+      });
+      const notePayload = await noteResponse.json();
+      const noteId = notePayload.data.node.id as string;
+
+      const graphResponse = await fetch(`${baseUrl}/projects/${projectId}/graph?include_inferred=0`);
+      const graphPayload = await graphResponse.json();
+
+      expect(noteResponse.status).toBe(201);
+      expect(notePayload.data.node.metadata.projectId).toBe(projectId);
+      expect(graphResponse.status).toBe(200);
+      expect(graphPayload.data.nodes.map((item: any) => item.id)).toContain(noteId);
+      expect(
+        graphPayload.data.edges.some(
+          (item: any) =>
+            item.relationType === "relevant_to" &&
+            ((item.source === noteId && item.target === projectId) || (item.source === projectId && item.target === noteId))
+        )
+      ).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
   it("keeps trusted source tool names within automatic governance for durable notes and relations", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
     tempRoots.push(root);

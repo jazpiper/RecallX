@@ -326,12 +326,12 @@ Capture should stay friction-light while still producing useful durable nodes.
 ### Current behavior
 - available on Recent
 - node type selector
+- optional project association selector
 - title
 - body
 - one-step create action
 
 ### Current non-goals
-- no project association field yet
 - no rich tagging flow yet
 - no command palette shortcut documented yet
 

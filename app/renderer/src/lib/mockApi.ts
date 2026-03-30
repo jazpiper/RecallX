@@ -1126,6 +1126,7 @@ export async function createNode(input: {
   type: Node['type'];
   title: string;
   body: string;
+  projectId?: string;
   tags?: string[];
 }): Promise<{ node: Node; landing: LandingInfo | null }> {
   const payload = await requestJson('/nodes', {
@@ -1138,6 +1139,7 @@ export async function createNode(input: {
       source: DEFAULT_SOURCE,
       metadata: {
         createdFrom: 'renderer-quick-capture',
+        ...(input.projectId ? { projectId: input.projectId } : {}),
       },
     }),
   });
