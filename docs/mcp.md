@@ -40,10 +40,12 @@ This keeps RecallX's real contract in one place while making Claude Code, Codex,
 Entrypoints:
 
 ```bash
-npm run mcp
 npm run dev:mcp
+npm run build:server && npm run mcp
 node dist/server/app/mcp/index.js --api http://127.0.0.1:8787/api/v1
 ```
+
+Use `npm run dev:mcp` when you are running RecallX directly from source during development. `npm run mcp` targets the built file under `dist/server/app/mcp/index.js`, so it requires `npm run build:server` first.
 
 Environment:
 

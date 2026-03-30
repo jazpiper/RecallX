@@ -95,6 +95,18 @@ When you are preparing a release, bump from the highest known version instead of
 npm run version:bump -- patch
 ```
 
+Workspace lifecycle and backup commands from the same source checkout:
+
+```bash
+recallx workspace current
+recallx workspace backups
+recallx workspace backup --label "before-upgrade"
+recallx workspace export --format markdown
+recallx workspace restore --backup <id> --root /path/to/restore
+```
+
+The renderer Workspace page exposes the same backup, export, restore, and single-writer safety warnings over the local API.
+
 If you want an installable runtime instead of source-run workflows, use one of the npm distribution paths below.
 
 ## 2. npm Full Runtime (`recallx`)
@@ -124,6 +136,15 @@ The full npm package includes:
 - `recallx-mcp`
 
 `recallx mcp install` writes a stable launcher to `~/.recallx/bin/recallx-mcp`, which is the recommended command path for Codex and other editor MCP configs.
+
+Workspace backup and recovery commands are available in the packaged CLI too:
+
+```bash
+recallx workspace backups
+recallx workspace backup --label "before-upgrade"
+recallx workspace export --format json
+recallx workspace restore --backup <id> --root /path/to/restore
+```
 
 If the API is running in bearer mode, set `RECALLX_API_TOKEN` in the MCP client environment. The launcher does not write tokens to disk.
 
@@ -235,10 +256,13 @@ RecallX also ships a stdio MCP adapter for agent clients that prefer tool discov
 MCP tool results keep `structuredContent` as the authoritative machine-readable payload, while `content.text` is rendered as a compact deterministic summary instead of a pretty-printed JSON mirror when the payload shape is known.
 
 ```bash
+npm run dev:mcp
 npm run mcp
 node dist/server/app/mcp/index.js --api http://127.0.0.1:8787/api/v1
 recallx-mcp --api http://127.0.0.1:8787/api/v1
 ```
+
+Use `npm run dev:mcp` during source development. `npm run mcp` runs the built entrypoint, so it expects `npm run build:server` to have already created `dist/server/app/mcp/index.js`.
 
 For launcher paths, environment variables, and editor-specific setup, see `docs/mcp.md`.
 
@@ -250,6 +274,7 @@ For launcher paths, environment variables, and editor-specific setup, see `docs/
 - `docs/api.md` for the local HTTP and CLI contract
 - `docs/mcp.md` for MCP bridge setup
 - `docs/workflows.md` for common usage flows
+- `docs/sync-backup.md` for backup, restore, and single-writer multi-device guidance
 - `docs/schema.md` for storage and data model details
 
 ## License
