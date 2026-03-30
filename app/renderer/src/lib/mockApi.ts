@@ -20,6 +20,7 @@ import type {
   WorkspaceCatalogItem,
   WorkspaceExportRecord,
   WorkspaceImportRecord,
+  WorkspaceRestoreResult,
   WorkspaceSeed,
 } from './types';
 import { RECALLX_VERSION } from '../../../shared/version';
@@ -809,12 +810,25 @@ export async function restoreWorkspaceBackup(input: {
   backupId: string;
   targetRootPath: string;
   workspaceName?: string;
-}): Promise<WorkspaceCatalog> {
+}): Promise<WorkspaceRestoreResult> {
   const payload = await requestJson('/workspaces/restore', {
     method: 'POST',
     body: JSON.stringify(input),
   });
-  return mapWorkspaceCatalogResponse(payload);
+  const data = readPayloadData(payload);
+  return {
+    catalog: mapWorkspaceCatalogResponse(payload),
+    autoBackup: data?.autoBackup
+      ? {
+          id: data.autoBackup.id ?? '',
+          label: data.autoBackup.label ?? data.autoBackup.id ?? 'snapshot',
+          createdAt: data.autoBackup.createdAt ?? new Date().toISOString(),
+          backupPath: data.autoBackup.backupPath ?? '',
+          workspaceRoot: data.autoBackup.workspaceRoot ?? '',
+          workspaceName: data.autoBackup.workspaceName ?? 'RecallX',
+        }
+      : null,
+  };
 }
 
 export async function searchWorkspace(input: {

@@ -6948,6 +6948,8 @@ describe("workspace switching", () => {
       expect(existsSync(exportPath)).toBe(true);
       expect(readFileSync(exportPath, "utf8")).toContain("Backup Candidate");
       expect(restoreResponse.status).toBe(201);
+      expect(existsSync(restoreBody.data.autoBackup.backupPath as string)).toBe(true);
+      expect(restoreBody.data.autoBackup.id as string).toContain("before-restore");
       expect(restoreBody.data.current.rootPath).toBe(rootB);
       expect(restoreBody.data.current.workspaceName).toBe("Recovered Workspace");
       expect(searchBody.data.items.map((item: { title: string }) => item.title)).toContain("Backup Candidate");

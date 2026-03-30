@@ -17,8 +17,9 @@ RecallX already ships these backup and safety surfaces:
 
 - workspace backup snapshots via the renderer Workspace page, local API, and CLI
 - workspace export to `json` or `markdown`
-- workspace restore into a chosen target root
+- workspace restore into a chosen target root with an automatic safety snapshot before restore
 - workspace session metadata and lock markers surfaced as workspace safety warnings
+- Workspace-page handoff guidance for sequential multi-device use
 
 Representative CLI commands:
 

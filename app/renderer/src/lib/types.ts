@@ -105,6 +105,14 @@ export interface WorkspaceImportRecord {
   warnings: string[];
 }
 
+export interface WorkspaceRestoreResult {
+  catalog: {
+    current: Workspace;
+    items: WorkspaceCatalogItem[];
+  };
+  autoBackup: WorkspaceBackupRecord | null;
+}
+
 export interface ActivitySearchHit {
   id: string;
   targetNodeId: string;
