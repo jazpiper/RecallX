@@ -751,7 +751,7 @@ export function createRecallXMcpServer(params?: {
     workspaceRoot: process.cwd(),
     workspaceName: "RecallX MCP",
     retentionDays: 14,
-    slowRequestMs: 250,
+    slowRequestMs: 50,
     capturePayloadShape: true
   };
   let currentObservabilityState = params?.observabilityState ?? defaultObservabilityState;

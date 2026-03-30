@@ -68,7 +68,7 @@ async function resolveObservabilityState() {
       workspaceRoot: typeof workspace.rootPath === "string" ? workspace.rootPath : process.cwd(),
       workspaceName: typeof workspace.workspaceName === "string" ? workspace.workspaceName : "RecallX MCP",
       retentionDays: typeof values["observability.retentionDays"] === "number" ? values["observability.retentionDays"] : 14,
-      slowRequestMs: typeof values["observability.slowRequestMs"] === "number" ? values["observability.slowRequestMs"] : 250,
+      slowRequestMs: typeof values["observability.slowRequestMs"] === "number" ? values["observability.slowRequestMs"] : 50,
       capturePayloadShape: values["observability.capturePayloadShape"] !== false
     };
   } catch {
@@ -77,7 +77,7 @@ async function resolveObservabilityState() {
       workspaceRoot: process.cwd(),
       workspaceName: "RecallX MCP",
       retentionDays: 14,
-      slowRequestMs: 250,
+      slowRequestMs: 50,
       capturePayloadShape: true
     };
   }

@@ -31,7 +31,7 @@ function createWriter() {
         workspaceRoot: root,
         workspaceName: "Observability Test",
         retentionDays: 14,
-        slowRequestMs: 250,
+        slowRequestMs: 50,
         capturePayloadShape: true
       })
     })
