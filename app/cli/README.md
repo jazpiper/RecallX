@@ -154,8 +154,10 @@ recallx workspace open --root /Users/name/Documents/RecallX-Test
 - Default API base: `http://127.0.0.1:8787/api/v1`
 - `recallx serve` starts the local RecallX API in-process from the installed package
 - The CLI stays thin for day-to-day API operations and defers behavior to the HTTP API contract
+- MCP tool results keep `structuredContent` as the authoritative payload; when possible the text mirror is a compact deterministic summary rather than a pretty JSON dump
 - `--format json` is useful when scripting, while `--format markdown` is best for `context`
 - `workspace open` switches the active workspace in the running local RecallX service without restarting the server
 - `recallx-mcp` is the direct stdio MCP entrypoint from the npm package
+- MCP tool results keep `structuredContent` authoritative and may render `content.text` as a compact deterministic summary instead of a pretty JSON mirror
 - See the root [`README.md`](../../README.md) for source-run usage and install paths
 - See [`docs/mcp.md`](../../docs/mcp.md) for editor MCP wiring details
