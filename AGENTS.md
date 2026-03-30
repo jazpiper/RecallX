@@ -67,6 +67,7 @@ If local Codex helpers exist under `.codex/`, use them as lightweight guardrails
 
 - `.codex/skills/recallx-task-loop/` for the default repo task loop
 - `.codex/skills/recallx-harness-self-improve/` for the bounded post-task harness review
+- `.codex/skills/recallx-publish-flow/` for explicit publish, merge, and resync work
 - `.codex/skills/recallx-retrieval-guard/` for retrieval and hot-path changes
 - `.codex/skills/recallx-release-guard/` for release, version, and packaging work
 - `.codex/hooks/preflight.sh` for start-of-task checks
@@ -74,6 +75,7 @@ If local Codex helpers exist under `.codex/`, use them as lightweight guardrails
 - `.codex/hooks/pre-finish.sh` for end-of-task validation and write-back reminders
 - `.codex/hooks/finish-report.sh` for a lightweight final response template; add `--verbose` only when changed paths are worth showing
 - `.codex/hooks/return-to-main.sh` for switching the primary checkout back to `main` after a task branch is published
+- `.codex/hooks/publish-and-sync.sh` for pushing the current task branch, creating or reusing a PR, optionally merging it, and resyncing the primary checkout to `main`
 
 ## 6. Start-Of-Task Checklist
 
@@ -239,6 +241,8 @@ Rules:
 - prefer `main` as the reset point for the next task in the primary checkout
 - use the task branch only when you are still actively iterating on that same PR
 - if helpful, run `.codex/hooks/return-to-main.sh` after the publish step
+- default to `.codex/hooks/publish-and-sync.sh` when the user wants the full publish flow
+- only stop before merge when the user explicitly asks for manual review or manual merge
 ## 17. Post-Task Harness Self-Improvement
 
 After a meaningful task is complete, run one short bounded self-review of the harness itself.

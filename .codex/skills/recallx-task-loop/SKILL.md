@@ -60,3 +60,5 @@ Before wrapping up:
 7. If a quick closeout draft would help, run `./.codex/hooks/finish-report.sh`.
 8. Add `--verbose` only when the changed-path list is actually useful.
 9. After push or PR creation, run `./.codex/hooks/return-to-main.sh` unless you are intentionally continuing the same task branch.
+10. If the user explicitly wants the full publish path, default to `./.codex/hooks/publish-and-sync.sh`.
+11. Only use `--no-merge` when the user explicitly wants to review or merge manually.
