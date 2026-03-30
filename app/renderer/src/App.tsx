@@ -19,6 +19,7 @@ import {
   isAuthError,
   listWorkspaceBackups,
   openWorkspace as openWorkspaceSession,
+  previewWorkspaceImport,
   refreshNodeSummary as refreshNodeSummaryRequest,
   importWorkspace as importWorkspaceRequest,
   restoreWorkspaceBackup,
@@ -55,6 +56,8 @@ import type {
   WorkspaceBackupRecord,
   WorkspaceCatalogItem,
   WorkspaceExportRecord,
+  WorkspaceImportOptions,
+  WorkspaceImportPreviewRecord,
   WorkspaceImportRecord,
   WorkspaceSeed,
 } from './lib/types';
@@ -350,14 +353,21 @@ export default function App() {
   const [importSourcePathInput, setImportSourcePathInput] = useState('');
   const [importLabelInput, setImportLabelInput] = useState('');
   const [importFormat, setImportFormat] = useState<'recallx_json' | 'markdown'>('markdown');
+  const [importOptions, setImportOptions] = useState<WorkspaceImportOptions>({
+    normalizeTitleWhitespace: true,
+    trimBodyWhitespace: false,
+    duplicateMode: 'warn',
+  });
   const [workspaceActionError, setWorkspaceActionError] = useState<string | null>(null);
   const [workspaceImportError, setWorkspaceImportError] = useState<string | null>(null);
   const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false);
   const [workspaceBackups, setWorkspaceBackups] = useState<WorkspaceBackupRecord[]>([]);
   const [isWorkspaceBackupBusy, setIsWorkspaceBackupBusy] = useState(false);
+  const [isWorkspaceImportPreviewBusy, setIsWorkspaceImportPreviewBusy] = useState(false);
   const [isWorkspaceImportBusy, setIsWorkspaceImportBusy] = useState(false);
   const [workspaceBackupNotice, setWorkspaceBackupNotice] = useState<string | null>(null);
   const [lastWorkspaceExport, setLastWorkspaceExport] = useState<WorkspaceExportRecord | null>(null);
+  const [workspaceImportPreview, setWorkspaceImportPreview] = useState<WorkspaceImportPreviewRecord | null>(null);
   const [lastWorkspaceImport, setLastWorkspaceImport] = useState<WorkspaceImportRecord | null>(null);
   const [notePreviewTargetId, setNotePreviewTargetId] = useState<string | null>(null);
   const [isEditingNote, setIsEditingNote] = useState(false);
@@ -1860,6 +1870,10 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       setWorkspaceImportError('Import source path is required.');
       return;
     }
+    if (!workspaceImportPreview) {
+      setWorkspaceImportError('Preview the import before running it.');
+      return;
+    }
 
     setWorkspaceImportError(null);
     setWorkspaceActionError(null);
@@ -1870,9 +1884,11 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
         format: importFormat,
         sourcePath,
         label: importLabelInput.trim() || undefined,
+        options: importOptions,
       });
       await refreshWorkspaceState();
       setLastWorkspaceImport(importRecord);
+      setWorkspaceImportPreview(null);
       setImportSourcePathInput('');
       setImportLabelInput('');
       setWorkspaceBackupNotice(`Created snapshot ${importRecord.backupId} before import.`);
@@ -1881,6 +1897,39 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
     } finally {
       setIsWorkspaceImportBusy(false);
     }
+  }
+
+  async function handlePreviewWorkspaceImport() {
+    const sourcePath = importSourcePathInput.trim();
+    if (!sourcePath) {
+      setWorkspaceImportError('Import source path is required.');
+      return;
+    }
+
+    setWorkspaceImportError(null);
+    setWorkspaceActionError(null);
+    setWorkspaceBackupNotice(null);
+    setLastWorkspaceImport(null);
+    setIsWorkspaceImportPreviewBusy(true);
+    try {
+      const preview = await previewWorkspaceImport({
+        format: importFormat,
+        sourcePath,
+        label: importLabelInput.trim() || undefined,
+        options: importOptions,
+      });
+      setWorkspaceImportPreview(preview);
+    } catch (error) {
+      setWorkspaceImportPreview(null);
+      setWorkspaceImportError(error instanceof Error ? error.message : 'Failed to preview workspace import.');
+    } finally {
+      setIsWorkspaceImportPreviewBusy(false);
+    }
+  }
+
+  function invalidateWorkspaceImportPreview() {
+    setWorkspaceImportPreview(null);
+    setLastWorkspaceImport(null);
   }
 
   function selectView(next: NavView) {
@@ -3024,7 +3073,13 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             >
               <label className="search-box">
                 <span>Import format</span>
-                <select value={importFormat} onChange={(event) => setImportFormat(event.target.value as 'recallx_json' | 'markdown')}>
+                <select
+                  value={importFormat}
+                  onChange={(event) => {
+                    setImportFormat(event.target.value as 'recallx_json' | 'markdown');
+                    invalidateWorkspaceImportPreview();
+                  }}
+                >
                   <option value="markdown">Markdown file or folder</option>
                   <option value="recallx_json">RecallX JSON export</option>
                 </select>
@@ -3033,7 +3088,10 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 <span>Local source path</span>
                 <input
                   value={importSourcePathInput}
-                  onChange={(event) => setImportSourcePathInput(event.target.value)}
+                  onChange={(event) => {
+                    setImportSourcePathInput(event.target.value);
+                    invalidateWorkspaceImportPreview();
+                  }}
                   placeholder={
                     importFormat === 'markdown'
                       ? '/Users/name/Documents/notes'
@@ -3045,19 +3103,130 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 <span>Import label</span>
                 <input
                   value={importLabelInput}
-                  onChange={(event) => setImportLabelInput(event.target.value)}
+                  onChange={(event) => {
+                    setImportLabelInput(event.target.value);
+                    invalidateWorkspaceImportPreview();
+                  }}
                   placeholder="Imported project notes"
                 />
               </label>
+              <div className="info-grid three">
+                <label className="search-box">
+                  <span>Title cleanup</span>
+                  <select
+                    value={importOptions.normalizeTitleWhitespace ? 'normalize' : 'preserve'}
+                    onChange={(event) => {
+                      setImportOptions((current) => ({
+                        ...current,
+                        normalizeTitleWhitespace: event.target.value === 'normalize',
+                      }));
+                      invalidateWorkspaceImportPreview();
+                    }}
+                  >
+                    <option value="normalize">Normalize whitespace</option>
+                    <option value="preserve">Preserve existing spacing</option>
+                  </select>
+                </label>
+                <label className="search-box">
+                  <span>Body cleanup</span>
+                  <select
+                    value={importOptions.trimBodyWhitespace ? 'trim' : 'preserve'}
+                    onChange={(event) => {
+                      setImportOptions((current) => ({
+                        ...current,
+                        trimBodyWhitespace: event.target.value === 'trim',
+                      }));
+                      invalidateWorkspaceImportPreview();
+                    }}
+                  >
+                    <option value="preserve">Preserve body spacing</option>
+                    <option value="trim">Trim trailing blank lines</option>
+                  </select>
+                </label>
+                <label className="search-box">
+                  <span>Duplicate mode</span>
+                  <select
+                    value={importOptions.duplicateMode}
+                    onChange={(event) => {
+                      setImportOptions((current) => ({
+                        ...current,
+                        duplicateMode: event.target.value === 'skip_exact' ? 'skip_exact' : 'warn',
+                      }));
+                      invalidateWorkspaceImportPreview();
+                    }}
+                  >
+                    <option value="warn">Warn only</option>
+                    <option value="skip_exact">Skip exact duplicates</option>
+                  </select>
+                </label>
+              </div>
               {workspaceImportError ? <div className="empty-state compact">{workspaceImportError}</div> : null}
+              {workspaceImportPreview ? (
+                <div className="card-stack compact-stack">
+                  <div className="notice">
+                    Previewed {workspaceImportPreview.nodesDetected} nodes, {workspaceImportPreview.relationsDetected} relations, and{' '}
+                    {workspaceImportPreview.activitiesDetected} activities from {workspaceImportPreview.sourcePath}.
+                  </div>
+                  <div className="info-grid three">
+                    <article className="info-block">
+                      <span className="info-label">Ready</span>
+                      <strong>{workspaceImportPreview.nodesReady} nodes</strong>
+                      <p>{workspaceImportPreview.duplicateCandidates} likely duplicates detected.</p>
+                    </article>
+                    <article className="info-block">
+                      <span className="info-label">Skipped if applied</span>
+                      <strong>{workspaceImportPreview.skippedNodes} nodes</strong>
+                      <p>
+                        {workspaceImportPreview.skippedRelations} relations and {workspaceImportPreview.skippedActivities} activities would be
+                        skipped.
+                      </p>
+                    </article>
+                    <article className="info-block">
+                      <span className="info-label">Normalization</span>
+                      <strong>{workspaceImportPreview.options.normalizeTitleWhitespace ? 'Normalized titles' : 'Original spacing'}</strong>
+                      <p>{workspaceImportPreview.options.trimBodyWhitespace ? 'Trailing blank lines trimmed.' : 'Body spacing preserved.'}</p>
+                    </article>
+                  </div>
+                  {workspaceImportPreview.sampleItems.length ? (
+                    <div className="card-stack compact-stack">
+                      {workspaceImportPreview.sampleItems.map((item) => (
+                        <div key={`${item.sourcePath}-${item.title}`} className="empty-state compact">
+                          <strong>{item.title}</strong>
+                          <div>{item.sourcePath}</div>
+                          <div>{item.duplicateKind ? `Duplicate signal: ${item.duplicateKind}` : 'No duplicate signal detected.'}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {workspaceImportPreview.duplicateItems.length ? (
+                    <div className="card-stack compact-stack">
+                      {workspaceImportPreview.duplicateItems.map((item) => (
+                        <div key={`${item.sourcePath}-${item.existingNodeId ?? item.existingNodeTitle ?? item.title}`} className="empty-state compact">
+                          <strong>{item.title}</strong>
+                          <div>{item.sourcePath}</div>
+                          <div>
+                            {item.matchType === 'exact' ? 'Exact duplicate' : 'Title match'} against{' '}
+                            {item.existingSource === 'workspace' ? 'workspace content' : 'another item in this import'}.
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {lastWorkspaceImport ? (
                 <div className="notice">
                   Imported {lastWorkspaceImport.nodesCreated} nodes, {lastWorkspaceImport.relationsCreated} relations, and{' '}
-                  {lastWorkspaceImport.activitiesCreated} activities from {lastWorkspaceImport.sourcePath}.
+                  {lastWorkspaceImport.activitiesCreated} activities from {lastWorkspaceImport.sourcePath}. Skipped{' '}
+                  {lastWorkspaceImport.skippedNodes} nodes, {lastWorkspaceImport.skippedRelations} relations, and{' '}
+                  {lastWorkspaceImport.skippedActivities} activities.
                 </div>
               ) : null}
               <div className="action-row">
-                <button type="submit" disabled={isWorkspaceImportBusy}>
+                <button type="button" onClick={() => void handlePreviewWorkspaceImport()} disabled={isWorkspaceImportBusy || isWorkspaceImportPreviewBusy}>
+                  {isWorkspaceImportPreviewBusy ? 'Previewing...' : 'Preview import'}
+                </button>
+                <button type="submit" disabled={isWorkspaceImportBusy || isWorkspaceImportPreviewBusy || !workspaceImportPreview}>
                   {isWorkspaceImportBusy ? 'Importing...' : 'Run import'}
                 </button>
               </div>

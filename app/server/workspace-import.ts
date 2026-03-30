@@ -1,7 +1,16 @@
 import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import type { ActivityType, CreateNodeInput, CreateRelationInput } from "../shared/contracts.js";
-import type { JsonMap, WorkspaceBackupRecord, WorkspaceImportRecord } from "../shared/types.js";
+import type { ActivityType, CreateNodeInput, CreateRelationInput, NodeType } from "../shared/contracts.js";
+import type {
+  JsonMap,
+  NodeRecord,
+  WorkspaceBackupRecord,
+  WorkspaceImportOptions,
+  WorkspaceImportPreviewDuplicate,
+  WorkspaceImportPreviewItem,
+  WorkspaceImportPreviewRecord,
+  WorkspaceImportRecord,
+} from "../shared/types.js";
 import { RECALLX_VERSION } from "../shared/version.js";
 import { AppError } from "./errors.js";
 import { resolveNodeGovernance, resolveRelationStatus } from "./governance.js";
@@ -25,6 +34,78 @@ type RecallXJsonExportPayload = {
   artifacts?: Array<Record<string, unknown>>;
   integrations?: Array<Record<string, unknown>>;
   settings?: Record<string, unknown>;
+};
+
+type PlannedNode = {
+  sourcePath: string;
+  title: string;
+  body: string;
+  type: NodeType;
+  summary?: string;
+  tags: string[];
+  canonicality?: CreateNodeInput["canonicality"];
+  status?: CreateNodeInput["status"];
+  metadata: JsonMap;
+  originalId: string | null;
+  originalSourceLabel: string | null;
+  originalCreatedAt: string | null;
+  duplicate: WorkspaceImportPreviewDuplicate | null;
+};
+
+type PlannedRelation = {
+  originalId: string | null;
+  fromOriginalId: string | null;
+  toOriginalId: string | null;
+  relationType: CreateRelationInput["relationType"];
+  status?: CreateRelationInput["status"];
+  metadata: JsonMap;
+};
+
+type PlannedActivity = {
+  originalId: string | null;
+  targetOriginalId: string | null;
+  activityType: ActivityType;
+  body: string;
+  metadata: JsonMap;
+  originalCreatedAt: string | null;
+};
+
+type ImportPlan = {
+  format: ImportFormat;
+  label: string;
+  sourcePath: string;
+  createdAt: string;
+  options: WorkspaceImportOptions;
+  warnings: string[];
+  nodes: PlannedNode[];
+  relations: PlannedRelation[];
+  activities: PlannedActivity[];
+};
+
+type DuplicateIndex = {
+  exact: Map<string, NodeRecord[]>;
+  title: Map<string, NodeRecord[]>;
+};
+
+type SeenImportIndex = {
+  exact: Map<string, PlannedNode>;
+  title: Map<string, PlannedNode>;
+};
+
+type ImportCounts = {
+  nodesCreated: number;
+  relationsCreated: number;
+  activitiesCreated: number;
+  skippedNodes: number;
+  skippedRelations: number;
+  skippedActivities: number;
+  warnings: string[];
+};
+
+const DEFAULT_IMPORT_OPTIONS: WorkspaceImportOptions = {
+  normalizeTitleWhitespace: true,
+  trimBodyWhitespace: false,
+  duplicateMode: "warn",
 };
 
 function sanitizeLabel(value: string | undefined, fallback: string): string {
@@ -55,6 +136,47 @@ function resolveSourcePath(sourcePath: string): string {
     throw new AppError(404, "IMPORT_SOURCE_NOT_FOUND", `Import source not found: ${resolved}`);
   }
   return resolved;
+}
+
+function resolveImportOptions(options?: Partial<WorkspaceImportOptions> | null): WorkspaceImportOptions {
+  return {
+    normalizeTitleWhitespace:
+      typeof options?.normalizeTitleWhitespace === "boolean"
+        ? options.normalizeTitleWhitespace
+        : DEFAULT_IMPORT_OPTIONS.normalizeTitleWhitespace,
+    trimBodyWhitespace:
+      typeof options?.trimBodyWhitespace === "boolean"
+        ? options.trimBodyWhitespace
+        : DEFAULT_IMPORT_OPTIONS.trimBodyWhitespace,
+    duplicateMode:
+      options?.duplicateMode === "skip_exact" || options?.duplicateMode === "warn"
+        ? options.duplicateMode
+        : DEFAULT_IMPORT_OPTIONS.duplicateMode,
+  };
+}
+
+function normalizeTitle(value: string, options: WorkspaceImportOptions): string {
+  const trimmed = value.trim();
+  if (!options.normalizeTitleWhitespace) {
+    return trimmed || "Imported node";
+  }
+  return trimmed.replace(/\s+/g, " ").trim() || "Imported node";
+}
+
+function normalizeBody(value: string, options: WorkspaceImportOptions): string {
+  const unix = value.replace(/\r\n/g, "\n");
+  if (!options.trimBodyWhitespace) {
+    return unix;
+  }
+  return unix.replace(/[ \t]+$/gm, "").replace(/\s+$/u, "");
+}
+
+function buildTitleKey(title: string, options: WorkspaceImportOptions): string {
+  return normalizeTitle(title, options).toLowerCase();
+}
+
+function buildExactKey(type: NodeType, title: string, body: string, options: WorkspaceImportOptions): string {
+  return `${type}::${buildTitleKey(title, options)}::${normalizeBody(body, options)}`;
 }
 
 function copyImportSource(paths: WorkspacePaths, sourcePath: string, label: string, now: string): string {
@@ -123,35 +245,409 @@ function asActivityType(value: unknown): ActivityType {
     : "note_appended";
 }
 
-function importMarkdownFiles(params: {
+function asNodeType(value: unknown): NodeType {
+  return value === "project" ||
+    value === "idea" ||
+    value === "question" ||
+    value === "decision" ||
+    value === "reference" ||
+    value === "artifact_ref" ||
+    value === "conversation"
+    ? value
+    : "note";
+}
+
+function asCanonicality(value: unknown): CreateNodeInput["canonicality"] | undefined {
+  return value === "canonical" ||
+    value === "appended" ||
+    value === "suggested" ||
+    value === "imported" ||
+    value === "generated"
+    ? value
+    : undefined;
+}
+
+function asNodeStatus(value: unknown): CreateNodeInput["status"] | undefined {
+  return value === "active" ||
+    value === "draft" ||
+    value === "contested" ||
+    value === "archived"
+    ? value
+    : undefined;
+}
+
+function asRelationType(value: unknown): CreateRelationInput["relationType"] {
+  return value === "supports" ||
+    value === "contradicts" ||
+    value === "elaborates" ||
+    value === "depends_on" ||
+    value === "relevant_to" ||
+    value === "derived_from" ||
+    value === "produced_by"
+    ? value
+    : "related_to";
+}
+
+function asRelationStatus(value: unknown): CreateRelationInput["status"] | undefined {
+  return value === "active" ||
+    value === "suggested" ||
+    value === "rejected" ||
+    value === "archived"
+    ? value
+    : undefined;
+}
+
+function buildDuplicateIndex(existingNodes: NodeRecord[], options: WorkspaceImportOptions): DuplicateIndex {
+  const exact = new Map<string, NodeRecord[]>();
+  const title = new Map<string, NodeRecord[]>();
+
+  for (const node of existingNodes) {
+    const nodeType = node.type;
+    const nodeTitle = node.title ?? node.id;
+    const nodeBody = node.body ?? "";
+    const exactKey = buildExactKey(nodeType, nodeTitle, nodeBody, options);
+    const titleKey = buildTitleKey(nodeTitle, options);
+    exact.set(exactKey, [...(exact.get(exactKey) ?? []), node]);
+    title.set(titleKey, [...(title.get(titleKey) ?? []), node]);
+  }
+
+  return { exact, title };
+}
+
+function detectDuplicateMatch(params: {
+  node: Pick<PlannedNode, "type" | "title" | "body" | "sourcePath">;
+  options: WorkspaceImportOptions;
+  existing: DuplicateIndex;
+  seen: SeenImportIndex;
+}): WorkspaceImportPreviewDuplicate | null {
+  const exactKey = buildExactKey(params.node.type, params.node.title, params.node.body, params.options);
+  const titleKey = buildTitleKey(params.node.title, params.options);
+  const workspaceExact = params.existing.exact.get(exactKey)?.[0];
+  if (workspaceExact) {
+    return {
+      title: params.node.title,
+      sourcePath: params.node.sourcePath,
+      matchType: "exact",
+      existingNodeId: workspaceExact.id,
+      existingNodeTitle: workspaceExact.title,
+      existingSource: "workspace",
+    };
+  }
+
+  const batchExact = params.seen.exact.get(exactKey);
+  if (batchExact) {
+    return {
+      title: params.node.title,
+      sourcePath: params.node.sourcePath,
+      matchType: "exact",
+      existingNodeId: null,
+      existingNodeTitle: batchExact.title,
+      existingSource: "batch",
+    };
+  }
+
+  const workspaceTitle = params.existing.title.get(titleKey)?.[0];
+  if (workspaceTitle) {
+    return {
+      title: params.node.title,
+      sourcePath: params.node.sourcePath,
+      matchType: "title",
+      existingNodeId: workspaceTitle.id,
+      existingNodeTitle: workspaceTitle.title,
+      existingSource: "workspace",
+    };
+  }
+
+  const batchTitle = params.seen.title.get(titleKey);
+  if (batchTitle) {
+    return {
+      title: params.node.title,
+      sourcePath: params.node.sourcePath,
+      matchType: "title",
+      existingNodeId: null,
+      existingNodeTitle: batchTitle.title,
+      existingSource: "batch",
+    };
+  }
+
+  return null;
+}
+
+function rememberSeenNode(node: PlannedNode, options: WorkspaceImportOptions, seen: SeenImportIndex) {
+  const exactKey = buildExactKey(node.type, node.title, node.body, options);
+  const titleKey = buildTitleKey(node.title, options);
+  if (!seen.exact.has(exactKey)) {
+    seen.exact.set(exactKey, node);
+  }
+  if (!seen.title.has(titleKey)) {
+    seen.title.set(titleKey, node);
+  }
+}
+
+function buildMarkdownPlan(params: {
   repository: RecallXRepository;
   sourcePath: string;
-  importLabel: string;
-  importedPath: string;
+  label: string;
   now: string;
-}): { nodesCreated: number; relationsCreated: number; activitiesCreated: number; warnings: string[] } {
+  options: WorkspaceImportOptions;
+}): ImportPlan {
   const files = listMarkdownFiles(params.sourcePath);
   if (!files.length) {
     throw new AppError(400, "NO_MARKDOWN_FILES", "No markdown files were found to import.");
   }
 
-  const source = buildImportSource(params.importLabel);
-  let nodesCreated = 0;
+  const existing = buildDuplicateIndex(params.repository.listAllNodes(), params.options);
+  const seen: SeenImportIndex = {
+    exact: new Map(),
+    title: new Map(),
+  };
 
-  for (const filePath of files) {
-    const body = readFileSync(filePath, "utf8");
-    const nodeInput: CreateNodeInput = {
-      type: "note",
-      title: deriveMarkdownTitle(filePath, body),
+  const nodes: PlannedNode[] = files.map((filePath) => {
+    const rawBody = readFileSync(filePath, "utf8");
+    const body = normalizeBody(rawBody, params.options);
+    const title = normalizeTitle(deriveMarkdownTitle(filePath, rawBody), params.options);
+    const plannedNode: PlannedNode = {
+      sourcePath: filePath,
+      title,
       body,
+      type: "note",
       tags: [],
-      source,
       metadata: {
         importFormat: "markdown",
-        importLabel: params.importLabel,
+        importLabel: params.label,
         originalSourcePath: filePath,
+      },
+      originalId: null,
+      originalSourceLabel: null,
+      originalCreatedAt: null,
+      duplicate: null,
+    };
+    plannedNode.duplicate = detectDuplicateMatch({
+      node: plannedNode,
+      options: params.options,
+      existing,
+      seen,
+    });
+    rememberSeenNode(plannedNode, params.options, seen);
+    return plannedNode;
+  });
+
+  return {
+    format: "markdown",
+    label: params.label,
+    sourcePath: params.sourcePath,
+    createdAt: params.now,
+    options: params.options,
+    warnings: [],
+    nodes,
+    relations: [],
+    activities: [],
+  };
+}
+
+function buildRecallXJsonPlan(params: {
+  repository: RecallXRepository;
+  sourcePath: string;
+  label: string;
+  now: string;
+  options: WorkspaceImportOptions;
+}): ImportPlan {
+  const raw = JSON.parse(readFileSync(params.sourcePath, "utf8")) as RecallXJsonExportPayload;
+  const existing = buildDuplicateIndex(params.repository.listAllNodes(), params.options);
+  const seen: SeenImportIndex = {
+    exact: new Map(),
+    title: new Map(),
+  };
+  const warnings: string[] = [];
+
+  const nodes: PlannedNode[] = (Array.isArray(raw.nodes) ? raw.nodes : []).map((rawNode, index) => {
+    const originalId = typeof rawNode.id === "string" ? rawNode.id : null;
+    const rawTitle = (typeof rawNode.title === "string" && rawNode.title.trim()) || originalId || `Imported node ${index + 1}`;
+    const body = normalizeBody(typeof rawNode.body === "string" ? rawNode.body : "", params.options);
+    const plannedNode: PlannedNode = {
+      sourcePath: `${params.sourcePath}#node:${originalId ?? index + 1}`,
+      title: normalizeTitle(rawTitle, params.options),
+      body,
+      type: asNodeType(rawNode.type),
+      summary: typeof rawNode.summary === "string" ? rawNode.summary : undefined,
+      tags: asStringArray(rawNode.tags),
+      canonicality: asCanonicality(rawNode.canonicality),
+      status: asNodeStatus(rawNode.status),
+      metadata: {
+        ...asObject(rawNode.metadata),
+        importFormat: "recallx_json",
+        importLabel: params.label,
+        originalId,
+        originalSourceLabel: typeof rawNode.sourceLabel === "string" ? rawNode.sourceLabel : null,
+        originalCreatedAt: typeof rawNode.createdAt === "string" ? rawNode.createdAt : null,
+      },
+      originalId,
+      originalSourceLabel: typeof rawNode.sourceLabel === "string" ? rawNode.sourceLabel : null,
+      originalCreatedAt: typeof rawNode.createdAt === "string" ? rawNode.createdAt : null,
+      duplicate: null,
+    };
+    plannedNode.duplicate = detectDuplicateMatch({
+      node: plannedNode,
+      options: params.options,
+      existing,
+      seen,
+    });
+    rememberSeenNode(plannedNode, params.options, seen);
+    return plannedNode;
+  });
+
+  const relations: PlannedRelation[] = (Array.isArray(raw.relations) ? raw.relations : []).map((rawRelation) => ({
+    originalId: typeof rawRelation.id === "string" ? rawRelation.id : null,
+    fromOriginalId: typeof rawRelation.fromNodeId === "string" ? rawRelation.fromNodeId : null,
+    toOriginalId: typeof rawRelation.toNodeId === "string" ? rawRelation.toNodeId : null,
+    relationType: asRelationType(rawRelation.relationType),
+    status: asRelationStatus(rawRelation.status),
+    metadata: asObject(rawRelation.metadata),
+  }));
+
+  const activities: PlannedActivity[] = (Array.isArray(raw.activities) ? raw.activities : []).map((rawActivity) => ({
+    originalId: typeof rawActivity.id === "string" ? rawActivity.id : null,
+    targetOriginalId: typeof rawActivity.targetNodeId === "string" ? rawActivity.targetNodeId : null,
+    activityType: asActivityType(rawActivity.activityType),
+    body: typeof rawActivity.body === "string" ? rawActivity.body : "",
+    metadata: asObject(rawActivity.metadata),
+    originalCreatedAt: typeof rawActivity.createdAt === "string" ? rawActivity.createdAt : null,
+  }));
+
+  if ((raw.artifacts?.length ?? 0) > 0) {
+    warnings.push("Artifact files were not imported in this flow.");
+  }
+  if ((raw.integrations?.length ?? 0) > 0) {
+    warnings.push("Integration records were not imported in this flow.");
+  }
+  if (raw.settings && Object.keys(raw.settings).length > 0) {
+    warnings.push("Workspace settings were not imported in this flow.");
+  }
+
+  return {
+    format: "recallx_json",
+    label: params.label,
+    sourcePath: params.sourcePath,
+    createdAt: params.now,
+    options: params.options,
+    warnings,
+    nodes,
+    relations,
+    activities,
+  };
+}
+
+function buildImportPlan(params: {
+  repository: RecallXRepository;
+  format: ImportFormat;
+  sourcePath: string;
+  label?: string;
+  now: string;
+  options?: Partial<WorkspaceImportOptions> | null;
+}): ImportPlan {
+  const resolvedSourcePath = resolveSourcePath(params.sourcePath);
+  const label =
+    sanitizeLabel(params.label, path.basename(resolvedSourcePath, path.extname(resolvedSourcePath)) || "Workspace import");
+  const options = resolveImportOptions(params.options);
+
+  return params.format === "markdown"
+    ? buildMarkdownPlan({
+        repository: params.repository,
+        sourcePath: resolvedSourcePath,
+        label,
+        now: params.now,
+        options,
+      })
+    : buildRecallXJsonPlan({
+        repository: params.repository,
+        sourcePath: resolvedSourcePath,
+        label,
+        now: params.now,
+        options,
+      });
+}
+
+function buildPreviewFromPlan(plan: ImportPlan): WorkspaceImportPreviewRecord {
+  const duplicateItems = plan.nodes
+    .filter((node): node is PlannedNode & { duplicate: WorkspaceImportPreviewDuplicate } => node.duplicate !== null)
+    .map((node) => node.duplicate);
+  const exactDuplicateCandidates = duplicateItems.filter((item) => item.matchType === "exact").length;
+  const skippedOriginalIds = new Set(
+    plan.options.duplicateMode === "skip_exact"
+      ? plan.nodes.filter((node) => node.duplicate?.matchType === "exact" && node.originalId).map((node) => node.originalId as string)
+      : []
+  );
+  const skippedNodes = plan.options.duplicateMode === "skip_exact"
+    ? plan.nodes.filter((node) => node.duplicate?.matchType === "exact").length
+    : 0;
+  const skippedRelations = plan.options.duplicateMode === "skip_exact"
+    ? plan.relations.filter((relation) =>
+        (relation.fromOriginalId && skippedOriginalIds.has(relation.fromOriginalId)) ||
+        (relation.toOriginalId && skippedOriginalIds.has(relation.toOriginalId))
+      ).length
+    : 0;
+  const skippedActivities = plan.options.duplicateMode === "skip_exact"
+    ? plan.activities.filter((activity) => activity.targetOriginalId && skippedOriginalIds.has(activity.targetOriginalId)).length
+    : 0;
+
+  return {
+    format: plan.format,
+    label: plan.label,
+    sourcePath: plan.sourcePath,
+    createdAt: plan.createdAt,
+    options: plan.options,
+    nodesDetected: plan.nodes.length,
+    relationsDetected: plan.relations.length,
+    activitiesDetected: plan.activities.length,
+    duplicateCandidates: duplicateItems.length,
+    exactDuplicateCandidates,
+    nodesReady: plan.nodes.length - skippedNodes,
+    relationsReady: plan.relations.length - skippedRelations,
+    activitiesReady: plan.activities.length - skippedActivities,
+    skippedNodes,
+    skippedRelations,
+    skippedActivities,
+    warnings: [
+      ...plan.warnings,
+      ...(duplicateItems.length
+        ? [`Detected ${duplicateItems.length} likely duplicate node(s) in the current import preview.`]
+        : []),
+    ],
+    sampleItems: plan.nodes.slice(0, 5).map<WorkspaceImportPreviewItem>((node) => ({
+      title: node.title,
+      type: node.type,
+      sourcePath: node.sourcePath,
+      duplicateKind: node.duplicate?.matchType ?? null,
+    })),
+    duplicateItems,
+  };
+}
+
+function applyMarkdownPlan(params: {
+  repository: RecallXRepository;
+  plan: ImportPlan;
+  importedPath: string;
+}): ImportCounts {
+  const source = buildImportSource(params.plan.label);
+  let nodesCreated = 0;
+  let skippedNodes = 0;
+
+  for (const plannedNode of params.plan.nodes) {
+    if (params.plan.options.duplicateMode === "skip_exact" && plannedNode.duplicate?.matchType === "exact") {
+      skippedNodes += 1;
+      continue;
+    }
+
+    const nodeInput: CreateNodeInput = {
+      type: plannedNode.type,
+      title: plannedNode.title,
+      body: plannedNode.body,
+      tags: plannedNode.tags,
+      source,
+      metadata: {
+        ...plannedNode.metadata,
         importedSourcePath: params.importedPath,
-        importedAt: params.now,
+        importedAt: params.plan.createdAt,
       },
     };
     const governance = resolveNodeGovernance(nodeInput);
@@ -166,81 +662,66 @@ function importMarkdownFiles(params: {
       operationType: "import",
       source,
       metadata: {
-        originalSourcePath: filePath,
+        originalSourcePath: plannedNode.sourcePath,
         importedSourcePath: params.importedPath,
       },
     });
     nodesCreated += 1;
+  }
+
+  const warnings = [...params.plan.warnings];
+  if (skippedNodes > 0) {
+    warnings.push(`Skipped ${skippedNodes} exact duplicate node(s).`);
   }
 
   return {
     nodesCreated,
     relationsCreated: 0,
     activitiesCreated: 0,
-    warnings: [],
+    skippedNodes,
+    skippedRelations: 0,
+    skippedActivities: 0,
+    warnings,
   };
 }
 
-function importRecallXJson(params: {
+function applyRecallXJsonPlan(params: {
   repository: RecallXRepository;
-  sourcePath: string;
-  importLabel: string;
+  plan: ImportPlan;
   importedPath: string;
-  now: string;
-}): { nodesCreated: number; relationsCreated: number; activitiesCreated: number; warnings: string[] } {
-  const raw = JSON.parse(readFileSync(params.sourcePath, "utf8")) as RecallXJsonExportPayload;
-  const nodes = Array.isArray(raw.nodes) ? raw.nodes : [];
-  const relations = Array.isArray(raw.relations) ? raw.relations : [];
-  const activities = Array.isArray(raw.activities) ? raw.activities : [];
-  const source = buildImportSource(params.importLabel);
+}): ImportCounts {
+  const source = buildImportSource(params.plan.label);
   const nodeIdMap = new Map<string, string>();
+  const skippedOriginalIds = new Set<string>();
   let nodesCreated = 0;
   let relationsCreated = 0;
   let activitiesCreated = 0;
-  const warnings: string[] = [];
+  let skippedNodes = 0;
+  let skippedRelations = 0;
+  let skippedActivities = 0;
 
-  for (const rawNode of nodes) {
-    const originalId = typeof rawNode.id === "string" ? rawNode.id : null;
+  for (const plannedNode of params.plan.nodes) {
+    if (params.plan.options.duplicateMode === "skip_exact" && plannedNode.duplicate?.matchType === "exact") {
+      skippedNodes += 1;
+      if (plannedNode.originalId) {
+        skippedOriginalIds.add(plannedNode.originalId);
+      }
+      continue;
+    }
+
     const nodeInput: CreateNodeInput = {
-      type:
-        rawNode.type === "project" ||
-        rawNode.type === "idea" ||
-        rawNode.type === "question" ||
-        rawNode.type === "decision" ||
-        rawNode.type === "reference" ||
-        rawNode.type === "artifact_ref" ||
-        rawNode.type === "conversation"
-          ? rawNode.type
-          : "note",
-      title: (typeof rawNode.title === "string" && rawNode.title.trim()) || originalId || "Imported node",
-      body: typeof rawNode.body === "string" ? rawNode.body : "",
-      summary: typeof rawNode.summary === "string" ? rawNode.summary : undefined,
-      tags: asStringArray(rawNode.tags),
-      canonicality:
-        rawNode.canonicality === "canonical" ||
-        rawNode.canonicality === "appended" ||
-        rawNode.canonicality === "suggested" ||
-        rawNode.canonicality === "imported" ||
-        rawNode.canonicality === "generated"
-          ? rawNode.canonicality
-          : undefined,
-      status:
-        rawNode.status === "active" ||
-        rawNode.status === "draft" ||
-        rawNode.status === "contested" ||
-        rawNode.status === "archived"
-          ? rawNode.status
-          : undefined,
+      type: plannedNode.type,
+      title: plannedNode.title,
+      body: plannedNode.body,
+      summary: plannedNode.summary,
+      tags: plannedNode.tags,
+      canonicality: plannedNode.canonicality,
+      status: plannedNode.status,
       source,
       metadata: {
-        ...asObject(rawNode.metadata),
-        importFormat: "recallx_json",
-        importLabel: params.importLabel,
-        originalId,
-        originalSourceLabel: typeof rawNode.sourceLabel === "string" ? rawNode.sourceLabel : null,
-        originalCreatedAt: typeof rawNode.createdAt === "string" ? rawNode.createdAt : null,
+        ...plannedNode.metadata,
         importedSourcePath: params.importedPath,
-        importedAt: params.now,
+        importedAt: params.plan.createdAt,
       },
     };
     const governance = resolveNodeGovernance(nodeInput);
@@ -255,46 +736,39 @@ function importRecallXJson(params: {
       operationType: "import",
       source,
       metadata: {
-        originalId,
+        originalId: plannedNode.originalId,
         importedSourcePath: params.importedPath,
       },
     });
-    if (originalId) {
-      nodeIdMap.set(originalId, node.id);
+    if (plannedNode.originalId) {
+      nodeIdMap.set(plannedNode.originalId, node.id);
     }
     nodesCreated += 1;
   }
 
-  for (const rawRelation of relations) {
-    const fromNodeId = typeof rawRelation.fromNodeId === "string" ? nodeIdMap.get(rawRelation.fromNodeId) : null;
-    const toNodeId = typeof rawRelation.toNodeId === "string" ? nodeIdMap.get(rawRelation.toNodeId) : null;
+  for (const plannedRelation of params.plan.relations) {
+    if (
+      (plannedRelation.fromOriginalId && skippedOriginalIds.has(plannedRelation.fromOriginalId)) ||
+      (plannedRelation.toOriginalId && skippedOriginalIds.has(plannedRelation.toOriginalId))
+    ) {
+      skippedRelations += 1;
+      continue;
+    }
+    const fromNodeId = plannedRelation.fromOriginalId ? nodeIdMap.get(plannedRelation.fromOriginalId) : null;
+    const toNodeId = plannedRelation.toOriginalId ? nodeIdMap.get(plannedRelation.toOriginalId) : null;
     if (!fromNodeId || !toNodeId) {
+      skippedRelations += 1;
       continue;
     }
     const relationInput: CreateRelationInput = {
       fromNodeId,
       toNodeId,
-      relationType:
-        rawRelation.relationType === "supports" ||
-        rawRelation.relationType === "contradicts" ||
-        rawRelation.relationType === "elaborates" ||
-        rawRelation.relationType === "depends_on" ||
-        rawRelation.relationType === "relevant_to" ||
-        rawRelation.relationType === "derived_from" ||
-        rawRelation.relationType === "produced_by"
-          ? rawRelation.relationType
-          : "related_to",
-      status:
-        rawRelation.status === "active" ||
-        rawRelation.status === "suggested" ||
-        rawRelation.status === "rejected" ||
-        rawRelation.status === "archived"
-          ? rawRelation.status
-          : undefined,
+      relationType: plannedRelation.relationType,
+      status: plannedRelation.status,
       source,
       metadata: {
-        ...asObject(rawRelation.metadata),
-        originalId: typeof rawRelation.id === "string" ? rawRelation.id : null,
+        ...plannedRelation.metadata,
+        originalId: plannedRelation.originalId,
         importedSourcePath: params.importedPath,
       },
     };
@@ -309,27 +783,32 @@ function importRecallXJson(params: {
       operationType: "import",
       source,
       metadata: {
-        originalId: typeof rawRelation.id === "string" ? rawRelation.id : null,
+        originalId: plannedRelation.originalId,
         importedSourcePath: params.importedPath,
       },
     });
     relationsCreated += 1;
   }
 
-  for (const rawActivity of activities) {
-    const targetNodeId = typeof rawActivity.targetNodeId === "string" ? nodeIdMap.get(rawActivity.targetNodeId) : null;
+  for (const plannedActivity of params.plan.activities) {
+    if (plannedActivity.targetOriginalId && skippedOriginalIds.has(plannedActivity.targetOriginalId)) {
+      skippedActivities += 1;
+      continue;
+    }
+    const targetNodeId = plannedActivity.targetOriginalId ? nodeIdMap.get(plannedActivity.targetOriginalId) : null;
     if (!targetNodeId) {
+      skippedActivities += 1;
       continue;
     }
     const activity = params.repository.appendActivity({
       targetNodeId,
-      activityType: asActivityType(rawActivity.activityType),
-      body: typeof rawActivity.body === "string" ? rawActivity.body : "",
+      activityType: plannedActivity.activityType,
+      body: plannedActivity.body,
       source,
       metadata: {
-        ...asObject(rawActivity.metadata),
-        originalId: typeof rawActivity.id === "string" ? rawActivity.id : null,
-        originalCreatedAt: typeof rawActivity.createdAt === "string" ? rawActivity.createdAt : null,
+        ...plannedActivity.metadata,
+        originalId: plannedActivity.originalId,
+        originalCreatedAt: plannedActivity.originalCreatedAt,
         importedSourcePath: params.importedPath,
       },
     });
@@ -339,29 +818,116 @@ function importRecallXJson(params: {
       operationType: "import",
       source,
       metadata: {
-        originalId: typeof rawActivity.id === "string" ? rawActivity.id : null,
+        originalId: plannedActivity.originalId,
         importedSourcePath: params.importedPath,
       },
     });
     activitiesCreated += 1;
   }
 
-  if ((raw.artifacts?.length ?? 0) > 0) {
-    warnings.push("Artifact files were not imported in this first onboarding flow.");
-  }
-  if ((raw.integrations?.length ?? 0) > 0) {
-    warnings.push("Integration records were not imported in this first onboarding flow.");
-  }
-  if (raw.settings && Object.keys(raw.settings).length > 0) {
-    warnings.push("Workspace settings were not imported in this first onboarding flow.");
+  const warnings = [...params.plan.warnings];
+  if (skippedNodes > 0) {
+    warnings.push(`Skipped ${skippedNodes} exact duplicate node(s).`);
   }
 
   return {
     nodesCreated,
     relationsCreated,
     activitiesCreated,
+    skippedNodes,
+    skippedRelations,
+    skippedActivities,
     warnings,
   };
+}
+
+function applyImportPlan(params: {
+  repository: RecallXRepository;
+  plan: ImportPlan;
+  importedPath: string;
+  backup: WorkspaceBackupRecord;
+}): WorkspaceImportRecord {
+  const counts =
+    params.plan.format === "markdown"
+      ? applyMarkdownPlan({
+          repository: params.repository,
+          plan: params.plan,
+          importedPath: params.importedPath,
+        })
+      : applyRecallXJsonPlan({
+          repository: params.repository,
+          plan: params.plan,
+          importedPath: params.importedPath,
+        });
+
+  const source = buildImportSource(params.plan.label);
+  const inboxNode = params.repository.ensureWorkspaceInboxNode();
+  const skippedSummary =
+    counts.skippedNodes || counts.skippedRelations || counts.skippedActivities
+      ? ` Skipped ${counts.skippedNodes} node(s), ${counts.skippedRelations} relation(s), and ${counts.skippedActivities} activity item(s).`
+      : "";
+  const summaryActivity = params.repository.appendActivity({
+    targetNodeId: inboxNode.id,
+    activityType: "import_completed",
+    body:
+      `Imported ${counts.nodesCreated} node(s), ${counts.relationsCreated} relation(s), and ${counts.activitiesCreated} activity item(s) from ${path.basename(params.plan.sourcePath)}.` +
+      skippedSummary,
+    source,
+    metadata: {
+      importFormat: params.plan.format,
+      importLabel: params.plan.label,
+      sourcePath: params.plan.sourcePath,
+      importedPath: params.importedPath,
+      backupId: params.backup.id,
+      backupPath: params.backup.backupPath,
+      options: params.plan.options,
+      warnings: counts.warnings,
+      skippedNodes: counts.skippedNodes,
+      skippedRelations: counts.skippedRelations,
+      skippedActivities: counts.skippedActivities,
+    },
+  });
+  params.repository.recordProvenance({
+    entityType: "activity",
+    entityId: summaryActivity.id,
+    operationType: "import",
+    source,
+    metadata: {
+      sourcePath: params.plan.sourcePath,
+      importedPath: params.importedPath,
+      backupId: params.backup.id,
+    },
+  });
+
+  return {
+    format: params.plan.format,
+    label: params.plan.label,
+    sourcePath: params.plan.sourcePath,
+    importedPath: params.importedPath,
+    createdAt: params.plan.createdAt,
+    options: params.plan.options,
+    backupId: params.backup.id,
+    backupPath: params.backup.backupPath,
+    nodesCreated: counts.nodesCreated,
+    relationsCreated: counts.relationsCreated,
+    activitiesCreated: counts.activitiesCreated + 1,
+    skippedNodes: counts.skippedNodes,
+    skippedRelations: counts.skippedRelations,
+    skippedActivities: counts.skippedActivities,
+    warnings: counts.warnings,
+  };
+}
+
+export function previewImportIntoWorkspace(params: {
+  repository: RecallXRepository;
+  format: ImportFormat;
+  sourcePath: string;
+  label?: string;
+  now: string;
+  options?: Partial<WorkspaceImportOptions> | null;
+}): WorkspaceImportPreviewRecord {
+  const plan = buildImportPlan(params);
+  return buildPreviewFromPlan(plan);
 }
 
 export function importIntoWorkspace(params: {
@@ -372,68 +938,21 @@ export function importIntoWorkspace(params: {
   label?: string;
   now: string;
   backup: WorkspaceBackupRecord;
+  options?: Partial<WorkspaceImportOptions> | null;
 }): WorkspaceImportRecord {
-  const resolvedSourcePath = resolveSourcePath(params.sourcePath);
-  const label =
-    sanitizeLabel(params.label, path.basename(resolvedSourcePath, path.extname(resolvedSourcePath)) || "Workspace import");
-  const importedPath = copyImportSource(params.paths, resolvedSourcePath, label, params.now);
-  const source = buildImportSource(label);
-  const counts =
-    params.format === "markdown"
-      ? importMarkdownFiles({
-          repository: params.repository,
-          sourcePath: resolvedSourcePath,
-          importLabel: label,
-          importedPath,
-          now: params.now,
-        })
-      : importRecallXJson({
-          repository: params.repository,
-          sourcePath: resolvedSourcePath,
-          importLabel: label,
-          importedPath,
-          now: params.now,
-        });
-
-  const inboxNode = params.repository.ensureWorkspaceInboxNode();
-  const summaryActivity = params.repository.appendActivity({
-    targetNodeId: inboxNode.id,
-    activityType: "import_completed",
-    body: `Imported ${counts.nodesCreated} node(s), ${counts.relationsCreated} relation(s), and ${counts.activitiesCreated} activity item(s) from ${path.basename(resolvedSourcePath)}.`,
-    source,
-    metadata: {
-      importFormat: params.format,
-      importLabel: label,
-      sourcePath: resolvedSourcePath,
-      importedPath,
-      backupId: params.backup.id,
-      backupPath: params.backup.backupPath,
-      warnings: counts.warnings,
-    },
-  });
-  params.repository.recordProvenance({
-    entityType: "activity",
-    entityId: summaryActivity.id,
-    operationType: "import",
-    source,
-    metadata: {
-      sourcePath: resolvedSourcePath,
-      importedPath,
-      backupId: params.backup.id,
-    },
-  });
-
-  return {
+  const plan = buildImportPlan({
+    repository: params.repository,
     format: params.format,
-    label,
-    sourcePath: resolvedSourcePath,
+    sourcePath: params.sourcePath,
+    label: params.label,
+    now: params.now,
+    options: params.options,
+  });
+  const importedPath = copyImportSource(params.paths, plan.sourcePath, plan.label, plan.createdAt);
+  return applyImportPlan({
+    repository: params.repository,
+    plan,
     importedPath,
-    createdAt: params.now,
-    backupId: params.backup.id,
-    backupPath: params.backup.backupPath,
-    nodesCreated: counts.nodesCreated,
-    relationsCreated: counts.relationsCreated,
-    activitiesCreated: counts.activitiesCreated + 1,
-    warnings: counts.warnings,
-  };
+    backup: params.backup,
+  });
 }

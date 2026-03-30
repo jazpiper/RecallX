@@ -25,6 +25,7 @@ Current product behavior:
 - backups are point-in-time workspace snapshots stored under `backups/`
 - exports currently support `json` and `markdown`
 - import onboarding currently supports RecallX JSON export files plus Markdown file or folder imports into the active workspace
+- the import loop is preview-first and lets the user choose title/body normalization plus duplicate handling before mutation
 - restore and import flows create an automatic safety snapshot before the risky operation continues
 - imported source files are copied into the workspace `imports/` directory for provenance-friendly inspection
 - workspace status may include single-writer safety warnings such as active lock, unclean shutdown, or recent open on another machine

@@ -241,7 +241,7 @@ Settings should stay practical and workspace-oriented.
 ### Current sections
 - workspace create/open controls
 - current workspace metadata
-- import onboarding for Markdown and RecallX JSON exports
+- import onboarding for Markdown and RecallX JSON exports with preview, normalization, and duplicate handling
 - safe handoff guidance for single-writer multi-device use
 - semantic and operational settings routed through the local API
 - recent workspaces

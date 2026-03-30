@@ -16,9 +16,17 @@ import {
   listWorkspaceBackups,
   restoreWorkspaceBackup,
 } from "./workspace-ops.js";
-import { importIntoWorkspace } from "./workspace-import.js";
+import { importIntoWorkspace, previewImportIntoWorkspace } from "./workspace-import.js";
 import { defaultWorkspaceName, ensureWorkspace, type WorkspacePaths } from "./workspace.js";
-import type { WorkspaceBackupRecord, WorkspaceCatalogItem, WorkspaceExportRecord, WorkspaceImportRecord, WorkspaceInfo } from "../shared/types.js";
+import type {
+  WorkspaceBackupRecord,
+  WorkspaceCatalogItem,
+  WorkspaceExportRecord,
+  WorkspaceImportOptions,
+  WorkspaceImportPreviewRecord,
+  WorkspaceImportRecord,
+  WorkspaceInfo,
+} from "../shared/types.js";
 import { RECALLX_VERSION } from "../shared/version.js";
 
 interface WorkspaceSessionState {
@@ -129,7 +137,28 @@ export class WorkspaceSessionManager {
     });
   }
 
-  importWorkspace(format: "recallx_json" | "markdown", sourcePath: string, label?: string): WorkspaceImportRecord {
+  previewImportWorkspace(
+    format: "recallx_json" | "markdown",
+    sourcePath: string,
+    label?: string,
+    options?: Partial<WorkspaceImportOptions> | null
+  ): WorkspaceImportPreviewRecord {
+    return previewImportIntoWorkspace({
+      repository: this.currentState.repository,
+      format,
+      sourcePath,
+      label,
+      options,
+      now: new Date().toISOString(),
+    });
+  }
+
+  importWorkspace(
+    format: "recallx_json" | "markdown",
+    sourcePath: string,
+    label?: string,
+    options?: Partial<WorkspaceImportOptions> | null
+  ): WorkspaceImportRecord {
     const backup = this.createBackup(label ? `before-import ${label}` : "before-import");
     return importIntoWorkspace({
       repository: this.currentState.repository,
@@ -137,6 +166,7 @@ export class WorkspaceSessionManager {
       format,
       sourcePath,
       label,
+      options,
       now: new Date().toISOString(),
       backup,
     });

@@ -99,17 +99,65 @@ export interface WorkspaceExportRecord {
   workspaceName: string;
 }
 
+export interface WorkspaceImportOptions {
+  normalizeTitleWhitespace: boolean;
+  trimBodyWhitespace: boolean;
+  duplicateMode: "warn" | "skip_exact";
+}
+
+export interface WorkspaceImportPreviewItem {
+  title: string;
+  type: NodeType;
+  sourcePath: string;
+  duplicateKind: "exact" | "title" | null;
+}
+
+export interface WorkspaceImportPreviewDuplicate {
+  title: string;
+  sourcePath: string;
+  matchType: "exact" | "title";
+  existingNodeId: string | null;
+  existingNodeTitle: string | null;
+  existingSource: "workspace" | "batch";
+}
+
+export interface WorkspaceImportPreviewRecord {
+  format: "recallx_json" | "markdown";
+  label: string;
+  sourcePath: string;
+  createdAt: string;
+  options: WorkspaceImportOptions;
+  nodesDetected: number;
+  relationsDetected: number;
+  activitiesDetected: number;
+  duplicateCandidates: number;
+  exactDuplicateCandidates: number;
+  nodesReady: number;
+  relationsReady: number;
+  activitiesReady: number;
+  skippedNodes: number;
+  skippedRelations: number;
+  skippedActivities: number;
+  warnings: string[];
+  sampleItems: WorkspaceImportPreviewItem[];
+  duplicateItems: WorkspaceImportPreviewDuplicate[];
+}
+
 export interface WorkspaceImportRecord {
   format: "recallx_json" | "markdown";
   label: string;
   sourcePath: string;
   importedPath: string;
   createdAt: string;
+  options: WorkspaceImportOptions;
   backupId: string;
   backupPath: string;
   nodesCreated: number;
   relationsCreated: number;
   activitiesCreated: number;
+  skippedNodes: number;
+  skippedRelations: number;
+  skippedActivities: number;
   warnings: string[];
 }
 
