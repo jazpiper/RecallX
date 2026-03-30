@@ -1,6 +1,7 @@
 import { Suspense, lazy, startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   applyNodeGovernanceAction as applyNodeGovernanceActionRequest,
+  applyRelationGovernanceAction as applyRelationGovernanceActionRequest,
   appendRelationUsageEvent,
   clearRendererToken,
   createWorkspaceBackup,
@@ -11,6 +12,7 @@ import {
   getContextBundlePreview,
   getGovernanceIssues,
   getNodeDetail,
+  getRelationDetail,
   getSettings,
   getGraphNeighborhood,
   getProjectGraph,
@@ -53,6 +55,9 @@ import type {
   NodeGovernanceAction,
   Node,
   ProjectGraphPayload,
+  Relation,
+  RelationDetail,
+  RelationGovernanceAction,
   RelationType,
   SearchNodeHit,
   WorkspaceBackupRecord,
@@ -70,6 +75,14 @@ type DetailPanel = {
   bundleItems: ContextBundlePreviewItem[];
   activities: Activity[];
   artifacts: Artifact[];
+  governance: GovernancePayload;
+};
+
+type GovernanceDetailPanel = {
+  node: Node | null;
+  relation: Relation | null;
+  fromNode: Node | null;
+  toNode: Node | null;
   governance: GovernancePayload;
 };
 
@@ -228,6 +241,18 @@ function canArchiveNode(node: Node | null) {
   return Boolean(node && node.status !== 'archived');
 }
 
+function canAcceptRelation(relation: Relation | null) {
+  return Boolean(relation && relation.status !== 'archived' && relation.status !== 'active');
+}
+
+function canRejectRelation(relation: Relation | null) {
+  return Boolean(relation && relation.status !== 'archived' && relation.status !== 'rejected');
+}
+
+function canArchiveRelation(relation: Relation | null) {
+  return Boolean(relation && relation.status !== 'archived');
+}
+
 function getViewTitle(view: NavView) {
   switch (view) {
     case 'search':
@@ -332,6 +357,19 @@ function emptyDetailPanel(): DetailPanel {
   };
 }
 
+function emptyGovernanceDetailPanel(): GovernanceDetailPanel {
+  return {
+    node: null,
+    relation: null,
+    fromNode: null,
+    toNode: null,
+    governance: {
+      state: null,
+      events: [],
+    },
+  };
+}
+
 export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceSeed['workspace'] | null>(null);
   const [workspaceCatalog, setWorkspaceCatalog] = useState<WorkspaceCatalogItem[]>([]);
@@ -361,6 +399,8 @@ export default function App() {
   const [authTokenInput, setAuthTokenInput] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [selectedGovernanceId, setSelectedGovernanceId] = useState<string | null>(null);
+  const [governanceDetail, setGovernanceDetail] = useState<GovernanceDetailPanel>(emptyGovernanceDetailPanel());
+  const [isGovernanceDetailLoading, setIsGovernanceDetailLoading] = useState(false);
   const [captureType, setCaptureType] = useState<Node['type']>('note');
   const [captureProjectId, setCaptureProjectId] = useState('');
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -406,6 +446,7 @@ export default function App() {
   const [governanceDecisionNote, setGovernanceDecisionNote] = useState('');
   const [governanceActionError, setGovernanceActionError] = useState<string | null>(null);
   const [governanceActionPending, setGovernanceActionPending] = useState<NodeGovernanceAction | null>(null);
+  const [relationGovernanceActionPending, setRelationGovernanceActionPending] = useState<RelationGovernanceAction | null>(null);
   const [guideSectionId, setGuideSectionId] = useState('overview');
   const bundleUsageEventKeysRef = useRef(new Set<string>());
   const activeProjectBundleUsageEventKeysRef = useRef(new Set<string>());
@@ -1106,6 +1147,57 @@ export default function App() {
   const activeGovernanceIssue =
     governanceIssues.find((item) => item.entityId === selectedGovernanceId) ?? governanceIssues[0];
 
+  useEffect(() => {
+    if (view !== 'governance' || !activeGovernanceIssue) {
+      setGovernanceDetail(emptyGovernanceDetailPanel());
+      setIsGovernanceDetailLoading(false);
+      return;
+    }
+
+    let mounted = true;
+    setIsGovernanceDetailLoading(true);
+
+    async function loadGovernanceDetail() {
+      try {
+        if (activeGovernanceIssue.entityType === 'node') {
+          const nodeDetail = await getNodeDetail(activeGovernanceIssue.entityId);
+          if (!mounted) return;
+          setGovernanceDetail({
+            node: nodeDetail?.node ?? null,
+            relation: null,
+            fromNode: null,
+            toNode: null,
+            governance: nodeDetail?.governance ?? emptyGovernanceDetailPanel().governance,
+          });
+        } else {
+          const relationDetail = await getRelationDetail(activeGovernanceIssue.entityId);
+          if (!mounted) return;
+          setGovernanceDetail({
+            node: null,
+            relation: relationDetail?.relation ?? null,
+            fromNode: relationDetail?.fromNode ?? null,
+            toNode: relationDetail?.toNode ?? null,
+            governance: relationDetail?.governance ?? emptyGovernanceDetailPanel().governance,
+          });
+        }
+        setLoadError(null);
+      } catch (error) {
+        if (!mounted) return;
+        handleRequestFailure(error, 'Failed to load governance detail.');
+      } finally {
+        if (mounted) {
+          setIsGovernanceDetailLoading(false);
+        }
+      }
+    }
+
+    void loadGovernanceDetail();
+
+    return () => {
+      mounted = false;
+    };
+  }, [activeGovernanceIssue, view]);
+
   const workspaceName = workspace?.name ?? 'RecallX';
   const apiBase = formatApiBase(workspace?.apiBind ?? '127.0.0.1:8787');
   const workspaceRoot = workspace?.rootPath ?? '';
@@ -1489,10 +1581,16 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
     [governanceIssues],
   );
   const activeGovernanceNode =
-    activeGovernanceIssue?.entityType === 'node' ? nodeMap.get(activeGovernanceIssue.entityId) ?? null : null;
+    activeGovernanceIssue?.entityType === 'node'
+      ? governanceDetail.node ?? nodeMap.get(activeGovernanceIssue.entityId) ?? null
+      : null;
+  const activeGovernanceRelation = activeGovernanceIssue?.entityType === 'relation' ? governanceDetail.relation : null;
   const activeGovernanceNodeCanPromote = canPromoteNode(activeGovernanceNode);
   const activeGovernanceNodeCanContest = canContestNode(activeGovernanceNode);
   const activeGovernanceNodeCanArchive = canArchiveNode(activeGovernanceNode);
+  const activeGovernanceRelationCanAccept = canAcceptRelation(activeGovernanceRelation);
+  const activeGovernanceRelationCanReject = canRejectRelation(activeGovernanceRelation);
+  const activeGovernanceRelationCanArchive = canArchiveRelation(activeGovernanceRelation);
 
   function resetWorkspaceSelection(nextSnapshot: WorkspaceSeed) {
     const nextProjectNodes = nextSnapshot.nodes.filter((node) => node.type === 'project');
@@ -1778,6 +1876,15 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             }
           : current
       );
+      setGovernanceDetail((current) =>
+        current.node?.id === node.id
+          ? {
+              ...current,
+              node: result.node,
+              governance: result.governance,
+            }
+          : current
+      );
       await refreshSnapshotState();
       setGovernanceIssues(await loadGovernanceIssues());
       setCaptureNotice(
@@ -1799,6 +1906,43 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       setGovernanceActionError(error instanceof Error ? error.message : 'Failed to apply governance action.');
     } finally {
       setGovernanceActionPending(null);
+    }
+  }
+
+  async function handleApplyRelationGovernanceAction(action: RelationGovernanceAction, relation: Relation) {
+    setGovernanceActionError(null);
+    setRelationGovernanceActionPending(action);
+    try {
+      const result = await applyRelationGovernanceActionRequest({
+        id: relation.id,
+        action,
+        note: governanceDecisionNote,
+      });
+      setGovernanceDetail((current) =>
+        current.relation?.id === relation.id
+          ? {
+              ...current,
+              relation: result.relation,
+              governance: result.governance,
+            }
+          : current
+      );
+      await refreshSnapshotState();
+      setGovernanceIssues(await loadGovernanceIssues());
+      setCaptureNotice(
+        action === 'accept'
+          ? `Accepted relation ${result.relation.relationType}.`
+          : action === 'reject'
+            ? `Rejected relation ${result.relation.relationType}.`
+            : `Archived relation ${result.relation.relationType}.`
+      );
+      setGovernanceDecisionNote('');
+      setLoadError(null);
+    } catch (error) {
+      handleRequestFailure(error, 'Failed to apply relation governance action.');
+      setGovernanceActionError(error instanceof Error ? error.message : 'Failed to apply relation governance action.');
+    } finally {
+      setRelationGovernanceActionPending(null);
     }
   }
 
@@ -2431,7 +2575,9 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                         <span className="eyebrow">Context</span>
                         <h3>Selected entity</h3>
                       </div>
-                      {activeGovernanceNode ? (
+                      {isGovernanceDetailLoading ? (
+                        <div className="empty-state compact">Loading selected issue detail...</div>
+                      ) : activeGovernanceNode ? (
                         <div className="card-stack compact-stack">
                           <article className="mini-card">
                             <strong>{activeGovernanceNode.title}</strong>
@@ -2497,11 +2643,116 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                             </>
                           ) : null}
                         </div>
+                      ) : activeGovernanceRelation ? (
+                        <div className="card-stack compact-stack">
+                          <article className="mini-card">
+                            <strong>{activeGovernanceIssue.title}</strong>
+                            <p>{activeGovernanceIssue.subtitle || `${activeGovernanceRelation.relationType} relation`}</p>
+                          </article>
+                          <div className="chip-row">
+                            <span className="chip chip-static">{activeGovernanceRelation.relationType}</span>
+                            <span className="chip chip-static">{activeGovernanceRelation.status}</span>
+                            <span className="chip chip-static">{activeGovernanceRelation.sourceLabel}</span>
+                          </div>
+                          <div className="card-stack compact-stack">
+                            <article className="mini-card">
+                              <strong>From</strong>
+                              <p>{governanceDetail.fromNode?.title ?? activeGovernanceRelation.fromNodeId}</p>
+                            </article>
+                            <article className="mini-card">
+                              <strong>To</strong>
+                              <p>{governanceDetail.toNode?.title ?? activeGovernanceRelation.toNodeId}</p>
+                            </article>
+                          </div>
+                          <div className="action-row">
+                            {governanceDetail.fromNode ? (
+                              <button type="button" onClick={() => focusNode(governanceDetail.fromNode!.id, 'recent')}>
+                                Open source node
+                              </button>
+                            ) : null}
+                            {governanceDetail.toNode ? (
+                              <button type="button" className="ghost" onClick={() => focusNode(governanceDetail.toNode!.id, 'graph')}>
+                                Open target in graph
+                              </button>
+                            ) : null}
+                          </div>
+                          {(activeGovernanceRelationCanAccept || activeGovernanceRelationCanReject || activeGovernanceRelationCanArchive) ? (
+                            <>
+                              <label className="search-box" htmlFor="governance-relation-decision-note">
+                                <span>Decision note</span>
+                                <textarea
+                                  id="governance-relation-decision-note"
+                                  value={governanceDecisionNote}
+                                  onChange={(event) => setGovernanceDecisionNote(event.target.value)}
+                                  placeholder="Optional short rationale for this relation decision."
+                                  rows={3}
+                                />
+                              </label>
+                              <div className="action-row">
+                                {activeGovernanceRelationCanAccept ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleApplyRelationGovernanceAction('accept', activeGovernanceRelation)}
+                                    disabled={relationGovernanceActionPending !== null}
+                                  >
+                                    {relationGovernanceActionPending === 'accept' ? 'Accepting...' : 'Accept'}
+                                  </button>
+                                ) : null}
+                                {activeGovernanceRelationCanReject ? (
+                                  <button
+                                    type="button"
+                                    className="ghost"
+                                    onClick={() => void handleApplyRelationGovernanceAction('reject', activeGovernanceRelation)}
+                                    disabled={relationGovernanceActionPending !== null}
+                                  >
+                                    {relationGovernanceActionPending === 'reject' ? 'Rejecting...' : 'Reject'}
+                                  </button>
+                                ) : null}
+                                {activeGovernanceRelationCanArchive ? (
+                                  <button
+                                    type="button"
+                                    className="ghost"
+                                    onClick={() => void handleApplyRelationGovernanceAction('archive', activeGovernanceRelation)}
+                                    disabled={relationGovernanceActionPending !== null}
+                                  >
+                                    {relationGovernanceActionPending === 'archive' ? 'Archiving...' : 'Archive'}
+                                  </button>
+                                ) : null}
+                              </div>
+                              {governanceActionError ? <div className="empty-state compact">{governanceActionError}</div> : null}
+                            </>
+                          ) : null}
+                        </div>
                       ) : (
                         <div className="empty-state compact">
-                          This issue is not currently attached to a visible node card in the active workspace view.
+                          This issue does not currently expose extra entity detail in the active workspace view.
                         </div>
                       )}
+                    </article>
+
+                    <article className="card governance-detail-card">
+                      <div className="page-copy compact-copy">
+                        <span className="eyebrow">Recent decisions</span>
+                        <h3>Decision log</h3>
+                      </div>
+                      <div className="card-stack compact-stack">
+                        {governanceDetail.governance.events
+                          .filter((event) => event.eventType !== 'evaluated')
+                          .slice(0, 4)
+                          .map((event) => (
+                            <article key={event.id} className="mini-card">
+                              <strong>{event.eventType}</strong>
+                              <p>{event.reason}</p>
+                              <div className="meta-row">
+                                <span>{formatTime(event.createdAt)}</span>
+                                <span>{event.metadata.manualAction ? String(event.metadata.manualAction) : event.entityType}</span>
+                              </div>
+                            </article>
+                          ))}
+                        {!governanceDetail.governance.events.filter((event) => event.eventType !== 'evaluated').length ? (
+                          <div className="empty-state compact">No recent manual governance decisions are attached to this issue yet.</div>
+                        ) : null}
+                      </div>
                     </article>
                   </div>
                 </>

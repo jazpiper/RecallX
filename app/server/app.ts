@@ -19,6 +19,7 @@ import {
   createRelationSchema,
   exportWorkspaceSchema,
   governanceNodeActionSchema,
+  governanceRelationActionSchema,
   governanceIssuesQuerySchema,
   importWorkspacePreviewSchema,
   importWorkspaceSchema,
@@ -2804,6 +2805,129 @@ export function createRecallXApp(params: {
           relation.id,
           governanceResult.items[0] ?? repository.getGovernanceStateNullable("relation", relation.id)
         )
+      })
+    );
+  });
+
+  app.get("/api/v1/relations/:id", (request, response) => {
+    const repository = currentRepository();
+    const relation = repository.getRelation(request.params.id);
+    response.json(
+      envelope(response.locals.requestId, {
+        relation,
+        fromNode: repository.getNode(relation.fromNodeId),
+        toNode: repository.getNode(relation.toNodeId),
+        governance: buildGovernancePayload(repository, "relation", relation.id)
+      })
+    );
+  });
+
+  app.post("/api/v1/relations/:id/governance-action", (request, response) => {
+    const repository = currentRepository();
+    const input = governanceRelationActionSchema.parse(request.body ?? {});
+    const note = input.note?.trim() ? input.note.trim() : null;
+    const relationId = request.params.id;
+    const beforeRelation = repository.getRelation(relationId);
+    const previousState = repository.getGovernanceStateNullable("relation", relationId);
+
+    if (beforeRelation.status === "archived") {
+      throw new AppError(409, "INVALID_STATE", "Archived relations cannot be changed with governance actions.");
+    }
+
+    let nextStatus: "active" | "rejected" | "archived";
+    let confidence = 0.92;
+    let eventType: "promoted" | "demoted";
+    let operationType: "approve" | "reject" | "archive";
+    let reason: string;
+
+    switch (input.action) {
+      case "accept":
+        nextStatus = "active";
+        confidence = Math.max(previousState?.confidence ?? 0, 0.94);
+        eventType = "promoted";
+        operationType = "approve";
+        reason = note
+          ? `Human accepted this relation. ${note}`
+          : "Human accepted this relation from the governance surface.";
+        break;
+      case "reject":
+        nextStatus = "rejected";
+        confidence = Math.max(previousState?.confidence ?? 0, 0.9);
+        eventType = "demoted";
+        operationType = "reject";
+        reason = note
+          ? `Human rejected this relation. ${note}`
+          : "Human rejected this relation from the governance surface.";
+        break;
+      case "archive":
+        nextStatus = "archived";
+        confidence = Math.max(previousState?.confidence ?? 0, 0.88);
+        eventType = "demoted";
+        operationType = "archive";
+        reason = note
+          ? `Human archived this relation from governance. ${note}`
+          : "Human archived this relation from the governance surface.";
+        break;
+    }
+
+    const relation = repository.updateRelationStatus(relationId, nextStatus);
+    repository.recordProvenance({
+      entityType: "relation",
+      entityId: relation.id,
+      operationType,
+      source: input.source,
+      metadata: {
+        action: input.action,
+        note,
+        previousStatus: beforeRelation.status,
+        nextStatus: relation.status,
+        ...input.metadata
+      }
+    });
+    const governanceState = repository.upsertGovernanceState({
+      entityType: "relation",
+      entityId: relation.id,
+      state: "healthy",
+      confidence,
+      reasons: [reason],
+      metadata: {
+        manualAction: input.action,
+        note: note ?? "",
+        source: input.source.actorLabel
+      },
+      previousState
+    });
+    repository.appendGovernanceEvent({
+      entityType: "relation",
+      entityId: relation.id,
+      eventType,
+      previousState: previousState?.state ?? null,
+      nextState: "healthy",
+      confidence,
+      reason,
+      metadata: {
+        manualAction: input.action,
+        note: note ?? "",
+        previousStatus: beforeRelation.status,
+        nextStatus: relation.status
+      }
+    });
+
+    queueInferredRefreshForNodes([relation.fromNodeId, relation.toNodeId], "node-write");
+    broadcastWorkspaceEvent({
+      reason:
+        input.action === "accept"
+          ? "relation.accepted"
+          : input.action === "reject"
+            ? "relation.rejected"
+            : "relation.archived",
+      entityType: "relation",
+      entityId: relation.id
+    });
+    response.json(
+      envelope(response.locals.requestId, {
+        relation,
+        governance: buildGovernancePayload(repository, "relation", relation.id, governanceState)
       })
     );
   });

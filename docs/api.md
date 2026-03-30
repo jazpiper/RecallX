@@ -1019,6 +1019,33 @@ Backfill or refresh automatically generated inferred relations across the active
 
 ## 15. Governance endpoints
 
+### Recent manual pattern
+- node governance actions use `POST /api/v1/nodes/:id/governance-action`
+- relation governance actions use `POST /api/v1/relations/:id/governance-action`
+- both return updated governance payloads so the renderer can refresh trust state in place
+
+### Relation governance action
+`POST /api/v1/relations/:id/governance-action`
+
+Purpose:
+- apply a compact human trust decision to a surfaced relation issue
+
+Supported actions:
+- `accept`
+- `reject`
+- `archive`
+
+Notes:
+- this is separate from generic relation PATCH because the intent is a stable human governance decision, not only a raw status mutation
+- the endpoint records provenance and appends a governance event with the optional decision note
+- the endpoint returns the updated relation plus relation governance payload for immediate renderer refresh
+
+### Relation detail
+`GET /api/v1/relations/:id`
+
+Purpose:
+- fetch a relation together with its source node, target node, and governance history so Governance can show context without a dedicated relation page
+
 ## 15.1 List governance issues
 ### HTTP
 `GET /api/v1/governance/issues?state=contested&limit=20`

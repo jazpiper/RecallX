@@ -7961,6 +7961,237 @@ describe("node governance behavior", () => {
   });
 });
 
+describe("relation governance behavior", () => {
+  it("lets humans accept suggested relations and records a governance decision", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "recallx-test"
+    };
+    const fromNode = repository.createNode({
+      type: "note",
+      title: "Source note",
+      body: "Source",
+      summary: "Source",
+      tags: [],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    const toNode = repository.createNode({
+      type: "reference",
+      title: "Target ref",
+      body: "Target",
+      summary: "Target",
+      tags: [],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    const relation = repository.createRelation({
+      fromNodeId: fromNode.id,
+      toNodeId: toNode.id,
+      relationType: "supports",
+      source: {
+        actorType: "agent",
+        actorLabel: "Codex",
+        toolName: "codex"
+      },
+      metadata: {},
+      resolvedStatus: "suggested"
+    });
+    repository.upsertGovernanceState({
+      entityType: "relation",
+      entityId: relation.id,
+      state: "low_confidence",
+      confidence: 0.52,
+      reasons: ["Suggested relation still needs a human decision."],
+      metadata: {}
+    });
+
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      const actionResponse = await fetch(`${baseUrl}/relations/${relation.id}/governance-action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "accept",
+          note: "Confirmed during graph cleanup.",
+          source
+        })
+      });
+      const actionPayload = await actionResponse.json();
+      const updatedRelation = repository.getRelation(relation.id);
+      const governance = repository.getGovernanceState("relation", relation.id);
+      const events = repository.listGovernanceEvents("relation", relation.id, 10);
+      const provenance = repository.listProvenance("relation", relation.id);
+
+      expect(actionResponse.status).toBe(200);
+      expect(actionPayload.data.relation.status).toBe("active");
+      expect(actionPayload.data.governance.state.state).toBe("healthy");
+      expect(updatedRelation.status).toBe("active");
+      expect(governance.state).toBe("healthy");
+      expect(events[0]?.eventType).toBe("promoted");
+      expect(events[0]?.reason).toContain("Confirmed during graph cleanup.");
+      expect(provenance.some((item) => item.operationType === "approve")).toBe(true);
+
+      const detailResponse = await fetch(`${baseUrl}/relations/${relation.id}`);
+      const detailPayload = await detailResponse.json();
+      expect(detailResponse.status).toBe(200);
+      expect(detailPayload.data.relation.id).toBe(relation.id);
+      expect(detailPayload.data.fromNode.id).toBe(fromNode.id);
+      expect(detailPayload.data.toNode.id).toBe(toNode.id);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("lets humans reject or archive relation issues so they leave the issue list", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "recallx-test"
+    };
+    const fromNode = repository.createNode({
+      type: "note",
+      title: "Alpha",
+      body: "Alpha",
+      summary: "Alpha",
+      tags: [],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    const toNode = repository.createNode({
+      type: "note",
+      title: "Beta",
+      body: "Beta",
+      summary: "Beta",
+      tags: [],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    const relation = repository.createRelation({
+      fromNodeId: fromNode.id,
+      toNodeId: toNode.id,
+      relationType: "contradicts",
+      source: {
+        actorType: "agent",
+        actorLabel: "Codex",
+        toolName: "codex"
+      },
+      metadata: {},
+      resolvedStatus: "suggested"
+    });
+    repository.upsertGovernanceState({
+      entityType: "relation",
+      entityId: relation.id,
+      state: "contested",
+      confidence: 0.22,
+      reasons: ["Contradiction signals are unresolved."],
+      metadata: {}
+    });
+
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      const rejectResponse = await fetch(`${baseUrl}/relations/${relation.id}/governance-action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "reject",
+          note: "The contradiction was spurious.",
+          source
+        })
+      });
+      const rejectPayload = await rejectResponse.json();
+
+      expect(rejectResponse.status).toBe(200);
+      expect(rejectPayload.data.relation.status).toBe("rejected");
+      expect(rejectPayload.data.governance.state.state).toBe("healthy");
+      expect(repository.listGovernanceIssues(20).some((item) => item.entityId === relation.id)).toBe(false);
+
+      const nextRelation = repository.createRelation({
+        fromNodeId: fromNode.id,
+        toNodeId: toNode.id,
+        relationType: "depends_on",
+        source: {
+          actorType: "agent",
+          actorLabel: "Codex",
+          toolName: "codex"
+        },
+        metadata: {},
+        resolvedStatus: "suggested"
+      });
+      repository.upsertGovernanceState({
+        entityType: "relation",
+        entityId: nextRelation.id,
+        state: "low_confidence",
+        confidence: 0.4,
+        reasons: ["Suggested dependency needs confirmation."],
+        metadata: {}
+      });
+
+      const archiveResponse = await fetch(`${baseUrl}/relations/${nextRelation.id}/governance-action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "archive",
+          note: "No longer useful.",
+          source
+        })
+      });
+      const archivePayload = await archiveResponse.json();
+      const archiveEvents = repository.listGovernanceEvents("relation", nextRelation.id, 10);
+      const archiveProvenance = repository.listProvenance("relation", nextRelation.id);
+
+      expect(archiveResponse.status).toBe(200);
+      expect(archivePayload.data.relation.status).toBe("archived");
+      expect(repository.listGovernanceIssues(20).some((item) => item.entityId === nextRelation.id)).toBe(false);
+      expect(archiveEvents[0]?.eventType).toBe("demoted");
+      expect(archiveProvenance.some((item) => item.operationType === "archive")).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+});
+
 describe("service index", () => {
   it("returns a discoverable root index for external agents", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));

@@ -33,6 +33,7 @@ export type ActivityType =
   | 'context_bundle_generated';
 export type GovernanceState = 'healthy' | 'low_confidence' | 'contested';
 export type NodeGovernanceAction = 'promote' | 'contest' | 'archive';
+export type RelationGovernanceAction = 'accept' | 'reject' | 'archive';
 
 export interface Workspace {
   name: string;
@@ -234,6 +235,8 @@ export interface GovernanceEventRecord {
   reason: string;
   createdAt: string;
   metadata: Record<string, string | number | boolean>;
+  title?: string;
+  subtitle?: string;
 }
 
 export interface GovernancePayload {
@@ -385,5 +388,12 @@ export interface NodeDetail {
   related: Node[];
   activities: Activity[];
   artifacts: Artifact[];
+  governance: GovernancePayload;
+}
+
+export interface RelationDetail {
+  relation: Relation | null;
+  fromNode: Node | null;
+  toNode: Node | null;
   governance: GovernancePayload;
 }
