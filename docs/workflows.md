@@ -74,6 +74,7 @@ Representative tools:
 Operational guidance:
 
 - keep the current workspace as the default MCP scope unless the user explicitly asks to switch workspaces
+- expect MCP tool results to keep `structuredContent` authoritative while `content.text` is usually a compact deterministic summary for faster model consumption
 - use `recallx_search_workspace` for broad mixed recall when the request shape is still unclear
 - when calling `recallx_search_workspace`, pass `scopes: ["nodes", "activities"]` for mixed recall instead of a comma-separated string
 - use `recallx_search_nodes` for durable-only lookups, especially `type=project` when checking whether a project already exists

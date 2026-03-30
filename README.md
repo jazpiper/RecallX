@@ -215,9 +215,17 @@ Once a project is known, append routine work logs to that project instead of wri
 At the end of meaningful work, write back a concise summary of what changed, what was verified, and any follow-up.
 ```
 
+MCP result rendering note:
+
+- RecallX MCP keeps `structuredContent` as the authoritative machine-readable payload.
+- The mirrored text content may be a compact deterministic summary rather than a pretty-printed JSON dump.
+- For the current rendering policy and compatibility guidance, see `docs/mcp.md`.
+
 ## MCP Bridge
 
 RecallX also ships a stdio MCP adapter for agent clients that prefer tool discovery over raw HTTP calls.
+
+MCP tool results keep `structuredContent` as the authoritative machine-readable payload, while `content.text` is rendered as a compact deterministic summary instead of a pretty-printed JSON mirror when the payload shape is known.
 
 ```bash
 npm run mcp
