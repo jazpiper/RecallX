@@ -32,6 +32,7 @@ export type ActivityType =
   | 'review_action'
   | 'context_bundle_generated';
 export type GovernanceState = 'healthy' | 'low_confidence' | 'contested';
+export type NodeGovernanceAction = 'promote' | 'contest' | 'archive';
 
 export interface Workspace {
   name: string;

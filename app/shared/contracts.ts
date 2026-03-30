@@ -210,6 +210,13 @@ export const updateNodeSchema = z.object({
   status: z.enum(nodeStatuses).optional()
 });
 
+export const governanceNodeActionSchema = z.object({
+  action: z.enum(["promote", "contest", "archive"]),
+  note: z.string().max(280).optional(),
+  source: sourceSchema,
+  metadata: z.record(z.any()).default({})
+});
+
 export const createRelationSchema = z.object({
   fromNodeId: z.string().min(1),
   toNodeId: z.string().min(1),
@@ -402,6 +409,7 @@ export type GovernanceIssuesQueryInput = z.infer<typeof governanceIssuesQuerySch
 export type CreateNodeInput = z.infer<typeof createNodeSchema>;
 export type CreateNodesInput = z.infer<typeof createNodesSchema>;
 export type UpdateNodeInput = z.infer<typeof updateNodeSchema>;
+export type GovernanceNodeActionInput = z.infer<typeof governanceNodeActionSchema>;
 export type CreateRelationInput = z.infer<typeof createRelationSchema>;
 export type UpdateRelationInput = z.infer<typeof updateRelationSchema>;
 export type AppendActivityInput = z.infer<typeof appendActivitySchema>;

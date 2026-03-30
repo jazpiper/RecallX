@@ -489,6 +489,33 @@ Archive without hard deletion.
 }
 ```
 
+## 9.6 Manual governance action for node
+### HTTP
+`POST /api/v1/nodes/:id/governance-action`
+
+### Purpose
+Apply a compact human governance decision to a node without opening a separate review queue.
+
+### Request
+```json
+{
+  "action": "promote",
+  "note": "Reviewed after import cleanup.",
+  "source": {
+    "actorType": "human",
+    "actorLabel": "juhwan",
+    "toolName": "recallx-ui"
+  }
+}
+```
+
+### Notes
+- supported actions are `promote`, `contest`, and `archive`
+- the endpoint records provenance for the node mutation
+- the endpoint appends a `review_action` activity so the decision stays visible in node history
+- the endpoint appends a governance event and returns the updated governance payload
+- this is a lightweight renderer-facing trust control, not a general moderation workflow
+
 ---
 
 ## 10. Relation endpoints
