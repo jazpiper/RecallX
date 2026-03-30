@@ -27,13 +27,21 @@ export function ensureApiToken(config: ServerConfig): string {
   return randomBytes(24).toString("hex");
 }
 
-export function workspaceInfo(rootPath: string, config: ServerConfig, authMode: string): WorkspaceInfo {
+export function workspaceInfo(
+  rootPath: string,
+  config: ServerConfig,
+  authMode: string,
+  paths?: WorkspaceInfo["paths"],
+  safety?: WorkspaceInfo["safety"],
+): WorkspaceInfo {
   return {
     rootPath,
     workspaceName: config.workspaceName,
     schemaVersion: getSchemaVersion(),
     bindAddress: `${config.bindAddress}:${config.port}`,
     enabledIntegrationModes: ["read-only", "append-only"],
-    authMode
+    authMode,
+    paths,
+    safety,
   };
 }

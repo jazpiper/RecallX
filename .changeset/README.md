@@ -8,4 +8,4 @@ Typical maintainer flow:
 2. Merge feature work to `main`.
 3. The GitHub release workflow opens or updates a version PR.
 4. Merge the version PR after reviewing the version bump and changelog.
-5. The same release workflow publishes `recallx` and `recallx-headless` if that version is not already on npm.
+5. After the version PR merges, run the separate Publish workflow to publish `recallx` and `recallx-headless` if that version is not already on npm.

@@ -348,6 +348,20 @@ export const openWorkspaceSchema = z.object({
   rootPath: z.string().min(1)
 });
 
+export const createWorkspaceBackupSchema = z.object({
+  label: z.string().min(1).max(80).optional()
+});
+
+export const exportWorkspaceSchema = z.object({
+  format: z.enum(["json", "markdown"]).default("json")
+});
+
+export const restoreWorkspaceBackupSchema = z.object({
+  backupId: z.string().min(1),
+  targetRootPath: z.string().min(1),
+  workspaceName: z.string().min(1).optional()
+});
+
 export type NodeType = (typeof nodeTypes)[number];
 export type NodeStatus = (typeof nodeStatuses)[number];
 export type Canonicality = (typeof canonicalities)[number];
@@ -389,3 +403,6 @@ export type RegisterIntegrationInput = z.infer<typeof registerIntegrationSchema>
 export type UpdateIntegrationInput = z.infer<typeof updateIntegrationSchema>;
 export type CreateWorkspaceInput = z.infer<typeof createWorkspaceSchema>;
 export type OpenWorkspaceInput = z.infer<typeof openWorkspaceSchema>;
+export type CreateWorkspaceBackupInput = z.infer<typeof createWorkspaceBackupSchema>;
+export type ExportWorkspaceInput = z.infer<typeof exportWorkspaceSchema>;
+export type RestoreWorkspaceBackupInput = z.infer<typeof restoreWorkspaceBackupSchema>;

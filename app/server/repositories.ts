@@ -1808,6 +1808,13 @@ export class RecallXRepository {
     }));
   }
 
+  listAllNodes(): NodeRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM nodes ORDER BY updated_at DESC, id DESC`)
+      .all() as Record<string, unknown>[];
+    return rows.map(mapNode);
+  }
+
   listActiveNodesByType(type: string, limit = 20): NodeRecord[] {
     const rows = this.db
       .prepare(
@@ -3316,6 +3323,13 @@ export class RecallXRepository {
     return rows.map(mapRelation);
   }
 
+  listAllRelations(): RelationRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM relations ORDER BY created_at ASC, id ASC`)
+      .all() as Record<string, unknown>[];
+    return rows.map(mapRelation);
+  }
+
   createRelation(input: CreateRelationInput & { resolvedStatus: string }): RelationRecord {
     const now = nowIso();
     const id = createId("rel");
@@ -4188,6 +4202,13 @@ export class RecallXRepository {
     return rows.map(mapActivity);
   }
 
+  listAllActivities(): ActivityRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM activities ORDER BY created_at ASC, id ASC`)
+      .all() as Record<string, unknown>[];
+    return rows.map(mapActivity);
+  }
+
   appendActivity(input: AppendActivityInput): ActivityRecord {
     const id = createId("act");
     const now = nowIso();
@@ -4306,6 +4327,13 @@ export class RecallXRepository {
     const rows = this.db
       .prepare(`SELECT * FROM artifacts WHERE node_id = ? ORDER BY created_at DESC`)
       .all(nodeId) as Record<string, unknown>[];
+    return rows.map(mapArtifact);
+  }
+
+  listAllArtifacts(): ArtifactRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM artifacts ORDER BY created_at DESC, id DESC`)
+      .all() as Record<string, unknown>[];
     return rows.map(mapArtifact);
   }
 

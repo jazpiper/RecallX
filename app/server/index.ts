@@ -17,7 +17,20 @@ const app = createRecallXApp({
   apiToken: config.apiToken ? apiToken : null
 });
 
-createServer(app).listen(config.port, config.bindAddress, () => {
+const server = createServer(app);
+
+function shutdown() {
+  try {
+    workspaceSessionManager.shutdown();
+  } finally {
+    process.exit(0);
+  }
+}
+
+process.once("SIGINT", shutdown);
+process.once("SIGTERM", shutdown);
+
+server.listen(config.port, config.bindAddress, () => {
   console.log(`RecallX API listening on http://${config.bindAddress}:${config.port}`);
   if (resolveRendererDistDir()) {
     console.log(`RecallX UI available at http://${config.bindAddress}:${config.port}/`);

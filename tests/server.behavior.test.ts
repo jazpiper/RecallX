@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6792,6 +6792,119 @@ describe("workspace switching", () => {
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
+  });
+
+  it("creates backups, exports the active workspace, and restores a backup into a new root", async () => {
+    const rootA = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    const rootB = mkdtempSync(path.join(tmpdir(), "recallx-restore-"));
+    rmSync(rootB, { recursive: true, force: true });
+    tempRoots.push(rootA, rootB);
+
+    const workspaceSessionManager = createWorkspaceSessionManager(rootA);
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const source = {
+        actorType: "human",
+        actorLabel: "juhwan",
+        toolName: "recallx-test",
+      };
+
+      await fetch(`${baseUrl}/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "note",
+          title: "Backup Candidate",
+          body: "Stored before snapshot and restore.",
+          source,
+          tags: ["backup"],
+          metadata: {},
+        }),
+      });
+
+      const backupResponse = await fetch(`${baseUrl}/workspaces/backups`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          label: "before-restore",
+        }),
+      });
+      const backupBody = await backupResponse.json();
+      const backupId = backupBody.data.backup.id as string;
+      const backupPath = backupBody.data.backup.backupPath as string;
+
+      const exportResponse = await fetch(`${baseUrl}/workspaces/export`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          format: "json",
+        }),
+      });
+      const exportBody = await exportResponse.json();
+      const exportPath = exportBody.data.export.exportPath as string;
+
+      const restoreResponse = await fetch(`${baseUrl}/workspaces/restore`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          backupId,
+          targetRootPath: rootB,
+          workspaceName: "Recovered Workspace",
+        }),
+      });
+      const restoreBody = await restoreResponse.json();
+
+      const searchResponse = await fetch(`${baseUrl}/nodes/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "Backup Candidate",
+          filters: {},
+          limit: 10,
+          offset: 0,
+          sort: "relevance",
+        }),
+      });
+      const searchBody = await searchResponse.json();
+
+      expect(backupResponse.status).toBe(201);
+      expect(existsSync(backupPath)).toBe(true);
+      expect(exportResponse.status).toBe(201);
+      expect(existsSync(exportPath)).toBe(true);
+      expect(readFileSync(exportPath, "utf8")).toContain("Backup Candidate");
+      expect(restoreResponse.status).toBe(201);
+      expect(restoreBody.data.current.rootPath).toBe(rootB);
+      expect(restoreBody.data.current.workspaceName).toBe("Recovered Workspace");
+      expect(searchBody.data.items.map((item: { title: string }) => item.title)).toContain("Backup Candidate");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("surfaces workspace safety warnings when another session left an active lock", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+
+    const sessionA = createWorkspaceSessionManager(root);
+    const sessionB = createWorkspaceSessionManager(root);
+
+    const warnings = sessionB.getCurrent().workspaceInfo.safety?.warnings ?? [];
+
+    expect(sessionA.getCurrent().workspaceInfo.safety?.lockPresent).toBe(true);
+    expect(warnings.some((warning) => warning.code === "active_lock")).toBe(true);
+    expect(warnings.some((warning) => warning.code === "unclean_shutdown")).toBe(true);
   });
 });
 

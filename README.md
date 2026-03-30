@@ -43,7 +43,7 @@ Use the public repo when you want the full source-run surface:
 
 - local API under `/api/v1`
 - source-run renderer workflow through `npm run dev`
-- stdio MCP bridge through `npm run mcp`
+- stdio MCP bridge through `npm run dev:mcp` during source development
 - runtime workspace create/open switching without restarting the service
 
 ```bash
@@ -56,6 +56,13 @@ npm run dev
 MCP from source:
 
 ```bash
+npm run dev:mcp
+```
+
+If you want to run the built MCP entrypoint instead, build the server first:
+
+```bash
+npm run build:server
 npm run mcp
 ```
 
