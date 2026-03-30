@@ -10,6 +10,7 @@ import {
   getContextBundlePreview,
   getGovernanceIssues,
   getNodeDetail,
+  getSettings,
   getGraphNeighborhood,
   getProjectGraph,
   getSnapshot,
@@ -24,6 +25,7 @@ import {
   saveRendererToken,
   searchWorkspace,
   subscribeWorkspaceEvents,
+  updateSettings,
   updateNode as updateNodeRequest,
   archiveNode as archiveNodeRequest,
 } from './lib/mockApi';
@@ -69,6 +71,12 @@ type SearchPanelState = {
 
 type GraphMode = 'neighborhood' | 'project-map';
 const BEARER_RECENT_POLL_INTERVAL_MS = 15000;
+const ACTIVE_PROJECT_SETTING_KEY = 'workspace.activeProjectId';
+const EMPTY_ACTIVE_PROJECT_DIGEST = {
+  bundleItems: [] as ContextBundlePreviewItem[],
+  activities: [] as Activity[],
+  relatedCount: 0,
+};
 
 const navigation: { id: NavView; label: string; hint: string }[] = [
   { id: 'home', label: 'Home', hint: 'landing' },
@@ -277,6 +285,11 @@ export default function App() {
   const [selectedGovernanceId, setSelectedGovernanceId] = useState<string | null>(null);
   const [captureType, setCaptureType] = useState<Node['type']>('note');
   const [captureProjectId, setCaptureProjectId] = useState('');
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [activeProjectError, setActiveProjectError] = useState<string | null>(null);
+  const [isSavingActiveProject, setIsSavingActiveProject] = useState(false);
+  const [activeProjectDigest, setActiveProjectDigest] = useState(EMPTY_ACTIVE_PROJECT_DIGEST);
+  const [isActiveProjectDigestLoading, setIsActiveProjectDigestLoading] = useState(false);
   const [captureTitle, setCaptureTitle] = useState('');
   const [captureBody, setCaptureBody] = useState('');
   const [captureError, setCaptureError] = useState<string | null>(null);
@@ -307,6 +320,8 @@ export default function App() {
   const [isArchivingNote, setIsArchivingNote] = useState(false);
   const [guideSectionId, setGuideSectionId] = useState('overview');
   const bundleUsageEventKeysRef = useRef(new Set<string>());
+  const activeProjectBundleUsageEventKeysRef = useRef(new Set<string>());
+  const captureProjectAutofillRef = useRef<string | null>(null);
   const relationUsageSessionIdRef = useRef(
     globalThis.crypto?.randomUUID?.() ?? `recallx-renderer-${Date.now()}`
   );
@@ -557,6 +572,10 @@ export default function App() {
     () => graphFocusableNodes.filter((node) => node.type === 'project'),
     [graphFocusableNodes],
   );
+  const activeProjectNode = useMemo(
+    () => (activeProjectId ? projectNodes.find((node) => node.id === activeProjectId) ?? null : null),
+    [activeProjectId, projectNodes],
+  );
   useEffect(() => {
     if (!captureProjectId) {
       return;
@@ -599,9 +618,13 @@ export default function App() {
     }
 
     if (!projectGraphProjectId || !projectNodes.some((node) => node.id === projectGraphProjectId)) {
-      setProjectGraphProjectId(projectNodes[0]?.id ?? null);
+      const defaultProjectId =
+        activeProjectId && projectNodes.some((node) => node.id === activeProjectId)
+          ? activeProjectId
+          : projectNodes[0]?.id ?? null;
+      setProjectGraphProjectId(defaultProjectId);
     }
-  }, [projectGraphProjectId, projectNodes, selectedNode]);
+  }, [activeProjectId, projectGraphProjectId, projectNodes, selectedNode]);
 
   useEffect(() => {
     let mounted = true;
@@ -771,6 +794,10 @@ export default function App() {
     () => (deferredQuery.trim() ? searchPanel.activities.slice(0, 4) : []),
     [deferredQuery, searchPanel.activities],
   );
+  const homeSuggestedProjectNode = useMemo(
+    () => activeProjectNode ?? pinnedProjectNodes[0] ?? projectNodes[0] ?? null,
+    [activeProjectNode, pinnedProjectNodes, projectNodes],
+  );
 
   useEffect(() => {
     if (!notePreviewNode) {
@@ -915,6 +942,111 @@ export default function App() {
   const apiExample = `curl${apiAuthHeader} ${apiBase}
 curl${apiAuthHeader} ${apiBase}/health
 curl${apiAuthHeader} ${apiBase}/workspace`;
+
+  useEffect(() => {
+    if (isLoading || authRequired || !workspaceRoot) {
+      return;
+    }
+
+    let mounted = true;
+
+    async function loadActiveProjectSetting() {
+      try {
+        const values = await getSettings([ACTIVE_PROJECT_SETTING_KEY]);
+        if (!mounted) return;
+        const nextActiveProjectId =
+          typeof values[ACTIVE_PROJECT_SETTING_KEY] === 'string' ? String(values[ACTIVE_PROJECT_SETTING_KEY]) : null;
+        setActiveProjectId(nextActiveProjectId);
+        setActiveProjectError(null);
+      } catch (error) {
+        if (!mounted) return;
+        handleRequestFailure(error, 'Failed to load workspace settings.');
+      }
+    }
+
+    void loadActiveProjectSetting();
+
+    return () => {
+      mounted = false;
+    };
+  }, [authRequired, isLoading, workspaceRoot]);
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      return;
+    }
+
+    if (!projectNodes.some((node) => node.id === activeProjectId)) {
+      setActiveProjectId(null);
+      setActiveProjectDigest(EMPTY_ACTIVE_PROJECT_DIGEST);
+    }
+  }, [activeProjectId, projectNodes]);
+
+  useEffect(() => {
+    if (!activeProjectId || !projectNodes.some((node) => node.id === activeProjectId)) {
+      setCaptureProjectId((current) => {
+        if (current && current === captureProjectAutofillRef.current) {
+          captureProjectAutofillRef.current = null;
+          return '';
+        }
+        captureProjectAutofillRef.current = null;
+        return current;
+      });
+      return;
+    }
+
+    setCaptureProjectId((current) => {
+      const lastAutofill = captureProjectAutofillRef.current;
+      if (!current || current === lastAutofill) {
+        captureProjectAutofillRef.current = activeProjectId;
+        return activeProjectId;
+      }
+      return current;
+    });
+  }, [activeProjectId, projectNodes]);
+
+  useEffect(() => {
+    const currentActiveProject = activeProjectNode;
+    if (!currentActiveProject) {
+      setActiveProjectDigest(EMPTY_ACTIVE_PROJECT_DIGEST);
+      setIsActiveProjectDigestLoading(false);
+      return;
+    }
+    const currentActiveProjectId = currentActiveProject.id;
+
+    let mounted = true;
+    setIsActiveProjectDigestLoading(true);
+
+    async function loadActiveProjectDigest() {
+      try {
+        const [nodeDetail, bundleItems] = await Promise.all([
+          getNodeDetail(currentActiveProjectId),
+          getContextBundlePreview(currentActiveProjectId),
+        ]);
+        if (!mounted) return;
+        setActiveProjectDigest({
+          bundleItems: bundleItems.slice(0, 3),
+          activities: (nodeDetail?.activities ?? []).slice(0, 3),
+          relatedCount: nodeDetail?.related.length ?? 0,
+        });
+        setActiveProjectError(null);
+      } catch (error) {
+        if (!mounted) return;
+        setActiveProjectDigest(EMPTY_ACTIVE_PROJECT_DIGEST);
+        setActiveProjectError(error instanceof Error ? error.message : 'Failed to load the active project digest.');
+      } finally {
+        if (mounted) {
+          setIsActiveProjectDigestLoading(false);
+        }
+      }
+    }
+
+    void loadActiveProjectDigest();
+
+    return () => {
+      mounted = false;
+    };
+  }, [activeProjectNode]);
   const guideSections: GuideSection[] = [
     {
       id: 'overview',
@@ -1161,11 +1293,16 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
     activeGovernanceIssue?.entityType === 'node' ? nodeMap.get(activeGovernanceIssue.entityId) ?? null : null;
 
   function resetWorkspaceSelection(nextSnapshot: WorkspaceSeed) {
+    const nextProjectNodes = nextSnapshot.nodes.filter((node) => node.type === 'project');
+    const nextProjectGraphProjectId =
+      activeProjectId && nextProjectNodes.some((node) => node.id === activeProjectId)
+        ? activeProjectId
+        : nextProjectNodes[0]?.id ?? null;
     setSelectedNodeId(nextSnapshot.nodes[0]?.id ?? '');
     setNotePreviewTargetId(null);
     setDetail(emptyDetailPanel());
     setProjectGraph(null);
-    setProjectGraphProjectId(nextSnapshot.nodes.find((node) => node.type === 'project')?.id ?? null);
+    setProjectGraphProjectId(nextProjectGraphProjectId);
   }
 
   function focusNode(nodeId: string, nextView?: NavView) {
@@ -1229,6 +1366,69 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
     }
   }
 
+  async function handleActiveProjectBundleClick(item: ContextBundlePreviewItem) {
+    if (!activeProjectNode) {
+      return;
+    }
+
+    focusNode(item.nodeId, 'recent');
+    setNotePreviewTargetId(item.nodeId);
+    if (!item.relationId || !item.relationSource) {
+      return;
+    }
+
+    const eventKey = `${activeProjectNode.id}:${item.relationId}:home_bundle_clicked`;
+    if (activeProjectBundleUsageEventKeysRef.current.has(eventKey)) {
+      return;
+    }
+
+    activeProjectBundleUsageEventKeysRef.current.add(eventKey);
+    try {
+      await appendRelationUsageEvent({
+        relationId: item.relationId,
+        relationSource: item.relationSource,
+        eventType: 'bundle_clicked',
+        sessionId: relationUsageSessionIdRef.current,
+        delta: 0.4,
+        metadata: {
+          targetNodeId: activeProjectNode.id,
+          surfacedVia: 'home_active_project_digest',
+          selectedNodeId: item.nodeId,
+        },
+      });
+    } catch {
+      activeProjectBundleUsageEventKeysRef.current.delete(eventKey);
+    }
+  }
+
+  async function handleSetActiveProject(nextProjectId: string | null) {
+    const previousActiveProjectId = activeProjectId;
+    setActiveProjectId(nextProjectId);
+    setActiveProjectError(null);
+    setIsSavingActiveProject(true);
+
+    try {
+      await updateSettings({
+        [ACTIVE_PROJECT_SETTING_KEY]: nextProjectId,
+      });
+      setLoadError(null);
+    } catch (error) {
+      setActiveProjectId(previousActiveProjectId);
+      if (isAuthError(error)) {
+        handleRequestFailure(error, 'Failed to update workspace settings.');
+      } else {
+        setActiveProjectError(error instanceof Error ? error.message : 'Failed to update the active project.');
+      }
+    } finally {
+      setIsSavingActiveProject(false);
+    }
+  }
+
+  function handleCaptureProjectSelection(nextProjectId: string) {
+    setCaptureProjectId(nextProjectId);
+    captureProjectAutofillRef.current = nextProjectId && nextProjectId === activeProjectId ? nextProjectId : null;
+  }
+
   async function handleCreateNode(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!captureTitle.trim()) {
@@ -1255,7 +1455,8 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       setCaptureTitle('');
       setCaptureBody('');
       setCaptureType('note');
-      setCaptureProjectId('');
+      setCaptureProjectId(activeProjectId ?? '');
+      captureProjectAutofillRef.current = activeProjectId ?? null;
       const captureProject = captureProjectId ? projectNodes.find((project) => project.id === captureProjectId) ?? null : null;
       setCaptureNotice(
         result.landing
@@ -2624,7 +2825,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 </label>
                 <label className="search-box">
                   <span>Project</span>
-                  <select value={captureProjectId} onChange={(event) => setCaptureProjectId(event.target.value)}>
+                  <select value={captureProjectId} onChange={(event) => handleCaptureProjectSelection(event.target.value)}>
                     <option value="">No project</option>
                     {projectNodes.map((project) => (
                       <option key={project.id} value={project.id}>
@@ -2910,6 +3111,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               <span className="chip chip-static">{pinnedProjectNodes.length} active projects</span>
               <span className="chip chip-static">{homeRecentNodes.length} recent nodes</span>
               <span className="chip chip-static">{governanceIssues.length} review signals</span>
+              <span className="chip chip-static">{activeProjectNode ? `focus ${activeProjectNode.title}` : 'no active project'}</span>
               {deferredQuery.trim() ? <span className="chip chip-static">{searchPanel.total} mixed hits</span> : null}
             </div>
             <div className="hero-actions">
@@ -2932,7 +3134,10 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             <div className="page-copy">
               <span className="eyebrow">Current workspace</span>
               <h3>{workspaceName}</h3>
-              <p>Use Home as the default re-entry point for retrieval, project continuity, and nearby trust signals.</p>
+              <p>
+                Use Home as the default re-entry point for retrieval, project continuity, and nearby trust signals.
+                {activeProjectNode ? ` ${activeProjectNode.title} is the current project anchor.` : ' Choose one project to keep continuity tight.'}
+              </p>
             </div>
             <div className="info-grid two">
               <article className="info-block">
@@ -3031,6 +3236,89 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
           </section>
         ) : (
           <section className="home-results-grid">
+            <section className="card page-card home-digest-card">
+              <div className="section-head section-head--compact">
+                <div>
+                  <span className="eyebrow">Active project</span>
+                  <h3>{activeProjectNode?.title ?? 'Choose a project anchor'}</h3>
+                </div>
+                <span className={`pill ${activeProjectNode ? badgeTone(activeProjectNode.status) : 'tone-muted'}`}>
+                  {isSavingActiveProject ? 'Saving...' : activeProjectNode ? activeProjectNode.canonicality : 'unset'}
+                </span>
+              </div>
+
+              {activeProjectNode ? (
+                <>
+                  <p className="home-digest-copy">
+                    {activeProjectNode.summary || 'This project is active for Home re-entry, quick capture defaults, and project-map fallback.'}
+                  </p>
+                  <div className="chip-row">
+                    <span className="chip chip-static">{activeProjectDigest.relatedCount} related nodes</span>
+                    <span className="chip chip-static">{activeProjectDigest.activities.length} recent activities</span>
+                    <span className="chip chip-static">{activeProjectDigest.bundleItems.length} nearby context items</span>
+                  </div>
+                  <div className="action-row">
+                    <button type="button" onClick={() => openNodeInGraph(activeProjectNode.id)}>
+                      Open project map
+                    </button>
+                    <button type="button" className="ghost" onClick={() => openNodeInRecent(activeProjectNode.id)}>
+                      Open notes
+                    </button>
+                    <button type="button" className="ghost" onClick={() => void handleSetActiveProject(null)} disabled={isSavingActiveProject}>
+                      Clear active project
+                    </button>
+                  </div>
+                  {isActiveProjectDigestLoading ? <div className="empty-state compact">Loading project digest...</div> : null}
+                  {activeProjectError ? <div className="empty-state compact">{activeProjectError}</div> : null}
+                  <div className="card-stack compact-stack">
+                    {activeProjectDigest.bundleItems.map((item) => (
+                      <button
+                        key={item.nodeId}
+                        type="button"
+                        className="mini-card mini-card--interactive"
+                        onClick={() => void handleActiveProjectBundleClick(item)}
+                      >
+                        <strong>{item.title ?? item.nodeId}</strong>
+                        <p>{item.reason}</p>
+                      </button>
+                    ))}
+                    {activeProjectDigest.activities.map((activity) => (
+                      <article key={activity.id} className="mini-card">
+                        <strong>{activity.activityType}</strong>
+                        <p>{activity.body || 'Recent project movement'}</p>
+                      </article>
+                    ))}
+                    {!activeProjectDigest.bundleItems.length && !activeProjectDigest.activities.length && !isActiveProjectDigestLoading ? (
+                      <div className="empty-state compact">The active project does not have recent nearby context yet.</div>
+                    ) : null}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="home-digest-copy">
+                    Pick one project to keep Home, quick capture, and the project map aligned around the same working thread.
+                  </p>
+                  <div className="action-row">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (homeSuggestedProjectNode) {
+                          void handleSetActiveProject(homeSuggestedProjectNode.id);
+                        }
+                      }}
+                      disabled={!homeSuggestedProjectNode || isSavingActiveProject}
+                    >
+                      {homeSuggestedProjectNode ? `Set ${homeSuggestedProjectNode.title}` : 'Add a project first'}
+                    </button>
+                    <button type="button" className="ghost" onClick={() => selectView('recent')}>
+                      Open notes
+                    </button>
+                  </div>
+                  {activeProjectError ? <div className="empty-state compact">{activeProjectError}</div> : null}
+                </>
+              )}
+            </section>
+
             <section className="card page-card">
               <div className="section-head section-head--compact">
                 <div>
@@ -3040,7 +3328,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               </div>
               <div className="home-project-grid">
                 {pinnedProjectNodes.map((node) => (
-                  <button key={node.id} type="button" className="note-tile home-project-card" onClick={() => openNodeInGraph(node.id)}>
+                  <article key={node.id} className={`note-tile home-project-card ${activeProjectNode?.id === node.id ? 'selected' : ''}`}>
                     <div className="result-card__top">
                       <span className={`pill ${badgeTone(node.status)}`}>{node.type}</span>
                       <span className="note-tile-time">{formatTime(node.updatedAt)}</span>
@@ -3051,7 +3339,20 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                       <span className="chip chip-static">{node.canonicality}</span>
                       <span className="chip chip-static">{node.sourceLabel}</span>
                     </div>
-                  </button>
+                    <div className="home-project-card-actions">
+                      <button type="button" onClick={() => openNodeInGraph(node.id)}>
+                        Open
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => void handleSetActiveProject(node.id)}
+                        disabled={isSavingActiveProject}
+                      >
+                        {activeProjectNode?.id === node.id ? 'Active' : 'Make active'}
+                      </button>
+                    </div>
+                  </article>
                 ))}
                 {!pinnedProjectNodes.length ? <div className="empty-state">No project nodes are available yet.</div> : null}
               </div>
