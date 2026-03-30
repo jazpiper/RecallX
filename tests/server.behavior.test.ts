@@ -6257,6 +6257,69 @@ describe("project graph API", () => {
       )
     ).toBe(true);
   });
+
+  it("does not duplicate synthetic fallback edges when an inferred project edge already exists", () => {
+    const repository = createRepository();
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "recallx-test",
+    };
+
+    const project = repository.createNode({
+      type: "project",
+      title: "Connected Project",
+      body: "Project body",
+      summary: "Project summary",
+      tags: [],
+      metadata: {},
+      source,
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+    const note = repository.createNode({
+      type: "note",
+      title: "Ranked Workspace Note",
+      body: "Useful exploration seed",
+      summary: "Seed summary",
+      tags: [],
+      metadata: {},
+      source,
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active",
+    });
+
+    const inferred = repository.upsertInferredRelation({
+      fromNodeId: project.id,
+      toNodeId: note.id,
+      relationType: "related_to",
+      baseScore: 0.25,
+      usageScore: 0,
+      finalScore: 0.25,
+      status: "active",
+      generator: "deterministic-project-membership",
+      evidence: {
+        strategy: "workspace_recent",
+      },
+      metadata: {},
+    });
+
+    const graph = buildProjectGraph(repository, project.id, {
+      includeInferred: true,
+      maxInferred: 10,
+    });
+
+    const projectToNoteEdges = graph.edges.filter(
+      (item) =>
+        ((item.source === project.id && item.target === note.id) ||
+          (item.source === note.id && item.target === project.id)) &&
+        item.relationType === "related_to"
+    );
+
+    expect(projectToNoteEdges).toHaveLength(1);
+    expect(projectToNoteEdges[0]?.id).toBe(inferred.id);
+    expect(projectToNoteEdges[0]?.generator).toBe("deterministic-project-membership");
+  });
 });
 
 describe("bootstrap auth metadata", () => {
