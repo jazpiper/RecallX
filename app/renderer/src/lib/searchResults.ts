@@ -1,5 +1,7 @@
 import type { ActivitySearchHit, Canonicality, Node, NodeStatus, NodeType, SearchNodeHit } from './types.js';
 
+export type SearchResultScope = 'all' | 'nodes' | 'activities';
+
 function normalizeTitle(title: string | null, fallback: string) {
   return title && title.trim() ? title : fallback;
 }
@@ -122,4 +124,76 @@ export function buildRecentSelectableNodeIds(searchNodeHits: SearchNodeHit[], ac
     }
   });
   return ids;
+}
+
+export function buildSearchSourceOptions(searchNodeHits: SearchNodeHit[], activityHits: ActivitySearchHit[]): string[] {
+  const counts = new Map<string, number>();
+
+  searchNodeHits.forEach((hit) => {
+    const label = normalizeSourceLabel(hit.sourceLabel);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  });
+  activityHits.forEach((hit) => {
+    const label = normalizeSourceLabel(hit.sourceLabel);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  });
+
+  return Array.from(counts.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([label]) => label);
+}
+
+export function filterSearchWorkspaceResults(
+  searchNodeHits: SearchNodeHit[],
+  activityHits: ActivitySearchHit[],
+  filters: {
+    scope: SearchResultScope;
+    nodeType: NodeType | 'all';
+    sourceLabel: string | 'all';
+  },
+) {
+  const normalizedSourceFilter =
+    filters.sourceLabel === 'all' ? null : normalizeSourceLabel(filters.sourceLabel).toLowerCase();
+
+  const nodes =
+    filters.scope === 'activities'
+      ? []
+      : searchNodeHits.filter((hit) => {
+          if (filters.nodeType !== 'all' && hit.type !== filters.nodeType) {
+            return false;
+          }
+
+          if (!normalizedSourceFilter) {
+            return true;
+          }
+
+          return normalizeSourceLabel(hit.sourceLabel).toLowerCase() === normalizedSourceFilter;
+        });
+
+  const activities =
+    filters.scope === 'nodes'
+      ? []
+      : activityHits.filter((hit) => {
+          if (!normalizedSourceFilter) {
+            return true;
+          }
+
+          return normalizeSourceLabel(hit.sourceLabel).toLowerCase() === normalizedSourceFilter;
+        });
+
+  return {
+    nodes,
+    activities,
+    total: nodes.length + activities.length,
+  };
+}
+
+export function pushRecentEntry(entries: string[], value: string, limit = 5): string[] {
+  const trimmedValue = value.trim();
+  if (!trimmedValue) {
+    return entries.slice(0, limit);
+  }
+
+  const normalizedValue = trimmedValue.toLowerCase();
+  return [trimmedValue, ...entries.filter((entry) => entry.trim().toLowerCase() !== normalizedValue)].slice(0, limit);
 }
