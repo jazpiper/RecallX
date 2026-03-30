@@ -19,6 +19,7 @@ import {
   createRelationSchema,
   exportWorkspaceSchema,
   governanceIssuesQuerySchema,
+  importWorkspacePreviewSchema,
   importWorkspaceSchema,
   nodeSearchSchema,
   openWorkspaceSchema,
@@ -1869,9 +1870,15 @@ export function createRecallXApp(params: {
     response.status(201).json(envelope(response.locals.requestId, { export: exportRecord }));
   });
 
+  app.post("/api/v1/workspaces/import/preview", (request, response) => {
+    const input = importWorkspacePreviewSchema.parse(request.body ?? {});
+    const preview = params.workspaceSessionManager.previewImportWorkspace(input.format, input.sourcePath, input.label, input.options);
+    response.json(envelope(response.locals.requestId, { preview }));
+  });
+
   app.post("/api/v1/workspaces/import", (request, response) => {
     const input = importWorkspaceSchema.parse(request.body ?? {});
-    const importRecord = params.workspaceSessionManager.importWorkspace(input.format, input.sourcePath, input.label);
+    const importRecord = params.workspaceSessionManager.importWorkspace(input.format, input.sourcePath, input.label, input.options);
     refreshWorkspaceState();
     broadcastWorkspaceEvent({
       reason: "workspace.imported",

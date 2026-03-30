@@ -19,6 +19,10 @@ import type {
   WorkspaceBackupRecord,
   WorkspaceCatalogItem,
   WorkspaceExportRecord,
+  WorkspaceImportOptions,
+  WorkspaceImportPreviewDuplicate,
+  WorkspaceImportPreviewItem,
+  WorkspaceImportPreviewRecord,
   WorkspaceImportRecord,
   WorkspaceRestoreResult,
   WorkspaceSeed,
@@ -828,6 +832,7 @@ export async function importWorkspace(input: {
   format: 'recallx_json' | 'markdown';
   sourcePath: string;
   label?: string;
+  options?: Partial<WorkspaceImportOptions>;
 }): Promise<WorkspaceImportRecord> {
   const payload = await requestJson('/workspaces/import', {
     method: 'POST',
@@ -840,12 +845,82 @@ export async function importWorkspace(input: {
     sourcePath: data?.import?.sourcePath ?? '',
     importedPath: data?.import?.importedPath ?? '',
     createdAt: data?.import?.createdAt ?? new Date().toISOString(),
+    options: {
+      normalizeTitleWhitespace: data?.import?.options?.normalizeTitleWhitespace !== false,
+      trimBodyWhitespace: Boolean(data?.import?.options?.trimBodyWhitespace),
+      duplicateMode: data?.import?.options?.duplicateMode === 'skip_exact' ? 'skip_exact' : 'warn',
+    },
     backupId: data?.import?.backupId ?? '',
     backupPath: data?.import?.backupPath ?? '',
     nodesCreated: typeof data?.import?.nodesCreated === 'number' ? data.import.nodesCreated : 0,
     relationsCreated: typeof data?.import?.relationsCreated === 'number' ? data.import.relationsCreated : 0,
     activitiesCreated: typeof data?.import?.activitiesCreated === 'number' ? data.import.activitiesCreated : 0,
+    skippedNodes: typeof data?.import?.skippedNodes === 'number' ? data.import.skippedNodes : 0,
+    skippedRelations: typeof data?.import?.skippedRelations === 'number' ? data.import.skippedRelations : 0,
+    skippedActivities: typeof data?.import?.skippedActivities === 'number' ? data.import.skippedActivities : 0,
     warnings: Array.isArray(data?.import?.warnings) ? data.import.warnings.filter((item: unknown): item is string => typeof item === 'string') : [],
+  };
+}
+
+export async function previewWorkspaceImport(input: {
+  format: 'recallx_json' | 'markdown';
+  sourcePath: string;
+  label?: string;
+  options?: Partial<WorkspaceImportOptions>;
+}): Promise<WorkspaceImportPreviewRecord> {
+  const payload = await requestJson('/workspaces/import/preview', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  const data = readPayloadData(payload);
+  const preview = data?.preview ?? {};
+  const mapDuplicate = (raw: any): WorkspaceImportPreviewDuplicate => ({
+    title: raw?.title ?? 'Imported node',
+    sourcePath: raw?.sourcePath ?? '',
+    matchType: raw?.matchType === 'exact' ? 'exact' : 'title',
+    existingNodeId: typeof raw?.existingNodeId === 'string' ? raw.existingNodeId : null,
+    existingNodeTitle: typeof raw?.existingNodeTitle === 'string' ? raw.existingNodeTitle : null,
+    existingSource: raw?.existingSource === 'batch' ? 'batch' : 'workspace',
+  });
+  const mapItem = (raw: any): WorkspaceImportPreviewItem => ({
+    title: raw?.title ?? 'Imported node',
+    type:
+      raw?.type === 'project' ||
+      raw?.type === 'idea' ||
+      raw?.type === 'question' ||
+      raw?.type === 'decision' ||
+      raw?.type === 'reference' ||
+      raw?.type === 'artifact_ref' ||
+      raw?.type === 'conversation'
+        ? raw.type
+        : 'note',
+    sourcePath: raw?.sourcePath ?? '',
+    duplicateKind: raw?.duplicateKind === 'exact' || raw?.duplicateKind === 'title' ? raw.duplicateKind : null,
+  });
+  return {
+    format: preview?.format === 'markdown' ? 'markdown' : 'recallx_json',
+    label: preview?.label ?? 'Workspace import',
+    sourcePath: preview?.sourcePath ?? '',
+    createdAt: preview?.createdAt ?? new Date().toISOString(),
+    options: {
+      normalizeTitleWhitespace: preview?.options?.normalizeTitleWhitespace !== false,
+      trimBodyWhitespace: Boolean(preview?.options?.trimBodyWhitespace),
+      duplicateMode: preview?.options?.duplicateMode === 'skip_exact' ? 'skip_exact' : 'warn',
+    },
+    nodesDetected: typeof preview?.nodesDetected === 'number' ? preview.nodesDetected : 0,
+    relationsDetected: typeof preview?.relationsDetected === 'number' ? preview.relationsDetected : 0,
+    activitiesDetected: typeof preview?.activitiesDetected === 'number' ? preview.activitiesDetected : 0,
+    duplicateCandidates: typeof preview?.duplicateCandidates === 'number' ? preview.duplicateCandidates : 0,
+    exactDuplicateCandidates: typeof preview?.exactDuplicateCandidates === 'number' ? preview.exactDuplicateCandidates : 0,
+    nodesReady: typeof preview?.nodesReady === 'number' ? preview.nodesReady : 0,
+    relationsReady: typeof preview?.relationsReady === 'number' ? preview.relationsReady : 0,
+    activitiesReady: typeof preview?.activitiesReady === 'number' ? preview.activitiesReady : 0,
+    skippedNodes: typeof preview?.skippedNodes === 'number' ? preview.skippedNodes : 0,
+    skippedRelations: typeof preview?.skippedRelations === 'number' ? preview.skippedRelations : 0,
+    skippedActivities: typeof preview?.skippedActivities === 'number' ? preview.skippedActivities : 0,
+    warnings: Array.isArray(preview?.warnings) ? preview.warnings.filter((item: unknown): item is string => typeof item === 'string') : [],
+    sampleItems: Array.isArray(preview?.sampleItems) ? preview.sampleItems.map(mapItem) : [],
+    duplicateItems: Array.isArray(preview?.duplicateItems) ? preview.duplicateItems.map(mapDuplicate) : [],
   };
 }
 

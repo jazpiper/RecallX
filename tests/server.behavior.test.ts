@@ -7130,6 +7130,158 @@ describe("workspace switching", () => {
     }
   });
 
+  it("previews markdown imports without creating a backup and surfaces duplicate signals", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    const markdownRoot = mkdtempSync(path.join(tmpdir(), "recallx-import-preview-"));
+    tempRoots.push(root, markdownRoot);
+    writeFileSync(path.join(markdownRoot, "decision-log.md"), "# Decision Log\n\nTrack the import path.");
+    writeFileSync(path.join(markdownRoot, "overview.md"), "# Architecture Overview\n\nFresh preview content.");
+
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const source = {
+        actorType: "human",
+        actorLabel: "juhwan",
+        toolName: "recallx-test",
+      };
+
+      await fetch(`${baseUrl}/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "note",
+          title: "Decision Log",
+          body: "# Decision Log\n\nTrack the import path.",
+          source,
+          metadata: {},
+        }),
+      });
+
+      const previewResponse = await fetch(`${baseUrl}/workspaces/import/preview`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          format: "markdown",
+          sourcePath: markdownRoot,
+          label: "Preview notes",
+          options: {
+            normalizeTitleWhitespace: true,
+            trimBodyWhitespace: false,
+            duplicateMode: "warn",
+          },
+        }),
+      });
+      const previewBody = await previewResponse.json();
+
+      const backupsResponse = await fetch(`${baseUrl}/workspaces/backups`);
+      const backupsBody = await backupsResponse.json();
+
+      expect(previewResponse.status).toBe(200);
+      expect(previewBody.data.preview.nodesDetected).toBe(2);
+      expect(previewBody.data.preview.duplicateCandidates).toBe(1);
+      expect(previewBody.data.preview.exactDuplicateCandidates).toBe(1);
+      expect(previewBody.data.preview.skippedNodes).toBe(0);
+      expect(previewBody.data.preview.sampleItems.some((item: { duplicateKind: string | null }) => item.duplicateKind === "exact")).toBe(true);
+      expect(backupsBody.data.items).toHaveLength(0);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("skips exact duplicate markdown notes when duplicate mode is set to skip_exact", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    const markdownRoot = mkdtempSync(path.join(tmpdir(), "recallx-import-skip-"));
+    tempRoots.push(root, markdownRoot);
+    writeFileSync(path.join(markdownRoot, "overview.md"), "# Architecture Overview\n\nLocal-first memory notes.");
+    writeFileSync(path.join(markdownRoot, "new-note.md"), "# Import Queue\n\nFresh workspace import content.");
+
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const source = {
+        actorType: "human",
+        actorLabel: "juhwan",
+        toolName: "recallx-test",
+      };
+
+      await fetch(`${baseUrl}/nodes`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "note",
+          title: "Architecture Overview",
+          body: "# Architecture Overview\n\nLocal-first memory notes.",
+          source,
+          metadata: {},
+        }),
+      });
+
+      const importResponse = await fetch(`${baseUrl}/workspaces/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          format: "markdown",
+          sourcePath: markdownRoot,
+          label: "Imported notes",
+          options: {
+            duplicateMode: "skip_exact",
+          },
+        }),
+      });
+      const importBody = await importResponse.json();
+
+      const searchResponse = await fetch(`${baseUrl}/nodes/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "Architecture Overview",
+          filters: {},
+          limit: 10,
+          offset: 0,
+          sort: "relevance",
+        }),
+      });
+      const searchBody = await searchResponse.json();
+
+      expect(importResponse.status).toBe(201);
+      expect(importBody.data.import.nodesCreated).toBe(1);
+      expect(importBody.data.import.skippedNodes).toBe(1);
+      expect(importBody.data.import.activitiesCreated).toBe(1);
+      expect(importBody.data.import.options.duplicateMode).toBe("skip_exact");
+      expect(importBody.data.import.warnings.some((warning: string) => warning.includes("Skipped 1 exact duplicate node"))).toBe(true);
+      expect(existsSync(importBody.data.import.backupPath as string)).toBe(true);
+      expect(existsSync(importBody.data.import.importedPath as string)).toBe(true);
+      expect(searchBody.data.items.filter((item: { title: string }) => item.title === "Architecture Overview")).toHaveLength(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
   it("surfaces workspace safety warnings when another session left an active lock", () => {
     const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
     tempRoots.push(root);
