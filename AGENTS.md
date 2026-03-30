@@ -70,6 +70,7 @@ If local Codex helpers exist under `.codex/`, use them as lightweight guardrails
 - `.codex/skills/recallx-publish-flow/` for explicit publish, merge, and resync work
 - `.codex/skills/recallx-retrieval-guard/` for retrieval and hot-path changes
 - `.codex/skills/recallx-release-guard/` for release, version, and packaging work
+- `.codex/skills/recallx-subagent-orchestration/` for proactive delegation, model routing, sub-agent reuse, and cleanup
 - `.codex/hooks/preflight.sh` for start-of-task checks
 - `.codex/hooks/start-task.sh` for creating a fresh task branch from `main` and recording task-local baseline state
 - `.codex/hooks/post-edit.sh` for validation suggestions after edits
@@ -128,15 +129,42 @@ When changing retrieval, semantic ranking, project graph, workspace switching, o
 Use this loop for implementation:
 
 1. Understand the target surface and read only the files needed.
-2. Form a concrete hypothesis about the change.
-3. Edit the smallest useful slice.
-4. Run the narrowest meaningful validation immediately.
-5. If validation fails, diagnose, patch, and rerun before moving on.
-6. After the local slice is stable, run broader repo validation as appropriate.
+2. Decide whether any bounded side work should be delegated now.
+3. Reuse an existing suitable sub-agent before spawning a new one.
+4. Form a concrete hypothesis about the change.
+5. Edit the smallest useful slice.
+6. Run the narrowest meaningful validation immediately.
+7. If validation fails, diagnose, patch, and rerun before moving on.
+8. After the local slice is stable, run broader repo validation as appropriate.
 
 Prefer multiple small validation loops over one large late-stage validation pass.
 
-## 9. Self-Repair Rules
+## 9. Sub-Agent Orchestration
+
+Use sub-agents as a routine optimization tool when the environment and current user request allow delegation.
+
+- Do not wait for a second prompt when there is clear value in delegating bounded side work such as focused exploration, parallel diagnostics, small isolated patches, targeted review, or independent verification.
+- Keep the immediate blocking step local. Delegate sidecar work that can run in parallel without stalling the main path.
+- Keep prompts narrow, concrete, and context-light. Give each sub-agent one job, a clear output, and explicit file ownership when edits are involved.
+- Prefer reuse over respawn. If an existing sub-agent is already aligned to the same subtask, continue that thread with `send_input` instead of spawning another agent.
+- Reuse is preferred when the follow-up stays within the same goal, write scope, or debugging thread. Spawn a new agent only when the task is materially different or parallelism is actually useful.
+- Close completed or stale sub-agents explicitly. Do not leave agents open "just in case" because idle agents accumulate and eventually block further delegation.
+- Before finishing a task, confirm that every spawned sub-agent was either reused intentionally for ongoing work or explicitly closed.
+
+Default routing guidance:
+
+- `gpt-5.4-mini`: read-only exploration, grep-style codebase questions, lightweight review, locating files, summarizing diffs
+- `gpt-5.3-codex-spark`: small isolated fixes, test repairs, fast bounded edits, quick follow-up adjustments
+- `gpt-5.3-codex`: medium implementation slices with a clear write scope
+- `gpt-5.4`: high-risk integration work, ambiguous bugs, architecture-sensitive changes, or anything likely to need deeper reasoning
+
+When in doubt:
+
+- start with one small delegated side task instead of many
+- wait sparingly
+- close agents once their output has been integrated
+
+## 10. Self-Repair Rules
 
 If something breaks during an autonomous run:
 
@@ -152,7 +180,7 @@ Avoid "confidence theater":
 - Do not mark work done because typecheck passed if behavior changed and tests were not exercised.
 - Do not rely on memory of old behavior when the code or docs can be read directly.
 
-## 10. Validation Matrix
+## 11. Validation Matrix
 
 Default commands:
 
@@ -181,7 +209,7 @@ Use this matrix:
 
 Favor targeted test execution when iterating quickly, but do not skip the broader suite before finishing a real code change.
 
-## 11. Release And Versioning Rules
+## 12. Release And Versioning Rules
 
 This repo has real release discipline. Respect it.
 
@@ -197,7 +225,7 @@ npm run version:bump -- patch|minor|major
 - For release-sensitive work, read `docs/release-workflow.md` before editing workflows or packaging scripts.
 - If changing publish/package behavior, prefer running `npm run release:verify` before considering the work done.
 
-## 12. Retrieval And Performance Guardrails
+## 13. Retrieval And Performance Guardrails
 
 RecallX is speed-sensitive. Retrieval is a hot path.
 
@@ -209,14 +237,14 @@ RecallX is speed-sensitive. Retrieval is a hot path.
 
 If touching retrieval or semantic logic, read `docs/retrieval.md` and relevant tests first.
 
-## 13. Writing Rules
+## 14. Writing Rules
 
 - Preserve append-first and attributable behavior.
 - Be cautious with canonical durable knowledge. High-signal summaries beat noisy raw dumps.
 - External reads can be easy; durable writes should remain deliberate.
 - Do not silently mutate important user knowledge structures unless the code path clearly intends that behavior.
 
-## 14. Editing Rules
+## 15. Editing Rules
 
 - Prefer precise edits over sweeping rewrites.
 - Follow existing naming, formatting, and module boundaries unless there is a strong reason not to.
@@ -224,7 +252,7 @@ If touching retrieval or semantic logic, read `docs/retrieval.md` and relevant t
 - Do not revert unrelated user changes.
 - Do not remove guardrails because they are inconvenient for the current task.
 
-## 15. Done Definition
+## 16. Done Definition
 
 Work is only done when all of the following are true:
 
@@ -232,9 +260,10 @@ Work is only done when all of the following are true:
 - the change is still aligned with RecallX product guardrails
 - the relevant validation commands were rerun and passed
 - remaining risks or follow-ups are explicitly called out
+- sub-agents used during the task were either intentionally reused or explicitly closed
 - a concise RecallX memory write-back was made when the task was meaningful
 
-## 16. Branch Reset After Publish
+## 17. Branch Reset After Publish
 
 After a completed task branch has been committed, pushed, or turned into a PR, return the primary checkout to `main` unless you are intentionally continuing the same branch.
 
@@ -247,7 +276,8 @@ Rules:
 - default to `.codex/hooks/publish-and-sync.sh` when the user wants the full publish flow
 - when maximum automation is desired, prefer `.codex/hooks/finish-task.sh` as the final handoff step after implementation and validation
 - only stop before merge when the user explicitly asks for manual review or manual merge
-## 17. Post-Task Harness Self-Improvement
+
+## 18. Post-Task Harness Self-Improvement
 
 After a meaningful task is complete, run one short bounded self-review of the harness itself.
 
@@ -271,7 +301,7 @@ Improvement rules:
 
 When no reusable lesson emerged, record that briefly and move on without changing the harness.
 
-## 18. Suggested Operating Pattern For Long Autonomous Work
+## 19. Suggested Operating Pattern For Long Autonomous Work
 
 Use this rhythm on longer runs:
 

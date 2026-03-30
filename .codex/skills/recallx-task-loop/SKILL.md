@@ -29,10 +29,12 @@ npm run version:check
 ## Execution Loop
 
 1. Restate the concrete task and success signal to yourself.
-2. Edit the smallest useful slice first.
-3. Run the narrowest meaningful validation immediately.
-4. If validation fails, fix the root cause and rerun the same command before broadening.
-5. Re-anchor on the task after failures or broad exploration.
+2. Decide whether any bounded side work should be delegated now; use `recallx-subagent-orchestration` when helpful.
+3. Reuse an existing suitable sub-agent before spawning a new one.
+4. Edit the smallest useful slice first.
+5. Run the narrowest meaningful validation immediately.
+6. If validation fails, fix the root cause and rerun the same command before broadening.
+7. Re-anchor on the task after failures or broad exploration.
 
 ## Validation Defaults
 
@@ -65,7 +67,8 @@ Before wrapping up:
 6. If that review says "yes", make one small reusable harness improvement and stop.
 7. If a quick closeout draft would help, run `./.codex/hooks/finish-report.sh`.
 8. Add `--verbose` only when the changed-path list is actually useful.
-9. After push or PR creation, run `./.codex/hooks/return-to-main.sh` unless you are intentionally continuing the same task branch.
-10. If the user explicitly wants the full publish path, default to `./.codex/hooks/publish-and-sync.sh`.
-11. Only use `--no-merge` when the user explicitly wants to review or merge manually.
-12. If the user wants maximum automation, prefer `./.codex/hooks/finish-task.sh`.
+9. Confirm there are no stale sub-agents left open from this task; reuse active ones intentionally or close them.
+10. After push or PR creation, run `./.codex/hooks/return-to-main.sh` unless you are intentionally continuing the same task branch.
+11. If the user explicitly wants the full publish path, default to `./.codex/hooks/publish-and-sync.sh`.
+12. Only use `--no-merge` when the user explicitly wants to review or merge manually.
+13. If the user wants maximum automation, prefer `./.codex/hooks/finish-task.sh`.
