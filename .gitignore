@@ -12,3 +12,4 @@ release
 .DS_Store
 *.tsbuildinfo
 index-*.js
+.codex/state

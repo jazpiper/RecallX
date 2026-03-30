@@ -6,6 +6,22 @@ repo_root() {
   git rev-parse --show-toplevel
 }
 
+state_dir() {
+  printf '%s/.codex/state\n' "$(repo_root)"
+}
+
+ensure_state_dir() {
+  mkdir -p "$(state_dir)"
+}
+
+task_state_file() {
+  printf '%s/current-task.env\n' "$(state_dir)"
+}
+
+baseline_untracked_file() {
+  printf '%s/baseline-untracked.txt\n' "$(state_dir)"
+}
+
 print_header() {
   printf '\n[%s]\n' "$1"
 }
@@ -20,6 +36,41 @@ collect_paths() {
     git diff --name-only --relative HEAD 2>/dev/null || true
     git ls-files --others --exclude-standard 2>/dev/null || true
   ) | sed '/^$/d' | sort -u
+}
+
+collect_untracked_paths() {
+  git ls-files --others --exclude-standard 2>/dev/null || true
+}
+
+filter_baseline_untracked() {
+  baseline_file="$(baseline_untracked_file)"
+  if [ ! -f "$baseline_file" ]; then
+    cat
+    return
+  fi
+
+  grep -vx -f "$baseline_file" || true
+}
+
+collect_task_paths() {
+  (
+    git diff --name-only --relative HEAD 2>/dev/null || true
+    collect_untracked_paths | filter_baseline_untracked
+  ) | sed '/^$/d' | sort -u
+}
+
+stage_paths() {
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    git add -- "$path"
+  done
+}
+
+derive_default_commit_subject() {
+  branch_name="$(git branch --show-current)"
+  slug="${branch_name#codex/}"
+  slug="$(printf '%s' "$slug" | tr '-' ' ')"
+  printf 'chore: %s\n' "$slug"
 }
 
 compute_validation_flags() {

@@ -71,8 +71,10 @@ If local Codex helpers exist under `.codex/`, use them as lightweight guardrails
 - `.codex/skills/recallx-retrieval-guard/` for retrieval and hot-path changes
 - `.codex/skills/recallx-release-guard/` for release, version, and packaging work
 - `.codex/hooks/preflight.sh` for start-of-task checks
+- `.codex/hooks/start-task.sh` for creating a fresh task branch from `main` and recording task-local baseline state
 - `.codex/hooks/post-edit.sh` for validation suggestions after edits
 - `.codex/hooks/pre-finish.sh` for end-of-task validation and write-back reminders
+- `.codex/hooks/finish-task.sh` for task-scoped validation, commit, publish, merge, and cleanup in one flow
 - `.codex/hooks/finish-report.sh` for a lightweight final response template; add `--verbose` only when changed paths are worth showing
 - `.codex/hooks/return-to-main.sh` for switching the primary checkout back to `main` after a task branch is published
 - `.codex/hooks/publish-and-sync.sh` for pushing the current task branch, creating or reusing a PR, optionally merging it, and resyncing the primary checkout to `main`
@@ -83,9 +85,10 @@ Before doing meaningful implementation work:
 
 1. Check memory context.
 2. Inspect the current tree and avoid stepping on unrelated edits.
-3. Run branch hygiene.
-4. Run version hygiene if the task may affect release artifacts, packaging, or versioned surfaces.
-5. Read the most relevant docs and target files before proposing architecture changes.
+3. Prefer `.codex/hooks/start-task.sh <task-name>` when starting a new task in the primary checkout.
+4. Run branch hygiene if you are not using `start-task.sh`.
+5. Run version hygiene if the task may affect release artifacts, packaging, or versioned surfaces.
+6. Read the most relevant docs and target files before proposing architecture changes.
 
 Repo commands:
 
@@ -242,6 +245,7 @@ Rules:
 - use the task branch only when you are still actively iterating on that same PR
 - if helpful, run `.codex/hooks/return-to-main.sh` after the publish step
 - default to `.codex/hooks/publish-and-sync.sh` when the user wants the full publish flow
+- when maximum automation is desired, prefer `.codex/hooks/finish-task.sh` as the final handoff step after implementation and validation
 - only stop before merge when the user explicitly asks for manual review or manual merge
 ## 17. Post-Task Harness Self-Improvement
 

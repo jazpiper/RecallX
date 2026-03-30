@@ -15,6 +15,7 @@ BODY=""
 BODY_FILE=""
 STRATEGY="squash"
 TIMEOUT_SECONDS=900
+CHECK_DISCOVERY_SECONDS=120
 
 usage() {
   cat <<'EOF'
@@ -32,6 +33,8 @@ Options:
   --keep-branch           Do not delete the remote branch after merge
   --no-return-main        Skip switching the primary checkout back to main
   --timeout-seconds <n>   Wait timeout for merge completion (default: 900)
+  --check-discovery-seconds <n>
+                          Wait for checks to appear before deciding how to gate merge (default: 120)
 EOF
 }
 
@@ -79,6 +82,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --timeout-seconds)
       TIMEOUT_SECONDS="${2:-}"
+      shift 2
+      ;;
+    --check-discovery-seconds)
+      CHECK_DISCOVERY_SECONDS="${2:-}"
       shift 2
       ;;
     --help|-h)
@@ -160,6 +167,43 @@ fi
 if [ "$PR_IS_DRAFT" = "true" ]; then
   echo "[publish-and-sync] marking draft PR ready"
   gh pr ready "$PR_URL"
+fi
+
+wait_for_any_checks() {
+  start_ts="$(date +%s)"
+  while :; do
+    checks_output="$(gh pr checks "$PR_URL" --json bucket,state,name,workflow 2>&1 || true)"
+    if [ "$checks_output" != "no checks reported on the '$CURRENT_BRANCH' branch" ] && [ -n "$checks_output" ]; then
+      return 0
+    fi
+
+    now_ts="$(date +%s)"
+    elapsed=$((now_ts - start_ts))
+    if [ "$elapsed" -ge "$CHECK_DISCOVERY_SECONDS" ]; then
+      return 1
+    fi
+
+    sleep 5
+  done
+}
+
+echo "[publish-and-sync] waiting for GitHub checks to appear"
+if wait_for_any_checks; then
+  if gh pr checks "$PR_URL" --required >/dev/null 2>&1; then
+    echo "[publish-and-sync] waiting for required GitHub checks"
+    if ! gh pr checks "$PR_URL" --watch --required --fail-fast; then
+      echo "[publish-and-sync] required GitHub checks did not pass" >&2
+      exit 1
+    fi
+  else
+    echo "[publish-and-sync] no required checks configured; waiting on reported PR checks"
+    if ! gh pr checks "$PR_URL" --watch --fail-fast; then
+      echo "[publish-and-sync] reported PR checks did not pass" >&2
+      exit 1
+    fi
+  fi
+else
+  echo "[publish-and-sync] no checks were reported within ${CHECK_DISCOVERY_SECONDS}s; continuing without check gating"
 fi
 
 DELETE_FLAG=""
