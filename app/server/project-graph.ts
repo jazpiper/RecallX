@@ -12,6 +12,10 @@ function relationLabel(value: RelationType) {
   return value.replaceAll("_", " ");
 }
 
+function relationEdgeKey(sourceNodeId: string, targetNodeId: string) {
+  return `${sourceNodeId}:${targetNodeId}`;
+}
+
 export function buildProjectGraph(
   repository: RecallXRepository,
   projectId: string,
@@ -55,13 +59,14 @@ export function buildProjectGraph(
           .items
           .filter((item) => item.id !== projectId)
           .map((item) => item.id)
-          .filter((nodeId, index, items) => items.indexOf(nodeId) === index)
       : [];
 
-  const fallbackNodeMap = fallbackNodeIds.length > 0 ? repository.getNodesByIds(fallbackNodeIds) : new Map();
+  const uniqueFallbackNodeIds = Array.from(new Set(fallbackNodeIds));
+
+  const fallbackNodeMap = uniqueFallbackNodeIds.length > 0 ? repository.getNodesByIds(uniqueFallbackNodeIds) : new Map();
   const fallbackNodes =
-    fallbackNodeIds.length > 0
-      ? fallbackNodeIds
+    uniqueFallbackNodeIds.length > 0
+      ? uniqueFallbackNodeIds
           .map((nodeId) => fallbackNodeMap.get(nodeId))
           .filter((node): node is NonNullable<typeof node> => Boolean(node))
       : [];
@@ -76,9 +81,16 @@ export function buildProjectGraph(
     canonicalEdges = repository.listRelationsBetweenNodeIds(expandedScopedNodeIds);
     inferredEdges = includeInferred ? repository.listInferredRelationsBetweenNodeIds(expandedScopedNodeIds, inferredLimit) : [];
   }
-  const directEdgeKeys = new Set(canonicalEdges.map((edge) => `${edge.fromNodeId}:${edge.toNodeId}`));
+  const connectedEdgeKeys = new Set([
+    ...canonicalEdges.map((edge) => relationEdgeKey(edge.fromNodeId, edge.toNodeId)),
+    ...inferredEdges.map((edge) => relationEdgeKey(edge.fromNodeId, edge.toNodeId)),
+  ]);
   const syntheticFallbackEdges = fallbackNodes
-    .filter((node) => !directEdgeKeys.has(`${node.id}:${projectId}`) && !directEdgeKeys.has(`${projectId}:${node.id}`))
+    .filter(
+      (node) =>
+        !connectedEdgeKeys.has(relationEdgeKey(node.id, projectId)) &&
+        !connectedEdgeKeys.has(relationEdgeKey(projectId, node.id))
+    )
     .map((node) => ({
       id: `project-map-fallback:${projectId}:${node.id}`,
       source: projectId,
