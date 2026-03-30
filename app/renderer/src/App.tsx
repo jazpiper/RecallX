@@ -293,6 +293,7 @@ export default function App() {
   const relationUsageSessionIdRef = useRef(
     globalThis.crypto?.randomUUID?.() ?? `recallx-renderer-${Date.now()}`
   );
+  const isRecallBrowseView = view === 'home' || view === 'recent';
 
   async function refreshSnapshotState(workspaceOverride?: WorkspaceSeed['workspace']) {
     const snapshotResult = await getSnapshot(
@@ -374,7 +375,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (isLoading || authRequired || view !== 'recent') {
+    if (isLoading || authRequired || !isRecallBrowseView) {
       return;
     }
 
@@ -448,10 +449,10 @@ export default function App() {
       window.removeEventListener('focus', handleVisibilityChange);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [authRequired, isLoading, view, workspace?.authMode]);
+  }, [authRequired, isLoading, isRecallBrowseView, workspace?.authMode]);
 
   useEffect(() => {
-    if (isLoading || authRequired || view !== 'recent') {
+    if (isLoading || authRequired || !isRecallBrowseView) {
       return;
     }
 
@@ -503,7 +504,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [authRequired, deferredQuery, isLoading, view]);
+  }, [authRequired, deferredQuery, isLoading, isRecallBrowseView]);
 
   const nodeMap = useMemo(
     () => buildSearchResultNodeMap(snapshot?.nodes ?? [], searchPanel.nodes, searchPanel.activities),
@@ -712,6 +713,38 @@ export default function App() {
       ? detail.node
       : nodeMap.get(notePreviewTargetId) ?? null
     : null;
+  const pinnedProjectNodes = useMemo(() => {
+    const fromPinned = (snapshot?.pinnedProjectIds ?? [])
+      .map((nodeId) => nodeMap.get(nodeId))
+      .filter((node): node is Node => node !== undefined && node.type === 'project');
+
+    if (fromPinned.length) {
+      return fromPinned;
+    }
+
+    return projectNodes.slice(0, 3);
+  }, [nodeMap, projectNodes, snapshot?.pinnedProjectIds]);
+  const homeRecentNodes = useMemo(() => {
+    const recentIds = snapshot?.recentNodeIds ?? [];
+    const pinnedIds = new Set(pinnedProjectNodes.map((node) => node.id));
+    const recentNodes = recentIds
+      .map((nodeId) => nodeMap.get(nodeId))
+      .filter((node): node is Node => node !== undefined && !pinnedIds.has(node.id));
+
+    if (recentNodes.length) {
+      return recentNodes.slice(0, 4);
+    }
+
+    return searchableNoteNodes.filter((node) => !pinnedIds.has(node.id)).slice(0, 4);
+  }, [nodeMap, pinnedProjectNodes, searchableNoteNodes, snapshot?.recentNodeIds]);
+  const homeSearchNodes = useMemo(
+    () => (deferredQuery.trim() ? searchPanel.nodes.slice(0, 5) : []),
+    [deferredQuery, searchPanel.nodes],
+  );
+  const homeSearchActivityHits = useMemo(
+    () => (deferredQuery.trim() ? searchPanel.activities.slice(0, 4) : []),
+    [deferredQuery, searchPanel.activities],
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -760,7 +793,7 @@ export default function App() {
   }, [nodeMap, notePreviewTargetId, view]);
 
   useEffect(() => {
-    if (view !== 'governance') return;
+    if (view !== 'governance' && view !== 'home') return;
 
     let mounted = true;
 
@@ -1366,6 +1399,11 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       setProjectGraphProjectId(nodeId);
     }
     focusNode(nodeId, 'graph');
+  }
+
+  function openNodeInRecent(nodeId: string) {
+    focusNode(nodeId, 'recent');
+    setNotePreviewTargetId(nodeId);
   }
 
   const pageContent = (() => {
@@ -2503,30 +2541,203 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
 
     return (
       <section className="page-section home-section">
-        <div className="home-hero">
-          <span className="eyebrow">RecallX</span>
-          <h2>Local guide and graph access.</h2>
-          <div className="hero-actions">
-            <button type="button" className="hero-button hero-button--primary" onClick={() => selectView('search')}>
-              Open Guide
-            </button>
-            <button type="button" className="hero-button hero-button--secondary" onClick={() => selectView('graph')}>
-              Open Graph
-            </button>
-          </div>
-          <div className="info-grid two">
-            <article className="info-block">
-              <span className="info-label">Guide</span>
-              <strong>HTTP API and MCP in one place.</strong>
-              <p>Text-first setup and workflow reference.</p>
-            </article>
-            <article className="info-block">
-              <span className="info-label">Graph</span>
-              <strong>Neighborhood and project map.</strong>
-              <p>Inspect linked memory when structure matters.</p>
-            </article>
-          </div>
+        <div className="home-shell">
+          <section className="card home-hero-card">
+            <div className="page-copy">
+              <span className="eyebrow">Home re-entry</span>
+              <h2>Search the workspace before you browse it.</h2>
+              <p>
+                Active projects, recent movement, and core routes stay close so the next useful memory is one step
+                away.
+              </p>
+            </div>
+            <label className="search-box home-search-box" htmlFor="home-search-input">
+              <span>Workspace-wide search</span>
+              <input
+                id="home-search-input"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="projects, decisions, questions, recent activity"
+              />
+            </label>
+            <div className="chip-row">
+              <span className="chip chip-static">{pinnedProjectNodes.length} active projects</span>
+              <span className="chip chip-static">{homeRecentNodes.length} recent nodes</span>
+              <span className="chip chip-static">{governanceIssues.length} review signals</span>
+              {deferredQuery.trim() ? <span className="chip chip-static">{searchPanel.total} mixed hits</span> : null}
+            </div>
+            <div className="hero-actions">
+              <button type="button" className="hero-button hero-button--primary" onClick={() => selectView('search')}>
+                Open Guide
+              </button>
+              <button type="button" className="hero-button hero-button--secondary" onClick={() => selectView('graph')}>
+                Open Graph
+              </button>
+              <button type="button" className="hero-button hero-button--secondary" onClick={() => selectView('governance')}>
+                Review Governance
+              </button>
+              <button type="button" className="hero-button hero-button--secondary" onClick={() => selectView('recent')}>
+                Open Notes
+              </button>
+            </div>
+          </section>
+
+          <aside className="card home-summary-card">
+            <div className="page-copy">
+              <span className="eyebrow">Current workspace</span>
+              <h3>{workspaceName}</h3>
+              <p>Use Home as the default re-entry point for retrieval, project continuity, and nearby trust signals.</p>
+            </div>
+            <div className="info-grid two">
+              <article className="info-block">
+                <span className="info-label">Projects</span>
+                <strong>{projectNodes.length}</strong>
+                <p>Project nodes currently visible in the workspace snapshot.</p>
+              </article>
+              <article className="info-block">
+                <span className="info-label">Recent nodes</span>
+                <strong>{snapshot?.recentNodeIds.length ?? 0}</strong>
+                <p>Fresh memory cards ready for quick return.</p>
+              </article>
+              <article className="info-block">
+                <span className="info-label">Governance</span>
+                <strong>{governanceIssues.length || 'clear'}</strong>
+                <p>Review signals stay visible without turning Home into a moderation queue.</p>
+              </article>
+              <article className="info-block">
+                <span className="info-label">API</span>
+                <strong>{workspace?.apiBind ?? '127.0.0.1:8787'}</strong>
+                <p>Guide and MCP remain nearby, but retrieval is the first action.</p>
+              </article>
+            </div>
+          </aside>
         </div>
+
+        {searchPanel.error ? <div className="empty-state compact">{searchPanel.error}</div> : null}
+        {searchPanel.isLoading ? <div className="empty-state compact">Searching the full workspace...</div> : null}
+
+        {deferredQuery.trim() ? (
+          <section className="home-results-grid">
+            <section className="card page-card">
+              <div className="section-head section-head--compact">
+                <div>
+                  <span className="eyebrow">Search results</span>
+                  <h3>Suggested memory matches</h3>
+                </div>
+                <span className="pill tone-info">{homeSearchNodes.length}</span>
+              </div>
+              <div className="card-stack">
+                {homeSearchNodes.map((node) => (
+                  <button key={node.id} type="button" className="route-card" onClick={() => openNodeInRecent(node.id)}>
+                    <div>
+                      <strong>{node.title ?? node.id}</strong>
+                      <span>{node.summary ?? 'No summary yet.'}</span>
+                      <div className="meta-row">
+                        <span>{node.type}</span>
+                        <span>{node.sourceLabel ?? 'unknown'}</span>
+                        <span>{formatTime(node.updatedAt)}</span>
+                      </div>
+                    </div>
+                    <em>Open</em>
+                  </button>
+                ))}
+                {!homeSearchNodes.length ? <div className="empty-state compact">No node hits matched this search yet.</div> : null}
+              </div>
+            </section>
+
+            <section className="card page-card">
+              <div className="section-head section-head--compact">
+                <div>
+                  <span className="eyebrow">Activity hits</span>
+                  <h3>Recent movement behind the query</h3>
+                </div>
+                <span className="pill tone-muted">{homeSearchActivityHits.length}</span>
+              </div>
+              <div className="card-stack">
+                {homeSearchActivityHits.map((activity) => (
+                  <button
+                    key={activity.id}
+                    type="button"
+                    className="route-card"
+                    onClick={() => {
+                      if (activity.targetNodeId) {
+                        openNodeInRecent(activity.targetNodeId);
+                      }
+                    }}
+                  >
+                    <div>
+                      <strong>{activity.targetNodeTitle ?? activity.targetNodeId}</strong>
+                      <span>{activity.body || activity.activityType}</span>
+                      <div className="meta-row">
+                        <span>{activity.activityType}</span>
+                        <span>{activity.sourceLabel}</span>
+                        <span>{formatTime(activity.createdAt)}</span>
+                      </div>
+                    </div>
+                    <em>Jump</em>
+                  </button>
+                ))}
+                {!homeSearchActivityHits.length ? (
+                  <div className="empty-state compact">No activity hits matched this workspace query.</div>
+                ) : null}
+              </div>
+            </section>
+          </section>
+        ) : (
+          <section className="home-results-grid">
+            <section className="card page-card">
+              <div className="section-head section-head--compact">
+                <div>
+                  <span className="eyebrow">Active projects</span>
+                  <h3>Pick up project memory quickly</h3>
+                </div>
+              </div>
+              <div className="home-project-grid">
+                {pinnedProjectNodes.map((node) => (
+                  <button key={node.id} type="button" className="note-tile home-project-card" onClick={() => openNodeInGraph(node.id)}>
+                    <div className="result-card__top">
+                      <span className={`pill ${badgeTone(node.status)}`}>{node.type}</span>
+                      <span className="note-tile-time">{formatTime(node.updatedAt)}</span>
+                    </div>
+                    <strong>{node.title}</strong>
+                    <p>{node.summary || 'No summary yet.'}</p>
+                    <div className="chip-row">
+                      <span className="chip chip-static">{node.canonicality}</span>
+                      <span className="chip chip-static">{node.sourceLabel}</span>
+                    </div>
+                  </button>
+                ))}
+                {!pinnedProjectNodes.length ? <div className="empty-state">No project nodes are available yet.</div> : null}
+              </div>
+            </section>
+
+            <section className="card page-card">
+              <div className="section-head section-head--compact">
+                <div>
+                  <span className="eyebrow">Recent movement</span>
+                  <h3>Return to the latest durable changes</h3>
+                </div>
+              </div>
+              <div className="card-stack">
+                {homeRecentNodes.map((node) => (
+                  <button key={node.id} type="button" className="route-card" onClick={() => openNodeInRecent(node.id)}>
+                    <div>
+                      <strong>{node.title}</strong>
+                      <span>{node.summary || 'No summary yet.'}</span>
+                      <div className="meta-row">
+                        <span>{node.type}</span>
+                        <span>{node.sourceLabel}</span>
+                        <span>{formatTime(node.updatedAt)}</span>
+                      </div>
+                    </div>
+                    <em>Open</em>
+                  </button>
+                ))}
+                {!homeRecentNodes.length ? <div className="empty-state compact">No recent nodes are available yet.</div> : null}
+              </div>
+            </section>
+          </section>
+        )}
       </section>
     );
   })();
