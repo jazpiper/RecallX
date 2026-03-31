@@ -10,6 +10,41 @@ This document captures the recommended next batch after item 01 through item 05 
 
 The goal is to keep the next step small, product-shaped, and aligned with the current renderer and local-first guardrails.
 
+## Roadmap mode
+
+This document is currently a rolling roadmap, not a fixed backlog.
+
+- Each shipped batch can add one more "next recommended product batch".
+- That is useful for iterative product shaping, but it does not give a natural stop point for an "implement everything" run.
+
+When a user wants end-to-end execution until the current roadmap is done, treat this document in snapshot mode:
+
+- freeze the currently queued items before implementation starts
+- finish only that queued set unless the user explicitly asks for rolling mode
+- record any newly discovered ideas as later candidates instead of silently growing the active queue
+
+## Current queue snapshot
+
+Shipped in this chain so far:
+
+- 1. active project mode and project digest
+- 2. search refinement and command palette
+- 3. import normalization with dry-run and duplicate handling
+- 4. lightweight governance actions beyond archive
+- 5. relation governance follow-through and decision-log polish
+- 6. governance feed refinement and cross-entity review recall
+- 7. governance follow-up cues on Home
+- 8. review-action retrieval and decision recall polish
+
+Currently queued for the next finite run:
+
+- 9. review-action shortcuts and provenance cues
+
+Stop rule for the current finite queue:
+
+- the run is done when item 9 is shipped or explicitly deferred
+- any new ideas discovered while shipping item 9 should be recorded as later candidates, not auto-added to the same execution queue
+
 ## Recommendation
 
 The recommended follow-up order is:

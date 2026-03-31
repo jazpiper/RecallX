@@ -55,6 +55,16 @@ npm run version:check
 - Do not turn adjacent cleanup into hidden scope creep.
 - Do not claim success without rerunning the relevant validation command.
 
+## Roadmap Exhaustion Mode
+
+Use this extra rule when the user asks to "keep going" until a roadmap or backlog is done:
+
+1. If the source backlog is a rolling recommendation document, convert it into a finite queue snapshot first.
+2. Write down the queued items and the stop rule before starting the execution chain.
+3. During that run, treat newly discovered follow-ups as later candidates unless the user explicitly asked for rolling mode.
+4. Keep one branch or PR per queued item unless the user asked to batch them together.
+5. Stop when the queued snapshot is empty, shipped, or intentionally deferred.
+
 ## Finish
 
 Before wrapping up:

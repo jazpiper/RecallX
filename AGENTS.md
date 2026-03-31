@@ -124,6 +124,16 @@ Long autonomous runs must continually re-anchor to the task.
 
 When changing retrieval, semantic ranking, project graph, workspace switching, or provenance behavior, re-read the corresponding docs before finalizing the patch.
 
+### Roadmap Exhaustion Rule
+
+When the user asks to "keep going" until a roadmap or backlog is done:
+
+- do not treat a rolling recommendation document as infinite permission to keep inventing new in-scope work
+- first convert the current roadmap into a finite queue snapshot with an explicit stop rule
+- finish only that queued snapshot unless the user explicitly asks for rolling mode
+- record newly discovered adjacent ideas as later candidates or deferred follow-ups instead of silently adding them to the active queue
+- preserve one branch and PR per queued item unless the user explicitly asks to batch items together
+
 ## 8. Execution Loop
 
 Use this loop for implementation:
