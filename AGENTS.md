@@ -91,6 +91,11 @@ Before doing meaningful implementation work:
 5. Run version hygiene if the task may affect release artifacts, packaging, or versioned surfaces.
 6. Read the most relevant docs and target files before proposing architecture changes.
 
+For Figma-driven UI work in this repo:
+
+- if Figma MCP read calls are rate-limited but the shared link is public, fall back to the public `oEmbed` response and inspect the node-specific thumbnail first
+- if the link does not include `node-id`, ask for a node-specific shared link before locking design conclusions
+
 Repo commands:
 
 ```bash
