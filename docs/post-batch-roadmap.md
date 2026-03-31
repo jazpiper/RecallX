@@ -105,6 +105,30 @@ Recommended scope for the next item:
 - compact wording polish for decision labels and notes where human actions are revisited later
 - no analytics dashboard, no team workflow layer, no separate history page
 
+That batch shipped:
+
+- client-side search refinement for `review_action` activity hits
+- renderer labels that describe the specific manual review decision instead of raw activity-type text
+- compact review recall inside note detail with quick return paths into Governance or graph
+- no reporting dashboard, no separate provenance browser, no new top-level surface
+
+The next recommended product batch is now:
+
+9. review-action shortcuts and provenance cues
+
+Why this is next now:
+
+- review decisions are now much easier to rediscover from Home, Governance, and note retrieval, but the user still lacks one-step shortcuts into those recall paths
+- the next leverage is a few tiny affordances that make manual trust history feel first-class without expanding the information architecture
+- this keeps the trust loop compact and retrieval-first
+
+Recommended scope for the next item:
+
+- command-palette shortcuts for recent review decisions or Governance re-entry
+- lightweight provenance wording cues near manual review history
+- optional quick-filter presets for recent manual decisions
+- no dedicated provenance page, no dashboard, no notification system
+
 ## Impact x Effort
 
 ### 1. Active project mode and digest

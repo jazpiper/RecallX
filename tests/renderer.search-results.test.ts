@@ -57,6 +57,7 @@ function makeActivityHit(overrides: Partial<ActivitySearchHit> = {}): ActivitySe
     body: overrides.body ?? 'Matched activity body',
     sourceLabel: overrides.sourceLabel ?? 'search-index',
     createdAt: overrides.createdAt ?? '2025-12-01T10:15:00.000Z',
+    metadata: overrides.metadata ?? {},
   };
 }
 
@@ -121,6 +122,7 @@ describe('renderer search result helpers', () => {
       scope: 'all',
       nodeType: 'project',
       sourceLabel: 'Codex',
+      activityType: 'review_action',
     });
 
     expect(filtered.nodes.map((item) => item.id)).toEqual(['project_hit']);

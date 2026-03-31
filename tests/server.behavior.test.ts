@@ -3874,10 +3874,13 @@ describe("inferred relation API integration", () => {
     });
     repository.appendActivity({
       targetNodeId: node.id,
-      activityType: "agent_run_summary",
+      activityType: "review_action",
       body: "Cleanup execution summary",
       source,
-      metadata: {},
+      metadata: {
+        action: "promote",
+        nextState: "healthy"
+      },
     });
 
     const server = createServer(app);
@@ -3908,6 +3911,10 @@ describe("inferred relation API integration", () => {
       expect(payload.data.items.find((item: { resultType: string }) => item.resultType === "node")?.node?.matchReason?.matchedFields).toContain(
         "title"
       );
+      expect(payload.data.items.find((item: { resultType: string }) => item.resultType === "activity")?.activity?.metadata).toMatchObject({
+        action: "promote",
+        nextState: "healthy"
+      });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

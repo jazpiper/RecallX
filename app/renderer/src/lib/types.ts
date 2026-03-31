@@ -175,6 +175,7 @@ export interface ActivitySearchHit {
   body: string;
   sourceLabel: string;
   createdAt: string;
+  metadata: Record<string, string | number | boolean>;
 }
 
 export interface SearchNodeHit {

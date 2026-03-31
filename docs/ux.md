@@ -365,10 +365,11 @@ The active project may prefill the project selector, but it should still be easy
 1. user searches
    Search can begin from Home or Recent
 2. user optionally narrows scope, node type, or source with lightweight chips
-3. user can also open the command palette for route jump, recent search reuse, or recent-node jump
-4. user selects a node
-5. right rail shows surrounding context
-6. user optionally opens graph or acts on bundle preview
+3. user can also narrow activity hits to recent review decisions without rerunning the backend
+4. user can also open the command palette for route jump, recent search reuse, or recent-node jump
+5. user selects a node
+6. right rail shows surrounding context
+7. user optionally opens graph or acts on bundle preview
 
 ### Design rule
 Refinement should speed up the existing deterministic loop.
@@ -404,6 +405,12 @@ It should not hide the underlying result shape or replace the normal search surf
 2. the recent decision remains visible in the compact Governance feed
 3. when the user returns to Home, a small follow-up card keeps that recent trust history nearby
 4. the user can jump back into notes, graph, or Governance without reopening a queue
+
+## 9.7 Review-action recall flow
+1. user opens a note or runs a mixed workspace search
+2. recent review decisions appear with human-readable labels instead of raw `review_action` text
+3. user can narrow activity hits to review decisions only
+4. note detail keeps a compact review recall slice with fast jump-back into Governance or graph
 
 ### Design rule
 This is a continuity loop, not a second navigation system.

@@ -2845,6 +2845,7 @@ export class RecallXRepository {
            a.body,
            a.source_label,
            a.created_at,
+           a.metadata_json,
            n.title AS target_title,
            n.type AS target_type,
            n.status AS target_status
@@ -2874,6 +2875,7 @@ export class RecallXRepository {
         body: row.body ? String(row.body) : null,
         sourceLabel: row.source_label ? String(row.source_label) : null,
         createdAt: String(row.created_at),
+        metadata: parseJson<JsonMap>(row.metadata_json as string | null, {}),
         lexicalQuality,
         matchReason: buildSearchMatchReason(
           params.strategy,

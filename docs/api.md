@@ -1077,6 +1077,9 @@ Return a compact recent feed of manual governance decisions across nodes and rel
 - relation items include `fromNodeId`, `toNodeId`, and `relationType` so the renderer can link back into graph or related note context
 - results are ordered by most recent governance decision first
 
+### Search activity note
+- workspace search and activity-search responses now preserve activity `metadata` so renderer activity recall can label `review_action` hits with the specific manual decision instead of a raw activity type string
+
 ## 15.3 Get governance state
 ### HTTP
 `GET /api/v1/governance/state/:entityType/:id`

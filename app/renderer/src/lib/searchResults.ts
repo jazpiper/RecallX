@@ -150,6 +150,7 @@ export function filterSearchWorkspaceResults(
     scope: SearchResultScope;
     nodeType: NodeType | 'all';
     sourceLabel: string | 'all';
+    activityType: ActivitySearchHit['activityType'] | 'all';
   },
 ) {
   const normalizedSourceFilter =
@@ -174,6 +175,10 @@ export function filterSearchWorkspaceResults(
     filters.scope === 'nodes'
       ? []
       : activityHits.filter((hit) => {
+          if (filters.activityType !== 'all' && hit.activityType !== filters.activityType) {
+            return false;
+          }
+
           if (!normalizedSourceFilter) {
             return true;
           }
