@@ -127,11 +127,14 @@ It should answer:
 - command palette entry point
 - lightweight search filter chips for scope, node type, and source
 - quick actions for Guide, Graph, Governance, and Notes
+- active project digest
 - recent project cards
+- compact governance follow-up card for recent manual decisions
 - recent movement / mixed-search result panels
 
 ### Important notes
 - Home now includes a workspace-wide search bar and keeps quick actions secondary
+- Home can carry recent manual governance decisions forward, but only as a small continuity cue
 - Home search refinement should stay client-visible and small, not turn into an advanced query builder
 - Home is a retrieval-first re-entry surface, not the primary node-creation surface
 - semantic indexing still belongs on Home as an operational aid, not as a dedicated page
@@ -395,6 +398,12 @@ It should not hide the underlying result shape or replace the normal search surf
 2. Home shows a lightweight digest with nearby context and recent activity
 3. quick capture defaults to that project unless the user overrides it
 4. project map falls back to that project when there is no more specific focus
+
+## 9.6 Governance follow-up flow
+1. user makes a manual governance decision from Governance
+2. the recent decision remains visible in the compact Governance feed
+3. when the user returns to Home, a small follow-up card keeps that recent trust history nearby
+4. the user can jump back into notes, graph, or Governance without reopening a queue
 
 ### Design rule
 This is a continuity loop, not a second navigation system.

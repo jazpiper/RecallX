@@ -106,6 +106,10 @@ const BEARER_RECENT_POLL_INTERVAL_MS = 15000;
 const ACTIVE_PROJECT_SETTING_KEY = 'workspace.activeProjectId';
 const RECENT_SEARCHES_STORAGE_KEY = 'recallx.recent-searches';
 const RECENT_COMMANDS_STORAGE_KEY = 'recallx.recent-commands';
+const GOVERNANCE_FEED_ENTITY_FILTER_STORAGE_KEY = 'recallx.governance-feed-entity-filter';
+const GOVERNANCE_FEED_ACTION_FILTER_STORAGE_KEY = 'recallx.governance-feed-action-filter';
+const governanceFeedEntityFilterOptions = ['all', 'node', 'relation'] as const;
+const governanceFeedActionFilterOptions = ['all', 'promote', 'contest', 'archive', 'accept', 'reject'] as const;
 const EMPTY_ACTIVE_PROJECT_DIGEST = {
   bundleItems: [] as ContextBundlePreviewItem[],
   activities: [] as Activity[],
@@ -349,6 +353,31 @@ function writeStoredHistory(key: string, items: string[]) {
   }
 }
 
+function readStoredChoice<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+  if (typeof window === 'undefined') {
+    return fallback;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw && allowed.includes(raw as T) ? (raw as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStoredChoice(key: string, value: string) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage failures so persisted filters stay optional.
+  }
+}
+
 type GuideSection = {
   id: string;
   group: string;
@@ -426,8 +455,12 @@ export default function App() {
   const [isGovernanceDetailLoading, setIsGovernanceDetailLoading] = useState(false);
   const [governanceFeed, setGovernanceFeed] = useState<GovernanceFeedItem[]>([]);
   const [isGovernanceFeedLoading, setIsGovernanceFeedLoading] = useState(false);
-  const [governanceFeedEntityFilter, setGovernanceFeedEntityFilter] = useState<GovernanceFeedEntityFilter>('all');
-  const [governanceFeedActionFilter, setGovernanceFeedActionFilter] = useState<GovernanceFeedActionFilter>('all');
+  const [governanceFeedEntityFilter, setGovernanceFeedEntityFilter] = useState<GovernanceFeedEntityFilter>(() =>
+    readStoredChoice(GOVERNANCE_FEED_ENTITY_FILTER_STORAGE_KEY, governanceFeedEntityFilterOptions, 'all')
+  );
+  const [governanceFeedActionFilter, setGovernanceFeedActionFilter] = useState<GovernanceFeedActionFilter>(() =>
+    readStoredChoice(GOVERNANCE_FEED_ACTION_FILTER_STORAGE_KEY, governanceFeedActionFilterOptions, 'all')
+  );
   const [captureType, setCaptureType] = useState<Node['type']>('note');
   const [captureProjectId, setCaptureProjectId] = useState('');
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -1074,6 +1107,7 @@ export default function App() {
     () => (deferredQuery.trim() ? filteredSearchActivityHits.slice(0, 4) : []),
     [deferredQuery, filteredSearchActivityHits],
   );
+  const homeGovernanceFeed = useMemo(() => governanceFeed.slice(0, 3), [governanceFeed]);
   const homeSuggestedProjectNode = useMemo(
     () => activeProjectNode ?? pinnedProjectNodes[0] ?? projectNodes[0] ?? null,
     [activeProjectNode, pinnedProjectNodes, projectNodes],
@@ -1169,7 +1203,7 @@ export default function App() {
   }, [view]);
 
   useEffect(() => {
-    if (view !== 'governance') {
+    if (view !== 'governance' && view !== 'home') {
       setIsGovernanceFeedLoading(false);
       return;
     }
@@ -1199,6 +1233,14 @@ export default function App() {
       mounted = false;
     };
   }, [governanceFeedActionFilter, governanceFeedEntityFilter, view]);
+
+  useEffect(() => {
+    writeStoredChoice(GOVERNANCE_FEED_ENTITY_FILTER_STORAGE_KEY, governanceFeedEntityFilter);
+  }, [governanceFeedEntityFilter]);
+
+  useEffect(() => {
+    writeStoredChoice(GOVERNANCE_FEED_ACTION_FILTER_STORAGE_KEY, governanceFeedActionFilter);
+  }, [governanceFeedActionFilter]);
 
   useEffect(() => {
     if (!governanceIssues.length) {
@@ -2844,7 +2886,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                       </div>
                       <div className="governance-feed-toolbar">
                         <div className="chip-row">
-                          {(['all', 'node', 'relation'] as const).map((value) => (
+                          {governanceFeedEntityFilterOptions.map((value) => (
                             <button
                               key={value}
                               type="button"
@@ -2856,7 +2898,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                           ))}
                         </div>
                         <div className="chip-row">
-                          {(['all', 'promote', 'contest', 'archive', 'accept', 'reject'] as const).map((value) => (
+                          {governanceFeedActionFilterOptions.map((value) => (
                             <button
                               key={value}
                               type="button"
@@ -2903,91 +2945,6 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                                       onClick={() => setSelectedGovernanceId(event.entityId)}
                                     >
                                       Inspect issue
-                                    </button>
-                                  ) : null}
-                                </div>
-                              </article>
-                            ))
-                          : null}
-                        {!isGovernanceFeedLoading && !governanceFeed.length ? (
-                          <div className="empty-state compact">No recent manual governance decisions match the current filters.</div>
-                        ) : null}
-                      </div>
-                    </article>
-
-                    <article className="card governance-detail-card">
-                      <div className="page-copy compact-copy">
-                        <span className="eyebrow">Cross-entity recall</span>
-                        <h3>Recent governance feed</h3>
-                      </div>
-                      <div className="governance-feed-toolbar">
-                        <div className="chip-row">
-                          {(['all', 'node', 'relation'] as const).map((value) => (
-                            <button
-                              key={value}
-                              type="button"
-                              className={`chip governance-filter-chip ${governanceFeedEntityFilter === value ? 'active' : ''}`}
-                              onClick={() => setGovernanceFeedEntityFilter(value)}
-                            >
-                              {value === 'all' ? 'All entities' : value === 'node' ? 'Nodes' : 'Relations'}
-                            </button>
-                          ))}
-                        </div>
-                        <div className="chip-row">
-                          {(['all', 'promote', 'contest', 'archive', 'accept', 'reject'] as const).map((value) => (
-                            <button
-                              key={value}
-                              type="button"
-                              className={`chip governance-filter-chip ${governanceFeedActionFilter === value ? 'active' : ''}`}
-                              onClick={() => setGovernanceFeedActionFilter(value)}
-                            >
-                              {value === 'all' ? 'All actions' : getGovernanceDecisionActionLabel(value)}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="card-stack compact-stack governance-feed-list">
-                        {isGovernanceFeedLoading ? (
-                          <div className="empty-state compact">Loading recent governance decisions...</div>
-                        ) : null}
-                        {!isGovernanceFeedLoading
-                          ? governanceFeed.map((event) => (
-                              <article key={event.id} className="mini-card governance-feed-card">
-                                <div className="result-card__top">
-                                  <div>
-                                    <strong>{event.title ?? `${event.entityType}:${event.entityId}`}</strong>
-                                    <p>{event.reason}</p>
-                                  </div>
-                                  <span className={`pill ${badgeTone(event.nextState)}`}>
-                                    {getGovernanceDecisionActionLabel(event.action)}
-                                  </span>
-                                </div>
-                                <div className="chip-row">
-                                  <span className="chip chip-static">{event.entityType}</span>
-                                  {event.subtitle ? <span className="chip chip-static">{event.subtitle}</span> : null}
-                                  {event.relationType ? <span className="chip chip-static">{event.relationType}</span> : null}
-                                </div>
-                                <div className="meta-row">
-                                  <span>{formatTime(event.createdAt)}</span>
-                                  <span>{formatConfidence(event.confidence)}</span>
-                                </div>
-                                <div className="action-row">
-                                  <button type="button" onClick={() => handleOpenGovernanceFeedItem(event)}>
-                                    Review issue
-                                  </button>
-                                  {event.nodeId ? (
-                                    <button type="button" className="ghost" onClick={() => openNodeInRecent(event.nodeId!)}>
-                                      Open in notes
-                                    </button>
-                                  ) : null}
-                                  {!event.nodeId && event.fromNodeId ? (
-                                    <button type="button" className="ghost" onClick={() => openNodeInRecent(event.fromNodeId!)}>
-                                      Open source node
-                                    </button>
-                                  ) : null}
-                                  {!event.nodeId && event.toNodeId ? (
-                                    <button type="button" className="ghost" onClick={() => openNodeInGraph(event.toNodeId!)}>
-                                      Open target in graph
                                     </button>
                                   ) : null}
                                 </div>
@@ -4555,6 +4512,85 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   </article>
                 ))}
                 {!pinnedProjectNodes.length ? <div className="empty-state">No project nodes are available yet.</div> : null}
+              </div>
+            </section>
+
+            <section className="card page-card home-governance-card">
+              <div className="section-head section-head--compact">
+                <div>
+                  <span className="eyebrow">Governance follow-up</span>
+                  <h3>Carry recent trust decisions back to Home</h3>
+                </div>
+                <span className="pill tone-muted">{homeGovernanceFeed.length}</span>
+              </div>
+              <p className="home-digest-copy">
+                Recent manual governance decisions stay visible here so you can reopen the reviewed note, graph context,
+                or full Governance surface without losing momentum.
+              </p>
+              <div className="chip-row">
+                <span className="chip chip-static">
+                  {governanceFeedEntityFilter === 'all' ? 'all entities' : `${governanceFeedEntityFilter} only`}
+                </span>
+                <span className="chip chip-static">
+                  {governanceFeedActionFilter === 'all'
+                    ? 'all actions'
+                    : `${getGovernanceDecisionActionLabel(governanceFeedActionFilter)} decisions`}
+                </span>
+                <span className="chip chip-static">{governanceFeed.length} recent decisions</span>
+              </div>
+              <div className="action-row">
+                <button type="button" onClick={() => selectView('governance')}>
+                  Open governance
+                </button>
+                {governanceFeedEntityFilter !== 'all' || governanceFeedActionFilter !== 'all' ? (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      setGovernanceFeedEntityFilter('all');
+                      setGovernanceFeedActionFilter('all');
+                    }}
+                  >
+                    Clear feed filters
+                  </button>
+                ) : null}
+              </div>
+              <div className="card-stack compact-stack">
+                {isGovernanceFeedLoading ? (
+                  <div className="empty-state compact">Loading recent governance decisions...</div>
+                ) : null}
+                {!isGovernanceFeedLoading
+                  ? homeGovernanceFeed.map((event) => (
+                      <article key={event.id} className="mini-card governance-feed-card">
+                        <div className="result-card__top">
+                          <div>
+                            <strong>{event.title ?? `${event.entityType}:${event.entityId}`}</strong>
+                            <p>{event.reason}</p>
+                          </div>
+                          <span className={`pill ${badgeTone(event.nextState)}`}>{getGovernanceDecisionActionLabel(event.action)}</span>
+                        </div>
+                        <div className="meta-row">
+                          <span>{formatTime(event.createdAt)}</span>
+                          <span>{event.entityType}</span>
+                          {event.relationType ? <span>{relationLabel(event.relationType)}</span> : null}
+                        </div>
+                        <div className="action-row governance-feed-card__actions">
+                          <button type="button" onClick={() => inspectGovernanceFeedItem(event)}>
+                            Open notes
+                          </button>
+                          <button type="button" className="ghost" onClick={() => openGovernanceFeedGraph(event)}>
+                            Open graph
+                          </button>
+                          <button type="button" className="ghost" onClick={() => handleOpenGovernanceFeedItem(event)}>
+                            Review issue
+                          </button>
+                        </div>
+                      </article>
+                    ))
+                  : null}
+                {!isGovernanceFeedLoading && !governanceFeed.length ? (
+                  <div className="empty-state compact">No recent manual governance decisions are available for Home yet.</div>
+                ) : null}
               </div>
             </section>
 

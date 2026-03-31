@@ -66,22 +66,9 @@ That batch shipped:
 - compact decision-note support inside relation governance actions
 - no bulk moderation tools, no workflow engine, no hidden background resolution
 
-The next recommended product batch is now:
+The latest shipped batch is now:
 
 6. governance feed refinement and cross-entity review recall
-
-Why this is next now:
-
-- node and relation manual actions now exist, but recent governance history is still only visible one issue at a time
-- the next leverage is making trust decisions easier to revisit across sessions without creating a moderation inbox
-- this extends the same compact governance model instead of broadening navigation
-
-Recommended scope for the next item:
-
-- a small multi-issue recent decision feed on Governance or Home
-- filters for manual governance decisions by entity type or action
-- better link-out from recent decisions back into nodes, graph, or relation context
-- no bulk review actions, no queue mechanics, no separate admin surface
 
 That batch shipped:
 
@@ -90,15 +77,26 @@ That batch shipped:
 - direct jump-back into notes, graph, or the selected governance issue
 - no moderation inbox, no bulk review tools, no new top-level surface
 
+The latest shipped batch is now:
+
+7. governance follow-up cues on Home
+
+That batch shipped:
+
+- a small Home card for recent manual governance decisions
+- one-click return to reviewed note, graph context, or Governance from Home
+- persistence for the last-used governance feed filters across Home and Governance
+- cleanup of duplicated Governance feed presentation instead of adding another review surface
+
 The next recommended product batch is now:
 
-7. review-action retrieval and decision recall polish
+8. review-action retrieval and decision recall polish
 
 Why this is next now:
 
-- governance decisions are now easier to make and revisit inside Governance, but they are still harder to rediscover from normal note or search workflows
-- the next leverage is connecting review actions more clearly to the broader retrieval loop without creating a reporting dashboard
-- this stays aligned with the current local-first, compact-surface product shape
+- manual governance decisions now persist across Governance and Home, but they are still not easy enough to rediscover from normal search and note-history workflows
+- the next leverage is making `review_action` activity more visible in retrieval without adding a dashboard
+- this extends the same compact trust loop instead of creating another top-level surface
 
 Recommended scope for the next item:
 
@@ -106,30 +104,6 @@ Recommended scope for the next item:
 - lightweight jump-back from decision recall into related provenance or node history
 - compact wording polish for decision labels and notes where human actions are revisited later
 - no analytics dashboard, no team workflow layer, no separate history page
-
-That batch shipped:
-
-- a compact recent manual decision feed on Governance
-- entity-type and action filters for cross-session trust recall
-- direct jump-back from feed items into notes, graph, or still-open governance issues
-- no new moderation inbox, no Home takeover, no bulk actions
-
-The next recommended product batch is now:
-
-7. governance follow-up cues on Home
-
-Why this is next now:
-
-- Governance now has compact recall, but the product still drops that trust history once the user leaves the Governance surface
-- the next leverage is a very small re-entry cue on Home, not another review screen
-- this keeps the trust loop visible without broadening navigation
-
-Recommended scope for the next item:
-
-- a small Home card for the most recent manual governance decisions
-- one-click return to reviewed note or graph context
-- optional persistence for the last-used governance feed filters
-- no notifications, badges, or inbox semantics
 
 ## Impact x Effort
 
