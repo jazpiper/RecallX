@@ -52,6 +52,11 @@ import {
   filterPaletteRecentNodes,
 } from './lib/rendererShell.js';
 import {
+  buildRecentPaletteCommands,
+  createPaletteCommands,
+  filterPaletteCommands,
+} from './lib/rendererPalette.js';
+import {
   buildHomeGovernanceFeed,
   buildReviewActionActivities,
   findLatestGovernanceFeedItem,
@@ -2578,7 +2583,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
   const commandPaletteRouteCommands = useMemo(
     () =>
       profileHotPath('palette.routeCommands', () =>
-        [
+        createPaletteCommands([
           { label: 'Open Home', hint: 'Return to the re-entry surface', run: () => selectView('home') },
           { label: 'Open Guide', hint: 'Read API and MCP guidance', run: () => selectView('search') },
           { label: 'Open Notes', hint: 'Jump to recent cards and quick capture', run: () => selectView('recent') },
@@ -2644,7 +2649,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 },
               ]
             : []),
-        ].sort((left, right) => left.label.localeCompare(right.label)),
+        ]),
       ),
     [activeProjectNode, latestGovernanceFeedItem, latestGovernanceIssueFeedItem],
   );
@@ -2652,25 +2657,15 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
   const filteredPaletteRouteCommands = useMemo(
     () =>
       profileHotPath('palette.filteredRouteCommands', () =>
-        commandPaletteRouteCommands.filter((command) =>
-          !normalizedPaletteQuery
-            || [command.label, command.hint].join(' ').toLowerCase().includes(normalizedPaletteQuery),
-        ),
+        filterPaletteCommands(commandPaletteRouteCommands, normalizedPaletteQuery),
       ),
     [commandPaletteRouteCommands, normalizedPaletteQuery],
   );
   const recentPaletteCommands = useMemo(
     () =>
-      recentCommands
-        .map((label) =>
-          commandPaletteRouteCommands.find((command) => command.label.trim().toLowerCase() === label.trim().toLowerCase()) ?? null,
-        )
-        .filter((command, index, items): command is (typeof commandPaletteRouteCommands)[number] =>
-          command !== null
-          && (!normalizedPaletteQuery
-            || [command.label, command.hint].join(' ').toLowerCase().includes(normalizedPaletteQuery))
-          && items.findIndex((item) => item?.label === command.label) === index,
-        ),
+      profileHotPath('palette.recentCommands', () =>
+        buildRecentPaletteCommands(recentCommands, commandPaletteRouteCommands, normalizedPaletteQuery),
+      ),
     [commandPaletteRouteCommands, normalizedPaletteQuery, recentCommands],
   );
   const filteredPaletteRecentSearches = useMemo(
