@@ -43,6 +43,7 @@ import {
   pushRecentEntry,
   type SearchResultScope,
 } from './lib/searchResults';
+import { findLatestGovernanceIssueFeedItem, hasOpenGovernanceIssueForFeedItem } from './lib/governance';
 import type {
   Activity,
   ActivitySearchHit,
@@ -1204,10 +1205,7 @@ export default function App() {
   );
   const homeGovernanceFeed = useMemo(() => governanceFeed.slice(0, 3), [governanceFeed]);
   const latestGovernanceIssueFeedItem = useMemo(
-    () =>
-      governanceFeed.find((event) =>
-        governanceIssues.some((item) => item.entityType === event.entityType && item.entityId === event.entityId),
-      ) ?? null,
+    () => findLatestGovernanceIssueFeedItem(governanceFeed, governanceIssues),
     [governanceFeed, governanceIssues],
   );
   const homeSuggestedProjectNode = useMemo(
@@ -3111,7 +3109,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                                   <button type="button" className="ghost" onClick={() => openGovernanceFeedGraph(event)}>
                                     Open graph
                                   </button>
-                                  {governanceIssues.some((item) => item.entityType === event.entityType && item.entityId === event.entityId) ? (
+                                  {hasOpenGovernanceIssueForFeedItem(governanceIssues, event) ? (
                                     <button
                                       type="button"
                                       className="ghost"
@@ -4792,7 +4790,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                           <button type="button" className="ghost" onClick={() => openGovernanceFeedGraph(event)}>
                             Open graph
                           </button>
-                          {governanceIssues.some((item) => item.entityType === event.entityType && item.entityId === event.entityId) ? (
+                          {hasOpenGovernanceIssueForFeedItem(governanceIssues, event) ? (
                             <button type="button" className="ghost" onClick={() => handleOpenGovernanceFeedItem(event)}>
                               Review issue
                             </button>
