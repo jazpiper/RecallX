@@ -68,6 +68,7 @@ import {
   shouldUseSemanticCandidateAugmentation
 } from "./retrieval.js";
 import { buildProjectGraph } from "./project-graph.js";
+import { isReadonlySqliteWriteError } from "./sqlite-errors.js";
 import { createId, isPathWithinRoot } from "./utils.js";
 import type { WorkspaceSessionManager } from "./workspace-session.js";
 
@@ -1312,7 +1313,9 @@ export function createRecallXApp(params: {
                 touchedRelationIds.add(relationId);
               }
             } catch (error) {
-              console.error(`Failed to refresh inferred relations for node ${nodeId}`, error);
+              if (!isReadonlySqliteWriteError(error)) {
+                console.error(`Failed to refresh inferred relations for node ${nodeId}`, error);
+              }
             }
           }
 
