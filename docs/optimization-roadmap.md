@@ -41,6 +41,21 @@ Leave feature-freeze mode only when all of the following are true:
 - hot-path renderer and API behavior feel measurably calmer in normal use
 - current known test and observability gaps are narrowed enough that new feature work will not compound hidden instability
 
+## Current optimization queue snapshot
+
+Queued for this finite optimization run:
+
+- O1. hot-path profiling checklist and baseline capture
+- O2. renderer shell simplification around `App.tsx`
+- O3. governance and review recall derivation tightening
+- O4. import cold-path structure cleanup
+- O5. test-noise reduction and confidence-gap coverage
+
+Stop rule for this queue:
+
+- the run is complete when O1 through O5 are shipped or intentionally deferred
+- any new optimization idea discovered during this run should be recorded as a later candidate unless it clearly blocks one of O1 through O5
+
 ## Optimization principles
 
 ### 1. Protect the hot path
@@ -266,3 +281,7 @@ Concrete first step:
 1. document the profiling checklist
 2. inspect `App.tsx` hot-path derivation for Home, command palette, and Governance feed
 3. record the first bounded optimization queue before writing code
+
+Supporting baseline document:
+
+- [`docs/optimization-baseline.md`](./optimization-baseline.md)
