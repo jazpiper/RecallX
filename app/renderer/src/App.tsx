@@ -141,10 +141,9 @@ const EMPTY_ACTIVE_PROJECT_DIGEST = {
 };
 
 const navigation: { id: NavView; label: string; hint: string }[] = [
-  { id: 'home', label: 'Home', hint: 'landing' },
-  { id: 'search', label: 'Guide', hint: 'api + mcp' },
-  { id: 'recent', label: 'Notes', hint: 'reading' },
-  { id: 'settings', label: 'Workspace', hint: 'scope' },
+  { id: 'home', label: 'Home', hint: 're-entry' },
+  { id: 'recent', label: 'Memory', hint: 'browse' },
+  { id: 'settings', label: 'Workspace', hint: 'ops' },
 ];
 
 const utilityNavigation: Array<
@@ -153,7 +152,7 @@ const utilityNavigation: Array<
 > = [
   { id: 'graph', label: 'Graph' },
   { id: 'project-map', label: 'Project map', graphMode: 'project-map' },
-  { id: 'governance', label: 'Governance' },
+  { id: 'governance', label: 'Review' },
 ];
 
 function formatApiBase(apiBind: string): string {
@@ -235,14 +234,22 @@ function formatConfidence(value: number) {
   return `${(value * 100).toFixed(0)}%`;
 }
 
+function formatCompactId(value: string) {
+  const separatorIndex = value.indexOf(':');
+  const kind = separatorIndex >= 0 ? value.slice(0, separatorIndex) : null;
+  const raw = separatorIndex >= 0 ? value.slice(separatorIndex + 1) : value;
+  const compact = raw.length > 16 ? `${raw.slice(0, 8)}…${raw.slice(-4)}` : raw;
+  return kind ? `${kind}:${compact}` : compact;
+}
+
 function getGovernanceStateSummary(state: GovernanceIssueItem['state']) {
   switch (state) {
     case 'contested':
-      return 'Contradiction or repeated negative signals are suppressing trust right now.';
+      return 'Conflicting signals need review.';
     case 'low_confidence':
-      return 'Local evidence exists, but the entity still needs stronger repeated confirmation.';
+      return 'Trust is still weak.';
     default:
-      return 'Signals are currently stable and no contest path is active.';
+      return 'State is stable.';
   }
 }
 
@@ -322,26 +329,23 @@ function getReviewActionProvenanceText(activity: {
   const sourceLabel = activity.sourceLabel?.trim() || null;
 
   if (sourceLabel && nextState) {
-    return `${sourceLabel} recorded this manual review and moved the memory to ${nextState}.`;
+    return `${sourceLabel} moved this to ${nextState}.`;
   }
   if (nextState) {
-    return `Manual review moved the memory to ${nextState}.`;
+    return `Moved to ${nextState}.`;
   }
   if (sourceLabel) {
-    return `${sourceLabel} recorded this manual review decision.`;
+    return `${sourceLabel} recorded this review.`;
   }
-  return 'Manual review decision recorded for this memory.';
+  return 'Review recorded.';
 }
 
 function getGovernanceFeedProvenanceText(item: GovernanceFeedItem) {
   const nextState = formatGovernanceStateLabel(item.nextState);
-  if (item.entityType === 'relation') {
-    return item.relationType
-      ? `${getGovernanceDecisionActionLabel(item.action)} relation review moved trust to ${nextState}.`
-      : `${getGovernanceDecisionActionLabel(item.action)} review moved trust to ${nextState}.`;
+  if (item.entityType === 'relation' && item.relationType) {
+    return `${getGovernanceDecisionActionLabel(item.action)} ${relationLabel(item.relationType)} -> ${nextState}`;
   }
-
-  return `${getGovernanceDecisionActionLabel(item.action)} node review moved trust to ${nextState}.`;
+  return `${getGovernanceDecisionActionLabel(item.action)} -> ${nextState}`;
 }
 
 function isNodeGovernanceCandidate(node: Node | null, governance: GovernancePayload['state'] | null = null) {
@@ -384,15 +388,15 @@ function canArchiveRelation(relation: Relation | null) {
 function getViewTitle(view: NavView) {
   switch (view) {
     case 'search':
-      return 'Guide';
+      return 'Integrations';
     case 'projects':
-      return 'Guide';
+      return 'Integrations';
     case 'recent':
-      return 'Notes';
+      return 'Memory';
     case 'settings':
       return 'Workspace';
     case 'governance':
-      return 'Governance';
+      return 'Review';
     case 'graph':
       return 'Graph';
     default:
@@ -679,6 +683,10 @@ export default function App() {
     }
 
     setLoadError(error instanceof Error ? error.message : fallbackMessage);
+  }
+
+  function isNotFoundError(error: unknown): boolean {
+    return typeof error === 'object' && error !== null && 'status' in error && (error as { status?: unknown }).status === 404;
   }
 
   useEffect(() => {
@@ -1062,6 +1070,14 @@ export default function App() {
         setLoadError(null);
       } catch (error) {
         if (!mounted) return;
+        if (isNotFoundError(error)) {
+          setDetail({
+            ...emptyDetailPanel(),
+            node: currentNode,
+          });
+          setLoadError(null);
+          return;
+        }
         handleRequestFailure(error, 'Failed to load node detail.');
       }
     }
@@ -1272,6 +1288,14 @@ export default function App() {
         setLoadError(null);
       } catch (error) {
         if (!mounted) return;
+        if (isNotFoundError(error)) {
+          setDetail({
+            ...emptyDetailPanel(),
+            node: currentNode,
+          });
+          setLoadError(null);
+          return;
+        }
         handleRequestFailure(error, 'Failed to load note detail.');
       }
     }
@@ -1398,6 +1422,11 @@ export default function App() {
         setLoadError(null);
       } catch (error) {
         if (!mounted) return;
+        if (isNotFoundError(error)) {
+          setGovernanceDetail(emptyGovernanceDetailPanel());
+          setLoadError(null);
+          return;
+        }
         handleRequestFailure(error, 'Failed to load governance detail.');
       } finally {
         if (mounted) {
@@ -2410,6 +2439,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
   }
 
   function selectView(next: NavView) {
+    setLoadError(null);
     startTransition(() => {
       setView(next);
     });
@@ -2585,8 +2615,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       profileHotPath('palette.routeCommands', () =>
         createPaletteCommands([
           { label: 'Open Home', hint: 'Return to the re-entry surface', run: () => selectView('home') },
-          { label: 'Open Guide', hint: 'Read API and MCP guidance', run: () => selectView('search') },
-          { label: 'Open Notes', hint: 'Jump to recent cards and quick capture', run: () => selectView('recent') },
+          { label: 'Open Memory', hint: 'Browse memory and quick capture', run: () => selectView('recent') },
           {
             label: 'Open Graph',
             hint: 'Inspect the broader memory graph',
@@ -2595,25 +2624,25 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               selectView('graph');
             },
           },
-          { label: 'Review Governance', hint: 'Inspect trust and review signals', run: () => selectView('governance') },
+          { label: 'Open Review', hint: 'Inspect trust and review signals', run: () => selectView('governance') },
           {
             label: 'Review promoted decisions',
-            hint: 'Open Governance filtered to recent promote actions',
+            hint: 'Open Review filtered to recent promote actions',
             run: () => openGovernanceWithFilters('all', 'promote'),
           },
           {
             label: 'Review archived decisions',
-            hint: 'Open Governance filtered to recent archive actions',
+            hint: 'Open Review filtered to recent archive actions',
             run: () => openGovernanceWithFilters('all', 'archive'),
           },
           {
             label: 'Review contested nodes',
-            hint: 'Open Governance filtered to contested node decisions',
+            hint: 'Open Review filtered to contested node decisions',
             run: () => openGovernanceWithFilters('node', 'contest'),
           },
           {
             label: 'Review relation decisions',
-            hint: 'Open Governance filtered to relation review activity',
+            hint: 'Open Review filtered to relation review activity',
             run: () => openGovernanceWithFilters('relation', 'all'),
           },
           ...(latestGovernanceFeedItem
@@ -2634,12 +2663,13 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             ? [
                 {
                   label: 'Open latest review issue',
-                  hint: `${latestGovernanceIssueFeedItem.title ?? latestGovernanceIssueFeedItem.entityId} · reopen Governance detail`,
+                  hint: `${latestGovernanceIssueFeedItem.title ?? latestGovernanceIssueFeedItem.entityId} · reopen Review detail`,
                   run: () => handleOpenGovernanceFeedItem(latestGovernanceIssueFeedItem),
                 },
               ]
             : []),
           { label: 'Open Workspace', hint: 'Open backup, import, and safety tools', run: () => selectView('settings') },
+          { label: 'Open API guide', hint: 'Read HTTP and MCP access guidance', run: () => selectView('search') },
           ...(activeProjectNode
             ? [
                 {
@@ -2730,8 +2760,8 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       return (
         <section className="page-section page-section--guide">
           <div className="page-heading">
-            <span className="eyebrow">Guide</span>
-            <h2>API and MCP in one quiet reference.</h2>
+            <span className="eyebrow">Integrations</span>
+            <h2>API and MCP access.</h2>
           </div>
           <div className="guide-shell">
             <aside className="guide-sidebar">
@@ -2784,15 +2814,15 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       return (
         <section className="page-section">
           <div className="page-heading">
-            <span className="eyebrow">Governance</span>
-            <h2>Governance explorer</h2>
+            <span className="eyebrow">Review</span>
+            <h2>Issue queue</h2>
           </div>
           <div className="governance-layout">
             <aside className="card governance-list">
               <div className="section-head section-head--compact">
                 <div>
                   <span className="eyebrow">Issue queue</span>
-                  <h3>Current surfaced items</h3>
+                  <h3>Current items</h3>
                 </div>
                 <span className="pill tone-muted">{governanceIssues.length}</span>
               </div>
@@ -2800,17 +2830,17 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 <article className="info-block">
                   <span className="info-label">Contested</span>
                   <strong>{governanceStateCounts.contested ?? 0}</strong>
-                  <p>Highest-priority contradictions or repeated negative signals.</p>
+                  <p>Needs direct review.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Low confidence</span>
                   <strong>{governanceStateCounts.low_confidence ?? 0}</strong>
-                  <p>Items that need stronger repeated confirmation.</p>
+                  <p>Needs stronger proof.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Healthy</span>
                   <strong>{governanceStateCounts.healthy ?? 0}</strong>
-                  <p>Stable states that are currently not in the issue queue.</p>
+                  <p>Out of queue.</p>
                 </article>
               </div>
               <div className="card-stack">
@@ -2828,8 +2858,8 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     </div>
                     <p>{item.subtitle || getGovernanceStateSummary(item.state)}</p>
                     <div className="meta-row">
-                      <span>{item.entityType}:{item.entityId}</span>
-                      <span>confidence {formatConfidence(item.confidence)}</span>
+                      <span>{formatCompactId(`${item.entityType}:${item.entityId}`)}</span>
+                      <span>{formatConfidence(item.confidence)}</span>
                     </div>
                   </button>
                 ))}
@@ -2851,7 +2881,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     <article className="info-block">
                       <span className="info-label">Confidence</span>
                       <strong>{formatConfidence(activeGovernanceIssue.confidence)}</strong>
-                      <p>Current trust level for the selected issue.</p>
+                      <p>Current trust.</p>
                     </article>
                     <article className="info-block">
                       <span className="info-label">Action</span>
@@ -2861,14 +2891,14 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     <article className="info-block">
                       <span className="info-label">Last transition</span>
                       <strong>{formatTime(activeGovernanceIssue.lastTransitionAt)}</strong>
-                      <p>Most recent governance state change.</p>
+                      <p>Most recent change.</p>
                     </article>
                   </div>
                   <div className="governance-detail-grid">
                     <article className="card governance-detail-card">
                       <div className="page-copy compact-copy">
                         <span className="eyebrow">Why this surfaced</span>
-                        <h3>Reason summary</h3>
+                        <h3>Reason</h3>
                       </div>
                       <div className="card-stack compact-stack">
                         {activeGovernanceIssue.reasons.map((reason) => (
@@ -2877,7 +2907,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                           </article>
                         ))}
                         {!activeGovernanceIssue.reasons.length ? (
-                          <div className="empty-state compact">No explicit governance reasons were attached to this issue.</div>
+                          <div className="empty-state compact">No explicit reasons yet.</div>
                         ) : null}
                       </div>
                     </article>
@@ -2885,10 +2915,10 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     <article className="card governance-detail-card">
                       <div className="page-copy compact-copy">
                         <span className="eyebrow">Context</span>
-                        <h3>Selected entity</h3>
+                        <h3>Entity</h3>
                       </div>
                       {isGovernanceDetailLoading ? (
-                        <div className="empty-state compact">Loading selected issue detail...</div>
+                        <div className="empty-state compact">Loading issue detail...</div>
                       ) : activeGovernanceNode ? (
                         <div className="card-stack compact-stack">
                           <article className="mini-card">
@@ -2902,10 +2932,10 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                           </div>
                           <div className="action-row">
                             <button type="button" onClick={() => focusNode(activeGovernanceNode.id, 'recent')}>
-                              Open in notes
+                              Open
                             </button>
                             <button type="button" className="ghost" onClick={() => focusNode(activeGovernanceNode.id, 'graph')}>
-                              Open in graph
+                              Graph
                             </button>
                           </div>
                           {(activeGovernanceNodeCanPromote || activeGovernanceNodeCanContest || activeGovernanceNodeCanArchive) ? (
@@ -2979,12 +3009,12 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                           <div className="action-row">
                             {governanceDetail.fromNode ? (
                               <button type="button" onClick={() => focusNode(governanceDetail.fromNode!.id, 'recent')}>
-                                Open source node
+                                Source
                               </button>
                             ) : null}
                             {governanceDetail.toNode ? (
                               <button type="button" className="ghost" onClick={() => focusNode(governanceDetail.toNode!.id, 'graph')}>
-                                Open target in graph
+                                Graph
                               </button>
                             ) : null}
                           </div>
@@ -3037,7 +3067,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                         </div>
                       ) : (
                         <div className="empty-state compact">
-                          This issue does not currently expose extra entity detail in the active workspace view.
+                          No extra entity detail is available here yet.
                         </div>
                       )}
                     </article>
@@ -3045,7 +3075,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     <article className="card governance-detail-card">
                       <div className="page-copy compact-copy">
                         <span className="eyebrow">Recent decisions</span>
-                        <h3>Cross-entity recall</h3>
+                        <h3>Recent decisions</h3>
                       </div>
                       <div className="governance-feed-toolbar">
                         <div className="chip-row">
@@ -3080,7 +3110,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                               <article key={event.id} className="mini-card governance-feed-card">
                                 <div className="result-card__top">
                                   <div>
-                                    <strong>{event.title ?? `${event.entityType}:${event.entityId}`}</strong>
+                                    <strong>{event.title ?? formatCompactId(`${event.entityType}:${event.entityId}`)}</strong>
                                     <p>{event.reason}</p>
                                   </div>
                                   <span className={`pill ${badgeTone(event.nextState)}`}>{getGovernanceDecisionActionLabel(event.action)}</span>
@@ -3099,10 +3129,10 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                                 </div>
                                 <div className="action-row governance-feed-card__actions">
                                   <button type="button" onClick={() => inspectGovernanceFeedItem(event)}>
-                                    Open notes
+                                    Open
                                   </button>
                                   <button type="button" className="ghost" onClick={() => openGovernanceFeedGraph(event)}>
-                                    Open graph
+                                    Graph
                                   </button>
                                   {hasOpenGovernanceIssueForFeedItem(governanceIssues, event) ? (
                                     <button
@@ -3110,16 +3140,14 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                                       className="ghost"
                                       onClick={() => setSelectedGovernanceId(event.entityId)}
                                     >
-                                      Inspect issue
+                                      Issue
                                     </button>
                                   ) : null}
                                 </div>
                               </article>
                             ))
                           : null}
-                        {!isGovernanceFeedLoading && !governanceFeed.length ? (
-                          <div className="empty-state compact">No recent manual governance decisions match the current filters.</div>
-                        ) : null}
+                        {!isGovernanceFeedLoading && !governanceFeed.length ? <div className="empty-state compact">No decisions match current filters.</div> : null}
                       </div>
                     </article>
                   </div>
@@ -3138,7 +3166,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
         <section className="page-section">
           <div className="page-heading">
             <span className="eyebrow">Graph</span>
-            <h2>Relationship explorer</h2>
+            <h2>Relationships</h2>
           </div>
           <section className="card page-card">
             <div className="graph-toolbar">
@@ -3260,17 +3288,17 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   <article className="mini-card">
                     <span className="eyebrow">Connected nodes</span>
                     <strong>{graphSummary.distinctNodes.length} nodes</strong>
-                    <p>{graphConnections.length} visible paths around the current focus.</p>
+                    <p>{graphConnections.length} visible paths.</p>
                   </article>
                   <article className="mini-card">
                     <span className="eyebrow">Signal mix</span>
                     <strong>{graphRelationGroups.length} relation types</strong>
-                    <p>{graphSummary.suggestedCount} suggested links still need review.</p>
+                    <p>{graphSummary.suggestedCount} links still need review.</p>
                   </article>
                   <article className="mini-card">
                     <span className="eyebrow">Direction</span>
                     <strong>{graphSummary.outgoingCount} out / {graphSummary.incomingCount} in</strong>
-                    <p>Shows whether this node mostly points outward or is referenced by others.</p>
+                    <p>Outbound vs inbound.</p>
                   </article>
                 </>
               ) : (
@@ -3278,22 +3306,22 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   <article className="graph-focus graph-focus-card">
                     <span className="eyebrow">Focus project</span>
                     <strong>{activeProjectGraphProject?.title ?? 'No project selected'}</strong>
-                    <p>{activeProjectGraphProject?.summary ?? 'Select a project node to open a bounded project graph.'}</p>
+                    <p>{activeProjectGraphProject?.summary ?? 'Select a project to open its graph.'}</p>
                   </article>
                   <article className="mini-card">
                     <span className="eyebrow">Visible graph</span>
                     <strong>{projectGraphView.nodes.length} nodes</strong>
-                    <p>{projectGraphView.edges.length} visible edges in the current filtered project map.</p>
+                    <p>{projectGraphView.edges.length} visible edges.</p>
                   </article>
                   <article className="mini-card">
                     <span className="eyebrow">Signal split</span>
                     <strong>{projectGraph?.meta.inferredEdgeCount ?? 0} inferred</strong>
-                    <p>{projectGraph?.meta.edgeCount ?? 0} total edges are currently scoped to this project.</p>
+                    <p>{projectGraph?.meta.edgeCount ?? 0} total edges in scope.</p>
                   </article>
                   <article className="mini-card">
                     <span className="eyebrow">Timeline</span>
                     <strong>{projectGraph?.timeline.length ?? 0} events</strong>
-                    <p>{currentProjectGraphEvent ? currentProjectGraphEvent.label : 'Use the scrubber to highlight graph growth over time.'}</p>
+                    <p>{currentProjectGraphEvent ? currentProjectGraphEvent.label : 'Use the scrubber to move in time.'}</p>
                   </article>
                 </>
               )}
@@ -3302,24 +3330,22 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             {isGraphLoading ? <div className="empty-state">{graphMode === 'project-map' ? 'Loading project graph...' : 'Loading graph neighborhood...'}</div> : null}
             {!isGraphLoading && graphMode === 'neighborhood' && !graphConnections.length ? (
               <div className="graph-empty">
-                <div className="empty-state">
-                  No linked memory is visible for this node yet. Create relations first, or inspect nearby context signals below.
-                </div>
+                <div className="empty-state">No linked memory for this node yet.</div>
                 <div className="graph-support-grid">
                   <article className="mini-card">
                     <strong>Context bundle signals</strong>
                     <p>
                       {detail.bundleItems.length
-                        ? `${detail.bundleItems.length} bundle items are available even though explicit graph links are still missing.`
-                        : 'No context bundle signals are available for this node yet.'}
+                        ? `${detail.bundleItems.length} bundle items are available even without graph links.`
+                        : 'No bundle signals for this node yet.'}
                     </p>
                   </article>
                   <article className="mini-card">
                     <strong>Related detail nodes</strong>
                     <p>
                       {detail.related.length
-                        ? `${detail.related.length} related nodes were found in node detail and can guide the first relation pass.`
-                        : 'Node detail does not currently expose explicit related nodes for this focus.'}
+                        ? `${detail.related.length} related nodes can guide the first relation pass.`
+                        : 'No explicit related nodes for this focus.'}
                     </p>
                   </article>
                 </div>
@@ -3327,14 +3353,12 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             ) : null}
             {!isGraphLoading && graphMode === 'project-map' && !activeProjectGraphProject ? (
               <div className="graph-empty">
-                <div className="empty-state">Project map only opens for project nodes. Create or select a project first.</div>
+                <div className="empty-state">Select a project to open the map.</div>
               </div>
             ) : null}
             {!isGraphLoading && graphMode === 'project-map' && !!activeProjectGraphProject && !projectGraphView.edges.length ? (
               <div className="graph-empty">
-                <div className="empty-state">
-                  This project map is still sparse. Add `relevant_to` links to the project or relax the current graph filters.
-                </div>
+                <div className="empty-state">This project map is still sparse.</div>
               </div>
             ) : null}
             {graphMode === 'neighborhood' && !!graphRelationGroups.length ? (
@@ -3343,7 +3367,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   <div className="section-head section-head--compact">
                     <div>
                       <span className="eyebrow">Relation groups</span>
-                      <h3>What kind of links exist?</h3>
+                      <h3>Link types</h3>
                     </div>
                   </div>
                   <div className="relation-group-grid">
@@ -3363,7 +3387,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   <div className="section-head section-head--compact">
                     <div>
                       <span className="eyebrow">Connected memory</span>
-                      <h3>Open another node from here</h3>
+                      <h3>Nearby nodes</h3>
                     </div>
                   </div>
                   <div className="graph-related-grid">
@@ -3400,7 +3424,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   <div className="section-head section-head--compact">
                     <div>
                       <span className="eyebrow">Project map</span>
-                      <h3>Explore the project as a bounded memory field</h3>
+                      <h3>Project field</h3>
                     </div>
                     <div className="chip-row">
                       <button
@@ -3449,7 +3473,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     <div className="mini-card">
                       <span className="eyebrow">Current event</span>
                       <strong>{currentProjectGraphEvent?.label ?? 'Latest state'}</strong>
-                      <p>{currentProjectGraphEvent ? formatTime(currentProjectGraphEvent.at) : 'No timeline events available for this project yet.'}</p>
+                      <p>{currentProjectGraphEvent ? formatTime(currentProjectGraphEvent.at) : 'No timeline events yet.'}</p>
                     </div>
                   </div>
                 </article>
@@ -3457,7 +3481,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   <div className="section-head section-head--compact">
                     <div>
                       <span className="eyebrow">Relation groups</span>
-                      <h3>What kind of links dominate this project?</h3>
+                      <h3>Top link types</h3>
                     </div>
                   </div>
                   <div className="relation-group-grid">
@@ -3481,7 +3505,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   <div className="section-head section-head--compact">
                     <div>
                       <span className="eyebrow">Context signals</span>
-                      <h3>Suggested nearby memory</h3>
+                      <h3>Nearby memory</h3>
                     </div>
                   </div>
                   <div className="card-stack compact-stack">
@@ -3503,7 +3527,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   <div className="section-head section-head--compact">
                     <div>
                       <span className="eyebrow">Recent activity</span>
-                      <h3>Latest movement around this node</h3>
+                      <h3>Recent activity</h3>
                     </div>
                   </div>
                   <div className="card-stack compact-stack">
@@ -3528,7 +3552,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
         <section className="page-section">
           <div className="page-heading">
             <span className="eyebrow">Current workspace</span>
-            <h2>Scope management, not clutter.</h2>
+            <h2>Workspace ops</h2>
           </div>
           <div className="two-column-grid">
             <section id="workspace-settings-card" tabIndex={-1} className="card page-card">
@@ -3536,17 +3560,17 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 <article className="info-block">
                   <span className="info-label">Active</span>
                   <strong>{workspaceName}</strong>
-                  <p>Primary local workspace and default scope for recall.</p>
+                  <p>Primary local memory field.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Mode</span>
                   <strong>Workspace-first</strong>
-                  <p>Projects stay inside the current workspace instead of becoming it.</p>
+                  <p>Projects stay inside this workspace.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">API bind</span>
                   <strong>{workspace?.apiBind ?? '127.0.0.1:8787'}</strong>
-                  <p>Local integration boundary for this workspace.</p>
+                  <p>Local integration address.</p>
                 </article>
               </div>
               <form className="capture-form compact-form" onSubmit={(event) => void handleCreateWorkspace(event)}>
@@ -3585,7 +3609,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             <aside className="card page-card">
               <div className="page-copy">
                 <span className="eyebrow">Recent workspaces</span>
-                <h3>Resume another memory field</h3>
+                <h3>Recent workspaces</h3>
               </div>
               <div className="card-stack">
                 {workspaceCatalog.map((item) => (
@@ -3613,36 +3637,36 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             <section id="server-status-card" tabIndex={-1} className="card page-card">
               <div className="page-copy">
                 <span className="eyebrow">Server status</span>
-                <h3>API and runtime health</h3>
+                <h3>API health</h3>
               </div>
               <div className="info-grid three">
                 <article className="info-block">
                   <span className="info-label">Status</span>
                   <strong>{workspace ? 'running' : 'starting'}</strong>
-                  <p>The local API is available for renderer, CLI, and MCP access.</p>
+                  <p>Available for renderer, CLI, and MCP.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">API base</span>
                   <strong>{apiBase}</strong>
-                  <p>Loopback base URL used by the local UI and HTTP tooling.</p>
+                  <p>Loopback base URL.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Auth mode</span>
                   <strong>{workspace?.authMode ?? 'optional'}</strong>
-                  <p>Auth mode is read from the active workspace bootstrap state.</p>
+                  <p>Bootstrap auth mode.</p>
                 </article>
               </div>
             </section>
             <section id="workspace-status-card" tabIndex={-1} className="card page-card">
               <div className="page-copy">
                 <span className="eyebrow">Workspace status</span>
-                <h3>Paths and local storage layout</h3>
+                <h3>Paths</h3>
               </div>
               <div className="info-grid three">
                 <article className="info-block">
                   <span className="info-label">Root</span>
                   <strong>{workspaceRoot || 'Unavailable'}</strong>
-                  <p>Current workspace boundary for nodes, artifacts, and runtime settings.</p>
+                  <p>Current workspace root.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Database</span>
@@ -3652,27 +3676,27 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 <article className="info-block">
                   <span className="info-label">Artifacts</span>
                   <strong>{artifactsPath || 'Unavailable'}</strong>
-                  <p>Filesystem storage for attachments and export-friendly files inside the workspace root.</p>
+                  <p>Attachment file storage.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Exports</span>
                   <strong>{exportsPath || 'Unavailable'}</strong>
-                  <p>Portable files written for handoff, backup inspection, and recovery workflows.</p>
+                  <p>Portable export files.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Imports</span>
                   <strong>{importsPath || 'Unavailable'}</strong>
-                  <p>Copied source material lands here so onboarding imports stay inspectable.</p>
+                  <p>Imported source staging.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Backups</span>
                   <strong>{backupsPath || 'Unavailable'}</strong>
-                  <p>Manual workspace snapshots live here before upgrades, restores, or device moves.</p>
+                  <p>Manual snapshot storage.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Safety</span>
                   <strong>{workspaceSafetyWarnings.length ? `${workspaceSafetyWarnings.length} warning(s)` : 'clear'}</strong>
-                  <p>Session metadata and lock markers help keep cloud-folder use single-writer and inspectable.</p>
+                  <p>Session and lock signals.</p>
                 </article>
               </div>
             </section>
@@ -3681,23 +3705,23 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             <section className="card page-card">
               <div className="page-copy">
                 <span className="eyebrow">Safety</span>
-                <h3>Single-writer safety signals</h3>
+                <h3>Safety signals</h3>
               </div>
               <div className="info-grid three">
                 <article className="info-block">
                   <span className="info-label">Machine</span>
                   <strong>{workspace?.safety?.machineId ?? 'Unavailable'}</strong>
-                  <p>Current host recorded in the workspace session metadata.</p>
+                  <p>Current host marker.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Last opened</span>
                   <strong>{workspace?.safety?.lastOpenedAt ? formatTime(workspace.safety.lastOpenedAt) : 'Unavailable'}</strong>
-                  <p>Most recent session-open marker written by the runtime.</p>
+                  <p>Most recent session open.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Last clean close</span>
                   <strong>{workspace?.safety?.lastCleanCloseAt ? formatTime(workspace.safety.lastCleanCloseAt) : 'Not recorded yet'}</strong>
-                  <p>Used to warn before writing into a workspace that may not have closed cleanly.</p>
+                  <p>Latest clean shutdown marker.</p>
                 </article>
               </div>
               {workspaceSafetyWarnings.length ? (
@@ -3709,13 +3733,13 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   ))}
                 </div>
               ) : (
-                <div className="notice">No active lock or unclean-close warning is currently attached to this workspace.</div>
+                <div className="notice">No active lock or unclean-close warning.</div>
               )}
             </section>
             <section className="card page-card">
               <div className="page-copy">
                 <span className="eyebrow">Safe handoff</span>
-                <h3>Switch devices in a calm, sequential order</h3>
+                <h3>Device handoff</h3>
               </div>
               <div className="card-stack compact-stack">
                 {safeHandoffSteps.map((step) => (
@@ -3728,24 +3752,24 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 <article className="info-block">
                   <span className="info-label">Model</span>
                   <strong>Single writer</strong>
-                  <p>Cloud-synced folders are supported as transport, not concurrent collaboration.</p>
+                  <p>Sync is transport, not collaboration.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Warning state</span>
                   <strong>{workspaceSafetyWarnings.length ? 'needs care' : 'clear'}</strong>
-                  <p>Warnings describe recent cross-machine activity and incomplete shutdown signals.</p>
+                  <p>Cross-machine and shutdown signals.</p>
                 </article>
                 <article className="info-block">
                   <span className="info-label">Best next step</span>
                   <strong>{workspaceSafetyWarnings.length ? 'snapshot first' : 'handoff normally'}</strong>
-                  <p>Use a backup before heavier edits whenever the handoff path felt uncertain.</p>
+                  <p>Back up first if handoff feels uncertain.</p>
                 </article>
               </div>
             </section>
             <section className="card page-card">
               <div className="page-copy">
                 <span className="eyebrow">Backup and restore</span>
-                <h3>Protect the current workspace before risky moves</h3>
+                <h3>Snapshot before risky moves</h3>
               </div>
               <form
                 className="capture-form compact-form"
@@ -3803,7 +3827,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     </button>
                   ))
                 ) : (
-                  <div className="empty-state compact">No snapshots yet. Create one before upgrades, imports, or device handoff.</div>
+                  <div className="empty-state compact">No snapshots yet.</div>
                 )}
               </div>
             </section>
@@ -3811,7 +3835,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
           <section className="card page-card">
             <div className="page-copy">
               <span className="eyebrow">Import onboarding</span>
-              <h3>Bring existing notes or RecallX exports into this workspace</h3>
+              <h3>Import notes into this workspace</h3>
             </div>
             <form
               className="capture-form compact-form"
@@ -3984,17 +4008,17 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               <article className="info-block">
                 <span className="info-label">Safety</span>
                 <strong>Snapshot first</strong>
-                <p>RecallX creates a backup before import mutates the active workspace.</p>
+                <p>Backup runs before import.</p>
               </article>
               <article className="info-block">
                 <span className="info-label">Provenance</span>
                 <strong>{importsPath || 'Unavailable'}</strong>
-                <p>Source files are copied into the workspace imports folder for later inspection.</p>
+                <p>Source files are copied into imports.</p>
               </article>
               <article className="info-block">
                 <span className="info-label">Scope</span>
                 <strong>v1 inbound path</strong>
-                <p>Markdown content and RecallX JSON exports are supported in this first onboarding loop.</p>
+                <p>Markdown and RecallX JSON are supported.</p>
               </article>
             </div>
             {lastWorkspaceImport?.warnings.length ? (
@@ -4033,8 +4057,8 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       return (
         <section className="page-section">
           <div className="page-heading">
-            <span className="eyebrow">Notes</span>
-            <h2>Memory cards for the current workspace.</h2>
+            <span className="eyebrow">Memory</span>
+            <h2>Browse memory</h2>
           </div>
           <div className="notes-toolbar">
             <section className="card notes-toolbar-card">
@@ -4048,7 +4072,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   id="notes-search-input"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search memory field"
+                  placeholder="Search memory"
                 />
               </label>
               <div className="chip-row">
@@ -4065,8 +4089,8 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
 
             <section className="card notes-toolbar-card">
               <div className="page-copy compact-copy">
-                <span className="eyebrow">Quick note</span>
-                <h3>Create a new card</h3>
+                <span className="eyebrow">Capture</span>
+                <h3>Add memory</h3>
               </div>
               <form className="capture-form notes-capture-form" onSubmit={(event) => void handleCreateNode(event)}>
                 <label className="search-box">
@@ -4111,7 +4135,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 </label>
                 <div className="action-row">
                   <button type="submit" disabled={isSavingCapture}>
-                    {isSavingCapture ? 'Saving...' : 'Create note'}
+                    {isSavingCapture ? 'Saving...' : 'Save'}
                   </button>
                 </div>
               </form>
@@ -4445,12 +4469,9 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
         <div className="home-shell">
           <section className="card home-hero-card">
             <div className="page-copy">
-              <span className="eyebrow">Home re-entry</span>
-              <h2>Search the workspace before you browse it.</h2>
-              <p>
-                Active projects, recent movement, and core routes stay close so the next useful memory is one step
-                away.
-              </p>
+              <span className="eyebrow">Home</span>
+              <h2>Search workspace</h2>
+              <p>Find the next useful memory.</p>
             </div>
             <label className="search-box home-search-box" htmlFor="home-search-input">
               <span>Workspace-wide search</span>
@@ -4469,53 +4490,52 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               {deferredQuery.trim() ? <span className="chip chip-static">{filteredSearchTotal} filtered hits</span> : null}
             </div>
             <div className="hero-actions">
-              <button type="button" className="hero-button hero-button--primary" onClick={() => selectView('search')}>
-                Open Guide
+              <button type="button" className="hero-button hero-button--primary" onClick={() => selectView('recent')}>
+                Open Memory
               </button>
               <button type="button" className="hero-button hero-button--secondary" onClick={() => setIsCommandPaletteOpen(true)}>
-                Command Palette
+                Command
               </button>
               <button type="button" className="hero-button hero-button--secondary" onClick={() => selectView('graph')}>
-                Open Graph
+                Graph
               </button>
               <button type="button" className="hero-button hero-button--secondary" onClick={() => selectView('governance')}>
-                Review Governance
+                Review
               </button>
-              <button type="button" className="hero-button hero-button--secondary" onClick={() => selectView('recent')}>
-                Open Notes
+              <button type="button" className="hero-button hero-button--secondary" onClick={() => selectView('settings')}>
+                Workspace
               </button>
             </div>
           </section>
 
           <aside className="card home-summary-card">
             <div className="page-copy">
-              <span className="eyebrow">Current workspace</span>
+              <span className="eyebrow">Workspace</span>
               <h3>{workspaceName}</h3>
               <p>
-                Use Home as the default re-entry point for retrieval, project continuity, and nearby trust signals.
-                {activeProjectNode ? ` ${activeProjectNode.title} is the current project anchor.` : ' Choose one project to keep continuity tight.'}
+                {activeProjectNode ? `${activeProjectNode.title} is active.` : 'Set one active project.'}
               </p>
             </div>
             <div className="info-grid two">
               <article className="info-block">
                 <span className="info-label">Projects</span>
                 <strong>{projectNodes.length}</strong>
-                <p>Project nodes currently visible in the workspace snapshot.</p>
+                <p>Visible now.</p>
               </article>
               <article className="info-block">
                 <span className="info-label">Recent nodes</span>
                 <strong>{snapshot?.recentNodeIds.length ?? 0}</strong>
-                <p>Fresh memory cards ready for quick return.</p>
+                <p>Ready to reopen.</p>
               </article>
               <article className="info-block">
-                <span className="info-label">Governance</span>
+                <span className="info-label">Review</span>
                 <strong>{governanceIssues.length || 'clear'}</strong>
-                <p>Review signals stay visible without turning Home into a moderation queue.</p>
+                <p>Open signals.</p>
               </article>
               <article className="info-block">
                 <span className="info-label">API</span>
                 <strong>{workspace?.apiBind ?? '127.0.0.1:8787'}</strong>
-                <p>Guide and MCP remain nearby, but retrieval is the first action.</p>
+                <p>Local access.</p>
               </article>
             </div>
           </aside>
@@ -4531,7 +4551,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               <div className="section-head section-head--compact">
                 <div>
                   <span className="eyebrow">Search results</span>
-                  <h3>Suggested memory matches</h3>
+                  <h3>Matching memory</h3>
                 </div>
                 <span className="pill tone-info">{homeSearchNodes.length}</span>
               </div>
@@ -4558,7 +4578,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               <div className="section-head section-head--compact">
                 <div>
                   <span className="eyebrow">Activity hits</span>
-                  <h3>Recent movement behind the query</h3>
+                  <h3>Matching activity</h3>
                 </div>
                 <span className="pill tone-muted">{homeSearchActivityHits.length}</span>
               </div>
@@ -4608,7 +4628,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               {activeProjectNode ? (
                 <>
                   <p className="home-digest-copy">
-                    {activeProjectNode.summary || 'This project is active for Home re-entry, quick capture defaults, and project-map fallback.'}
+                    {activeProjectNode.summary || 'Active for Home, capture, and graph.'}
                   </p>
                   <div className="chip-row">
                     <span className="chip chip-static">{activeProjectDigest.relatedCount} related nodes</span>
@@ -4620,7 +4640,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                       Open project map
                     </button>
                     <button type="button" className="ghost" onClick={() => openNodeInRecent(activeProjectNode.id)}>
-                      Open notes
+                      Memory
                     </button>
                     <button type="button" className="ghost" onClick={() => void handleSetActiveProject(null)} disabled={isSavingActiveProject}>
                       Clear active project
@@ -4643,18 +4663,18 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     {activeProjectDigest.activities.map((activity) => (
                       <article key={activity.id} className="mini-card">
                         <strong>{activity.activityType}</strong>
-                        <p>{activity.body || 'Recent project movement'}</p>
+                        <p>{activity.body || 'Recent project activity'}</p>
                       </article>
                     ))}
                     {!activeProjectDigest.bundleItems.length && !activeProjectDigest.activities.length && !isActiveProjectDigestLoading ? (
-                      <div className="empty-state compact">The active project does not have recent nearby context yet.</div>
+                      <div className="empty-state compact">No nearby project context yet.</div>
                     ) : null}
                   </div>
                 </>
               ) : (
                 <>
                   <p className="home-digest-copy">
-                    Pick one project to keep Home, quick capture, and the project map aligned around the same working thread.
+                    Pick one project to keep Home and graph aligned.
                   </p>
                   <div className="action-row">
                     <button
@@ -4669,7 +4689,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                       {homeSuggestedProjectNode ? `Set ${homeSuggestedProjectNode.title}` : 'Add a project first'}
                     </button>
                     <button type="button" className="ghost" onClick={() => selectView('recent')}>
-                      Open notes
+                      Open memory
                     </button>
                   </div>
                   {activeProjectError ? <div className="empty-state compact">{activeProjectError}</div> : null}
@@ -4681,7 +4701,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               <div className="section-head section-head--compact">
                 <div>
                   <span className="eyebrow">Active projects</span>
-                  <h3>Pick up project memory quickly</h3>
+                  <h3>Project memory</h3>
                 </div>
               </div>
               <div className="home-project-grid">
@@ -4719,15 +4739,11 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             <section className="card page-card home-governance-card">
               <div className="section-head section-head--compact">
                 <div>
-                  <span className="eyebrow">Governance follow-up</span>
-                  <h3>Carry recent trust decisions back to Home</h3>
+                  <span className="eyebrow">Review</span>
+                  <h3>Recent review signals</h3>
                 </div>
                 <span className="pill tone-muted">{homeGovernanceFeed.length}</span>
               </div>
-              <p className="home-digest-copy">
-                Recent manual governance decisions stay visible here so you can reopen the reviewed note, graph context,
-                or full Governance surface without losing momentum.
-              </p>
               <div className="chip-row">
                 <span className="chip chip-static">
                   {governanceFeedEntityFilter === 'all' ? 'all entities' : `${governanceFeedEntityFilter} only`}
@@ -4741,7 +4757,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
               </div>
               <div className="action-row">
                 <button type="button" onClick={() => selectView('governance')}>
-                  Open governance
+                  Open review
                 </button>
                 {governanceFeedEntityFilter !== 'all' || governanceFeedActionFilter !== 'all' ? (
                   <button
@@ -4765,7 +4781,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                       <article key={event.id} className="mini-card governance-feed-card">
                         <div className="result-card__top">
                           <div>
-                            <strong>{event.title ?? `${event.entityType}:${event.entityId}`}</strong>
+                            <strong>{event.title ?? formatCompactId(`${event.entityType}:${event.entityId}`)}</strong>
                             <p>{event.reason}</p>
                           </div>
                           <span className={`pill ${badgeTone(event.nextState)}`}>{getGovernanceDecisionActionLabel(event.action)}</span>
@@ -4780,14 +4796,14 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                         </div>
                         <div className="action-row governance-feed-card__actions">
                           <button type="button" onClick={() => inspectGovernanceFeedItem(event)}>
-                            Open notes
+                            Open
                           </button>
                           <button type="button" className="ghost" onClick={() => openGovernanceFeedGraph(event)}>
-                            Open graph
+                            Graph
                           </button>
                           {hasOpenGovernanceIssueForFeedItem(governanceIssues, event) ? (
                             <button type="button" className="ghost" onClick={() => handleOpenGovernanceFeedItem(event)}>
-                              Review issue
+                              Issue
                             </button>
                           ) : null}
                         </div>
@@ -4834,29 +4850,32 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
   return (
     <div className="app-shell">
       <main className="workspace">
-        <header className="topbar">
-          <div className="brand">
-            <span className="brand-mark" />
-            <div>
-              <strong>{workspaceName}</strong>
-              <p>{getViewTitle(view)}</p>
+        <div className="workspace-shell">
+          <aside className="sidebar">
+            <div className="sidebar-brand">
+              <div className="brand">
+                <span className="brand-mark" />
+                <div>
+                  <strong>{workspaceName}</strong>
+                  <p>RecallX</p>
+                </div>
+              </div>
             </div>
-          </div>
-          <nav className="nav-list nav-list--top" aria-label="Main navigation">
-            {navigation.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`nav-item ${view === item.id ? 'active' : ''}`}
-                onClick={() => selectView(item.id)}
-              >
-                <span>{item.label}</span>
-                <small>{item.hint}</small>
-              </button>
-            ))}
-          </nav>
-          <div className="topbar-meta">
-            <div className="utility-nav" aria-label="Utility navigation">
+            <nav className="nav-list nav-list--sidebar" aria-label="Main navigation">
+              {navigation.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`nav-item ${view === item.id ? 'active' : ''}`}
+                  onClick={() => selectView(item.id)}
+                >
+                  <span>{item.label}</span>
+                  <small>{item.hint}</small>
+                </button>
+              ))}
+            </nav>
+            <div className="sidebar-divider" />
+            <div className="utility-nav utility-nav--sidebar" aria-label="Utility navigation">
               {utilityNavigation.map((item) => (
                 <button
                   key={item.id}
@@ -4887,12 +4906,35 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 </button>
               ))}
             </div>
-            <span>{workspace?.apiBind ?? '127.0.0.1:8787'}</span>
-            <span>{workspace?.integrationModes.join(' / ') || 'local / append-only'}</span>
-          </div>
-        </header>
-        {loadError && snapshot ? <div className="banner">{loadError}</div> : null}
-        <div className="workspace-body">{pageContent}</div>
+            <div className="sidebar-meta">
+              <span className="sidebar-meta-label">Active project</span>
+              <strong>{activeProjectNode?.title ?? 'None'}</strong>
+              <p>{workspace?.apiBind ?? '127.0.0.1:8787'}</p>
+            </div>
+            <div className="sidebar-actions">
+              <button type="button" className="sidebar-action sidebar-action--primary" onClick={() => setIsCommandPaletteOpen(true)}>
+                Command
+              </button>
+              <button type="button" className="sidebar-action" onClick={() => selectView('search')}>
+                API guide
+              </button>
+            </div>
+          </aside>
+          <section className="workspace-main">
+            <header className="topbar">
+              <div className="topbar-heading">
+                <span className="eyebrow">Current view</span>
+                <h1>{getViewTitle(view)}</h1>
+              </div>
+              <div className="topbar-meta">
+                <span>{workspace?.integrationModes.join(' / ') || 'local / append-only'}</span>
+                <span>{workspace?.apiBind ?? '127.0.0.1:8787'}</span>
+              </div>
+            </header>
+            {loadError && snapshot ? <div className="banner">{loadError}</div> : null}
+            <div className="workspace-body">{pageContent}</div>
+          </section>
+        </div>
         {isCommandPaletteOpen ? (
           <div
             className="command-palette-overlay"
