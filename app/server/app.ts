@@ -2000,6 +2000,24 @@ export function createRecallXApp(params: {
       },
       async (span) => {
         const searchResult = await currentRepository().searchWorkspace(input, {
+          runSearchStageSpan: async (operation, details, callback) =>
+            runObservedSpan(operation, details, async (stageSpan) => {
+              const stageResult = await callback();
+              if (
+                stageResult &&
+                typeof stageResult === "object" &&
+                "items" in stageResult &&
+                Array.isArray(stageResult.items) &&
+                "total" in stageResult &&
+                typeof stageResult.total === "number"
+              ) {
+                stageSpan.addDetails({
+                  resultCount: stageResult.items.length,
+                  totalCount: stageResult.total
+                });
+              }
+              return stageResult;
+            }),
           runSemanticFallbackSpan: async (details, callback) =>
             runObservedSpan("workspace.search.semantic_fallback", {
               ...details,
