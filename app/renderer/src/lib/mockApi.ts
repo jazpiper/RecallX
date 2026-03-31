@@ -1019,6 +1019,7 @@ export async function searchWorkspace(input: {
             body: item.activity.body ?? '',
             sourceLabel: item.activity.sourceLabel ?? 'unknown',
             createdAt: item.activity.createdAt ?? item.activity.created_at ?? new Date().toISOString(),
+            metadata: item.activity.metadata ?? {},
           })),
         total: typeof data?.total === 'number' ? data.total : items.length,
       };
@@ -1042,6 +1043,7 @@ export async function searchWorkspace(input: {
             body: activity.body,
             sourceLabel: activity.sourceLabel,
             createdAt: activity.createdAt,
+            metadata: activity.metadata ?? {},
           })),
         total: items.length,
       };

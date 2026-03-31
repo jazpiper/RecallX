@@ -98,6 +98,7 @@ type SearchPanelState = {
   error: string | null;
 };
 
+type SearchActivityTypeFilter = 'all' | 'review_action';
 type GovernanceFeedEntityFilter = 'all' | GovernanceEntityType;
 type GovernanceFeedActionFilter = 'all' | GovernanceDecisionAction;
 type GraphMode = 'neighborhood' | 'project-map';
@@ -108,6 +109,7 @@ const RECENT_SEARCHES_STORAGE_KEY = 'recallx.recent-searches';
 const RECENT_COMMANDS_STORAGE_KEY = 'recallx.recent-commands';
 const GOVERNANCE_FEED_ENTITY_FILTER_STORAGE_KEY = 'recallx.governance-feed-entity-filter';
 const GOVERNANCE_FEED_ACTION_FILTER_STORAGE_KEY = 'recallx.governance-feed-action-filter';
+const searchActivityTypeFilterOptions = ['all', 'review_action'] as const;
 const governanceFeedEntityFilterOptions = ['all', 'node', 'relation'] as const;
 const governanceFeedActionFilterOptions = ['all', 'promote', 'contest', 'archive', 'accept', 'reject'] as const;
 const EMPTY_ACTIVE_PROJECT_DIGEST = {
@@ -241,6 +243,41 @@ function getGovernanceDecisionActionLabel(action: GovernanceDecisionAction | nul
     default:
       return 'Manual review';
   }
+}
+
+function isReviewActionActivity(activity: { activityType: string }) {
+  return activity.activityType === 'review_action';
+}
+
+function getActivityTypeLabel(activity: {
+  activityType: string;
+  metadata?: Record<string, string | number | boolean>;
+}) {
+  if (!isReviewActionActivity(activity)) {
+    return activity.activityType.replaceAll('_', ' ');
+  }
+
+  const action = typeof activity.metadata?.action === 'string' ? activity.metadata.action : null;
+  return action ? `Review decision · ${getGovernanceDecisionActionLabel(action as GovernanceDecisionAction)}` : 'Review decision';
+}
+
+function getActivityPreviewText(activity: {
+  activityType: string;
+  body?: string | null;
+  metadata?: Record<string, string | number | boolean>;
+}) {
+  if (activity.body && activity.body.trim()) {
+    return activity.body;
+  }
+
+  if (isReviewActionActivity(activity)) {
+    const action = typeof activity.metadata?.action === 'string' ? activity.metadata.action : null;
+    return action
+      ? `${getGovernanceDecisionActionLabel(action as GovernanceDecisionAction)} decision recorded for this memory.`
+      : 'A manual review decision was recorded for this memory.';
+  }
+
+  return activity.activityType.replaceAll('_', ' ');
 }
 
 function isNodeGovernanceCandidate(node: Node | null, governance: GovernancePayload['state'] | null = null) {
@@ -432,6 +469,7 @@ export default function App() {
   const deferredQuery = useDeferredValue(query);
   const [searchScopeFilter, setSearchScopeFilter] = useState<SearchResultScope>('all');
   const [searchNodeTypeFilter, setSearchNodeTypeFilter] = useState<Node['type'] | 'all'>('all');
+  const [searchActivityTypeFilter, setSearchActivityTypeFilter] = useState<SearchActivityTypeFilter>('all');
   const [searchSourceFilter, setSearchSourceFilter] = useState<string | 'all'>('all');
   const [searchPanel, setSearchPanel] = useState<SearchPanelState>({
     nodes: [],
@@ -763,8 +801,9 @@ export default function App() {
         scope: searchScopeFilter,
         nodeType: searchNodeTypeFilter,
         sourceLabel: searchSourceFilter,
+        activityType: searchActivityTypeFilter,
       }),
-    [searchNodeTypeFilter, searchPanel.activities, searchPanel.nodes, searchScopeFilter, searchSourceFilter],
+    [searchActivityTypeFilter, searchNodeTypeFilter, searchPanel.activities, searchPanel.nodes, searchScopeFilter, searchSourceFilter],
   );
   const filteredSearchNodes = filteredSearchResults.nodes;
   const filteredSearchActivityHits = filteredSearchResults.activities;
@@ -1058,6 +1097,19 @@ export default function App() {
       : nodeMap.get(notePreviewTargetId) ?? null
     : null;
   const notePreviewSupportsGovernanceActions = isNodeGovernanceCandidate(notePreviewNode, detail.governance.state);
+  const detailReviewActions = useMemo(
+    () => detail.activities.filter((activity) => activity.activityType === 'review_action'),
+    [detail.activities],
+  );
+  const notePreviewReviewActions = useMemo(
+    () =>
+      notePreviewNode
+        ? detail.activities.filter(
+            (activity) => activity.targetNodeId === notePreviewNode.id && activity.activityType === 'review_action',
+          )
+        : [],
+    [detail.activities, notePreviewNode],
+  );
   const pinnedProjectNodes = useMemo(() => {
     const fromPinned = (snapshot?.pinnedProjectIds ?? [])
       .map((nodeId) => nodeMap.get(nodeId))
@@ -2423,6 +2475,22 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             </div>
           </div>
           <div className="search-filter-group">
+            <span className="search-filter-label">Activity type</span>
+            <div className="chip-row">
+              {searchActivityTypeFilterOptions.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`chip-button ${searchActivityTypeFilter === value ? 'active' : ''}`}
+                  onClick={() => setSearchActivityTypeFilter(value)}
+                  disabled={searchScopeFilter === 'nodes'}
+                >
+                  {value === 'all' ? 'All' : 'Review decisions'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="search-filter-group">
             <span className="search-filter-label">Source</span>
             <div className="chip-row">
               <button type="button" className={`chip-button ${searchSourceFilter === 'all' ? 'active' : ''}`} onClick={() => setSearchSourceFilter('all')}>
@@ -3341,15 +3409,15 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     </div>
                   </div>
                   <div className="card-stack compact-stack">
-                    {detail.activities.slice(0, 3).map((activity) => (
-                      <article key={activity.id} className="mini-card">
-                        <strong>{activity.activityType}</strong>
-                        <p>{activity.body}</p>
-                      </article>
-                    ))}
-                    {!detail.activities.length ? <div className="empty-state compact">No recent activity on this node yet.</div> : null}
-                  </div>
-                </article>
+                {detail.activities.slice(0, 3).map((activity) => (
+                  <article key={activity.id} className="mini-card">
+                    <strong>{getActivityTypeLabel(activity)}</strong>
+                    <p>{getActivityPreviewText(activity)}</p>
+                  </article>
+                ))}
+                {!detail.activities.length ? <div className="empty-state compact">No recent activity on this node yet.</div> : null}
+              </div>
+            </article>
               </section>
             ) : null}
           </section>
@@ -4019,7 +4087,11 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   >
                     <div>
                       <strong>{activity.targetNodeTitle ?? activity.targetNodeId}</strong>
-                      <span>{activity.body || activity.activityType}</span>
+                      <span>{getActivityPreviewText(activity)}</span>
+                      <div className="meta-row">
+                        <span>{getActivityTypeLabel(activity)}</span>
+                        <span>{activity.sourceLabel}</span>
+                      </div>
                     </div>
                     <em>{formatTime(activity.createdAt)}</em>
                   </button>
@@ -4139,6 +4211,32 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                     {governanceActionError ? <div className="empty-state compact">{governanceActionError}</div> : null}
                   </div>
                 ) : null}
+                {notePreviewReviewActions.length && !isEditingNote ? (
+                  <div className="card-stack compact-stack">
+                    <article className="mini-card">
+                      <strong>Review recall</strong>
+                      <p>Recent manual trust decisions for this note stay visible here so you can reopen the surrounding context quickly.</p>
+                    </article>
+                    {notePreviewReviewActions.slice(0, 3).map((activity) => (
+                      <article key={activity.id} className="mini-card">
+                        <strong>{getActivityTypeLabel(activity)}</strong>
+                        <p>{getActivityPreviewText(activity)}</p>
+                        <div className="meta-row">
+                          <span>{formatTime(activity.createdAt)}</span>
+                          <span>{activity.sourceLabel}</span>
+                        </div>
+                      </article>
+                    ))}
+                    <div className="action-row">
+                      <button type="button" onClick={() => selectView('governance')}>
+                        Open governance
+                      </button>
+                      <button type="button" className="ghost" onClick={() => openNodeInGraph(notePreviewNode.id)}>
+                        Inspect in graph
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 <div className="chip-row">
                   {notePreviewNode.tags.map((tag) => (
                     <span key={tag} className="chip">
@@ -4227,8 +4325,8 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   ))}
                   {detail.activities.slice(0, 2).map((activity) => (
                     <article key={activity.id} className="mini-card">
-                      <strong>{activity.activityType}</strong>
-                      <p>{activity.body}</p>
+                      <strong>{getActivityTypeLabel(activity)}</strong>
+                      <p>{getActivityPreviewText(activity)}</p>
                     </article>
                   ))}
                 </div>
@@ -4375,9 +4473,9 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   >
                     <div>
                       <strong>{activity.targetNodeTitle ?? activity.targetNodeId}</strong>
-                      <span>{activity.body || activity.activityType}</span>
+                      <span>{getActivityPreviewText(activity)}</span>
                       <div className="meta-row">
-                        <span>{activity.activityType}</span>
+                        <span>{getActivityTypeLabel(activity)}</span>
                         <span>{activity.sourceLabel}</span>
                         <span>{formatTime(activity.createdAt)}</span>
                       </div>

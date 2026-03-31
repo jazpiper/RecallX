@@ -385,6 +385,7 @@ export interface ActivitySearchResultItem {
   body: string | null;
   sourceLabel: string | null;
   createdAt: string;
+  metadata: JsonMap;
   matchReason?: SearchMatchReason;
   lexicalQuality?: SearchLexicalQuality;
 }
