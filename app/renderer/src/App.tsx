@@ -53,6 +53,7 @@ import type {
   GovernanceFeedItem,
   GovernanceIssueItem,
   GovernancePayload,
+  GovernanceState,
   GraphConnection,
   NavView,
   NodeDetail,
@@ -224,6 +225,10 @@ function getGovernanceStateSummary(state: GovernanceIssueItem['state']) {
   }
 }
 
+function formatGovernanceStateLabel(state: GovernanceState | null) {
+  return state ? state.replaceAll('_', ' ') : 'unknown';
+}
+
 function getGovernanceActionLabel(item: GovernanceIssueItem) {
   return item.entityType === 'node' ? 'Inspect node' : 'Relation issue';
 }
@@ -278,6 +283,44 @@ function getActivityPreviewText(activity: {
   }
 
   return activity.activityType.replaceAll('_', ' ');
+}
+
+function getReviewActionProvenanceText(activity: {
+  activityType: string;
+  sourceLabel?: string | null;
+  metadata?: Record<string, string | number | boolean>;
+}) {
+  if (!isReviewActionActivity(activity)) {
+    return null;
+  }
+
+  const nextState =
+    typeof activity.metadata?.nextState === 'string'
+      ? formatGovernanceStateLabel(activity.metadata.nextState as GovernanceState)
+      : null;
+  const sourceLabel = activity.sourceLabel?.trim() || null;
+
+  if (sourceLabel && nextState) {
+    return `${sourceLabel} recorded this manual review and moved the memory to ${nextState}.`;
+  }
+  if (nextState) {
+    return `Manual review moved the memory to ${nextState}.`;
+  }
+  if (sourceLabel) {
+    return `${sourceLabel} recorded this manual review decision.`;
+  }
+  return 'Manual review decision recorded for this memory.';
+}
+
+function getGovernanceFeedProvenanceText(item: GovernanceFeedItem) {
+  const nextState = formatGovernanceStateLabel(item.nextState);
+  if (item.entityType === 'relation') {
+    return item.relationType
+      ? `${getGovernanceDecisionActionLabel(item.action)} relation review moved trust to ${nextState}.`
+      : `${getGovernanceDecisionActionLabel(item.action)} review moved trust to ${nextState}.`;
+  }
+
+  return `${getGovernanceDecisionActionLabel(item.action)} node review moved trust to ${nextState}.`;
 }
 
 function isNodeGovernanceCandidate(node: Node | null, governance: GovernancePayload['state'] | null = null) {
@@ -2413,6 +2456,15 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
     setPaletteSection('searches');
   }
 
+  function openGovernanceWithFilters(
+    entityFilter: GovernanceFeedEntityFilter = 'all',
+    actionFilter: GovernanceFeedActionFilter = 'all',
+  ) {
+    setGovernanceFeedEntityFilter(entityFilter);
+    setGovernanceFeedActionFilter(actionFilter);
+    selectView('governance');
+  }
+
   function handleRunPaletteCommand(command: { label: string; run: () => void }) {
     rememberCommand(command.label);
     setIsCommandPaletteOpen(false);
@@ -2533,6 +2585,45 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
           },
         },
         { label: 'Review Governance', hint: 'Inspect trust and review signals', run: () => selectView('governance') },
+        {
+          label: 'Review promoted decisions',
+          hint: 'Open Governance filtered to recent promote actions',
+          run: () => openGovernanceWithFilters('all', 'promote'),
+        },
+        {
+          label: 'Review archived decisions',
+          hint: 'Open Governance filtered to recent archive actions',
+          run: () => openGovernanceWithFilters('all', 'archive'),
+        },
+        {
+          label: 'Review contested nodes',
+          hint: 'Open Governance filtered to contested node decisions',
+          run: () => openGovernanceWithFilters('node', 'contest'),
+        },
+        {
+          label: 'Review relation decisions',
+          hint: 'Open Governance filtered to relation review activity',
+          run: () => openGovernanceWithFilters('relation', 'all'),
+        },
+        ...(governanceFeed[0]
+          ? [
+              {
+                label: 'Open latest review in notes',
+                hint: `${governanceFeed[0].title ?? governanceFeed[0].entityId} · ${getGovernanceDecisionActionLabel(governanceFeed[0].action)} · ${formatTime(governanceFeed[0].createdAt)}`,
+                run: () => inspectGovernanceFeedItem(governanceFeed[0]),
+              },
+              {
+                label: 'Open latest review in graph',
+                hint: `${governanceFeed[0].title ?? governanceFeed[0].entityId} · graph context`,
+                run: () => openGovernanceFeedGraph(governanceFeed[0]),
+              },
+              {
+                label: 'Open latest review issue',
+                hint: `${governanceFeed[0].title ?? governanceFeed[0].entityId} · reopen Governance detail`,
+                run: () => handleOpenGovernanceFeedItem(governanceFeed[0]),
+              },
+            ]
+          : []),
         { label: 'Open Workspace', hint: 'Open backup, import, and safety tools', run: () => selectView('settings') },
         ...(activeProjectNode
           ? [
@@ -2544,7 +2635,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             ]
           : []),
       ].sort((left, right) => left.label.localeCompare(right.label)),
-    [activeProjectNode],
+    [activeProjectNode, governanceFeed],
   );
   const normalizedPaletteQuery = paletteQuery.trim().toLowerCase();
   const filteredPaletteRouteCommands = useMemo(
@@ -2989,6 +3080,9 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                                     <p>{event.reason}</p>
                                   </div>
                                   <span className={`pill ${badgeTone(event.nextState)}`}>{getGovernanceDecisionActionLabel(event.action)}</span>
+                                </div>
+                                <div className="meta-row">
+                                  <span>{getGovernanceFeedProvenanceText(event)}</span>
                                 </div>
                                 <div className="chip-row">
                                   <span className="chip chip-static">{event.entityType}</span>
@@ -4221,6 +4315,11 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                       <article key={activity.id} className="mini-card">
                         <strong>{getActivityTypeLabel(activity)}</strong>
                         <p>{getActivityPreviewText(activity)}</p>
+                        {getReviewActionProvenanceText(activity) ? (
+                          <div className="meta-row">
+                            <span>{getReviewActionProvenanceText(activity)}</span>
+                          </div>
+                        ) : null}
                         <div className="meta-row">
                           <span>{formatTime(activity.createdAt)}</span>
                           <span>{activity.sourceLabel}</span>
@@ -4666,6 +4765,9 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                             <p>{event.reason}</p>
                           </div>
                           <span className={`pill ${badgeTone(event.nextState)}`}>{getGovernanceDecisionActionLabel(event.action)}</span>
+                        </div>
+                        <div className="meta-row">
+                          <span>{getGovernanceFeedProvenanceText(event)}</span>
                         </div>
                         <div className="meta-row">
                           <span>{formatTime(event.createdAt)}</span>

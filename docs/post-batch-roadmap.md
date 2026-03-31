@@ -45,6 +45,22 @@ Stop rule for the current finite queue:
 - the run is done when item 9 is shipped or explicitly deferred
 - any new ideas discovered while shipping item 9 should be recorded as later candidates, not auto-added to the same execution queue
 
+That batch shipped:
+
+- command-palette shortcuts for recent review re-entry into notes, graph, and Governance detail
+- Governance filter presets for promoted, archived, contested, and relation review decisions
+- compact provenance wording on Home, Governance, and note-level review recall cards
+- no new dashboard, no provenance browser, no notification layer
+
+Current finite queue state:
+
+- empty
+
+What this means:
+
+- the current queued roadmap run is complete
+- any further product work should start from a fresh planning pass or an explicitly approved new queue snapshot
+
 ## Recommendation
 
 The recommended follow-up order is:
