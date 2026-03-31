@@ -1,5 +1,21 @@
 # RecallX - Post Batch Roadmap
 
+## Current status
+
+The product-shaped follow-up queue described in this document is complete.
+
+RecallX is now in a temporary `feature freeze` mode for normal product work.
+
+Next default planning document:
+
+- [`docs/optimization-roadmap.md`](./optimization-roadmap.md)
+
+What this means:
+
+- this file remains the audit trail for the shipped product batch chain
+- new default work should prefer optimization, simplification, and reliability over new product surface area
+- open a fresh product queue only when the optimization pass is complete or a clear product gap justifies it
+
 This document captures the recommended next batch after item 01 through item 05 shipped:
 
 - Home re-entry refresh
