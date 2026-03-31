@@ -1203,6 +1203,13 @@ export default function App() {
     [deferredQuery, filteredSearchActivityHits],
   );
   const homeGovernanceFeed = useMemo(() => governanceFeed.slice(0, 3), [governanceFeed]);
+  const latestGovernanceIssueFeedItem = useMemo(
+    () =>
+      governanceFeed.find((event) =>
+        governanceIssues.some((item) => item.entityType === event.entityType && item.entityId === event.entityId),
+      ) ?? null,
+    [governanceFeed, governanceIssues],
+  );
   const homeSuggestedProjectNode = useMemo(
     () => activeProjectNode ?? pinnedProjectNodes[0] ?? projectNodes[0] ?? null,
     [activeProjectNode, pinnedProjectNodes, projectNodes],
@@ -2617,10 +2624,14 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                 hint: `${governanceFeed[0].title ?? governanceFeed[0].entityId} · graph context`,
                 run: () => openGovernanceFeedGraph(governanceFeed[0]),
               },
+            ]
+          : []),
+        ...(latestGovernanceIssueFeedItem
+          ? [
               {
                 label: 'Open latest review issue',
-                hint: `${governanceFeed[0].title ?? governanceFeed[0].entityId} · reopen Governance detail`,
-                run: () => handleOpenGovernanceFeedItem(governanceFeed[0]),
+                hint: `${latestGovernanceIssueFeedItem.title ?? latestGovernanceIssueFeedItem.entityId} · reopen Governance detail`,
+                run: () => handleOpenGovernanceFeedItem(latestGovernanceIssueFeedItem),
               },
             ]
           : []),
@@ -2635,7 +2646,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             ]
           : []),
       ].sort((left, right) => left.label.localeCompare(right.label)),
-    [activeProjectNode, governanceFeed],
+    [activeProjectNode, governanceFeed, latestGovernanceIssueFeedItem],
   );
   const normalizedPaletteQuery = paletteQuery.trim().toLowerCase();
   const filteredPaletteRouteCommands = useMemo(
@@ -4781,9 +4792,11 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                           <button type="button" className="ghost" onClick={() => openGovernanceFeedGraph(event)}>
                             Open graph
                           </button>
-                          <button type="button" className="ghost" onClick={() => handleOpenGovernanceFeedItem(event)}>
-                            Review issue
-                          </button>
+                          {governanceIssues.some((item) => item.entityType === event.entityType && item.entityId === event.entityId) ? (
+                            <button type="button" className="ghost" onClick={() => handleOpenGovernanceFeedItem(event)}>
+                              Review issue
+                            </button>
+                          ) : null}
                         </div>
                       </article>
                     ))
