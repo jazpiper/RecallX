@@ -46,9 +46,7 @@ The first baseline pass instruments these synchronous renderer derivations:
 - `search.recentSelectableNodeIds`
 - `notes.searchableNoteNodes`
 - `home.homeRecentNodes`
-- `palette.recentNodes`
 - `palette.routeCommands`
-- `palette.filteredRouteCommands`
 
 These labels are intentionally small and local. They should help identify where O2 and O3 need deeper cleanup without turning profiling into a permanent surface.
 
