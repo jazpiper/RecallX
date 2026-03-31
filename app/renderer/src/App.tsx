@@ -44,6 +44,7 @@ import {
   type SearchResultScope,
 } from './lib/searchResults';
 import { findLatestGovernanceIssueFeedItem, hasOpenGovernanceIssueForFeedItem } from './lib/governance';
+import { profileHotPath } from './lib/hotPathProfile.js';
 import type {
   Activity,
   ActivitySearchHit,
@@ -841,12 +842,14 @@ export default function App() {
   );
   const filteredSearchResults = useMemo(
     () =>
-      filterSearchWorkspaceResults(searchPanel.nodes, searchPanel.activities, {
-        scope: searchScopeFilter,
-        nodeType: searchNodeTypeFilter,
-        sourceLabel: searchSourceFilter,
-        activityType: searchActivityTypeFilter,
-      }),
+      profileHotPath('search.filteredResults', () =>
+        filterSearchWorkspaceResults(searchPanel.nodes, searchPanel.activities, {
+          scope: searchScopeFilter,
+          nodeType: searchNodeTypeFilter,
+          sourceLabel: searchSourceFilter,
+          activityType: searchActivityTypeFilter,
+        }),
+      ),
     [searchActivityTypeFilter, searchNodeTypeFilter, searchPanel.activities, searchPanel.nodes, searchScopeFilter, searchSourceFilter],
   );
   const filteredSearchNodes = filteredSearchResults.nodes;
@@ -914,12 +917,18 @@ export default function App() {
   }, [isCommandPaletteOpen]);
 
   const nodeMap = useMemo(
-    () => buildSearchResultNodeMap(snapshot?.nodes ?? [], searchPanel.nodes, searchPanel.activities),
+    () =>
+      profileHotPath('search.nodeMap', () =>
+        buildSearchResultNodeMap(snapshot?.nodes ?? [], searchPanel.nodes, searchPanel.activities),
+      ),
     [searchPanel.activities, searchPanel.nodes, snapshot],
   );
 
   const recentSelectableNodeIds = useMemo(
-    () => buildRecentSelectableNodeIds(searchPanel.nodes, searchPanel.activities),
+    () =>
+      profileHotPath('search.recentSelectableNodeIds', () =>
+        buildRecentSelectableNodeIds(searchPanel.nodes, searchPanel.activities),
+      ),
     [searchPanel.activities, searchPanel.nodes],
   );
 
@@ -1114,9 +1123,11 @@ export default function App() {
   const [governanceIssues, setGovernanceIssues] = useState<GovernanceIssueItem[]>([]);
   const searchableNoteNodes = useMemo(
     () =>
-      (snapshot?.nodes ?? []).slice().sort(
-        (left, right) =>
-          right.updatedAt.localeCompare(left.updatedAt) || left.title.localeCompare(right.title),
+      profileHotPath('notes.searchableNoteNodes', () =>
+        (snapshot?.nodes ?? []).slice().sort(
+          (left, right) =>
+            right.updatedAt.localeCompare(left.updatedAt) || left.title.localeCompare(right.title),
+        ),
       ),
     [snapshot],
   );
@@ -1166,34 +1177,38 @@ export default function App() {
     return projectNodes.slice(0, 3);
   }, [nodeMap, projectNodes, snapshot?.pinnedProjectIds]);
   const homeRecentNodes = useMemo(() => {
-    const recentIds = snapshot?.recentNodeIds ?? [];
-    const pinnedIds = new Set(pinnedProjectNodes.map((node) => node.id));
-    const recentNodes = recentIds
-      .map((nodeId) => nodeMap.get(nodeId))
-      .filter((node): node is Node => node !== undefined && !pinnedIds.has(node.id));
+    return profileHotPath('home.homeRecentNodes', () => {
+      const recentIds = snapshot?.recentNodeIds ?? [];
+      const pinnedIds = new Set(pinnedProjectNodes.map((node) => node.id));
+      const recentNodes = recentIds
+        .map((nodeId) => nodeMap.get(nodeId))
+        .filter((node): node is Node => node !== undefined && !pinnedIds.has(node.id));
 
-    if (recentNodes.length) {
-      return recentNodes.slice(0, 4);
-    }
+      if (recentNodes.length) {
+        return recentNodes.slice(0, 4);
+      }
 
-    return searchableNoteNodes.filter((node) => !pinnedIds.has(node.id)).slice(0, 4);
+      return searchableNoteNodes.filter((node) => !pinnedIds.has(node.id)).slice(0, 4);
+    });
   }, [nodeMap, pinnedProjectNodes, searchableNoteNodes, snapshot?.recentNodeIds]);
   const paletteRecentNodes = useMemo(() => {
-    const orderedNodes = [
-      activeProjectNode,
-      ...pinnedProjectNodes,
-      ...homeRecentNodes,
-      ...(snapshot?.recentNodeIds ?? []).map((nodeId) => nodeMap.get(nodeId) ?? null),
-    ].filter((node): node is Node => node !== null);
+    return profileHotPath('palette.recentNodes', () => {
+      const orderedNodes = [
+        activeProjectNode,
+        ...pinnedProjectNodes,
+        ...homeRecentNodes,
+        ...(snapshot?.recentNodeIds ?? []).map((nodeId) => nodeMap.get(nodeId) ?? null),
+      ].filter((node): node is Node => node !== null);
 
-    const seen = new Set<string>();
-    return orderedNodes.filter((node) => {
-      if (seen.has(node.id)) {
-        return false;
-      }
-      seen.add(node.id);
-      return true;
-    }).slice(0, 6);
+      const seen = new Set<string>();
+      return orderedNodes.filter((node) => {
+        if (seen.has(node.id)) {
+          return false;
+        }
+        seen.add(node.id);
+        return true;
+      }).slice(0, 6);
+    });
   }, [activeProjectNode, homeRecentNodes, nodeMap, pinnedProjectNodes, snapshot?.recentNodeIds]);
   const homeSearchNodes = useMemo(
     () => (deferredQuery.trim() ? filteredSearchNodes.slice(0, 5) : []),
@@ -2577,81 +2592,85 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
 
   const commandPaletteRouteCommands = useMemo(
     () =>
-      [
-        { label: 'Open Home', hint: 'Return to the re-entry surface', run: () => selectView('home') },
-        { label: 'Open Guide', hint: 'Read API and MCP guidance', run: () => selectView('search') },
-        { label: 'Open Notes', hint: 'Jump to recent cards and quick capture', run: () => selectView('recent') },
-        {
-          label: 'Open Graph',
-          hint: 'Inspect the broader memory graph',
-          run: () => {
-            setGraphMode('neighborhood');
-            selectView('graph');
+      profileHotPath('palette.routeCommands', () =>
+        [
+          { label: 'Open Home', hint: 'Return to the re-entry surface', run: () => selectView('home') },
+          { label: 'Open Guide', hint: 'Read API and MCP guidance', run: () => selectView('search') },
+          { label: 'Open Notes', hint: 'Jump to recent cards and quick capture', run: () => selectView('recent') },
+          {
+            label: 'Open Graph',
+            hint: 'Inspect the broader memory graph',
+            run: () => {
+              setGraphMode('neighborhood');
+              selectView('graph');
+            },
           },
-        },
-        { label: 'Review Governance', hint: 'Inspect trust and review signals', run: () => selectView('governance') },
-        {
-          label: 'Review promoted decisions',
-          hint: 'Open Governance filtered to recent promote actions',
-          run: () => openGovernanceWithFilters('all', 'promote'),
-        },
-        {
-          label: 'Review archived decisions',
-          hint: 'Open Governance filtered to recent archive actions',
-          run: () => openGovernanceWithFilters('all', 'archive'),
-        },
-        {
-          label: 'Review contested nodes',
-          hint: 'Open Governance filtered to contested node decisions',
-          run: () => openGovernanceWithFilters('node', 'contest'),
-        },
-        {
-          label: 'Review relation decisions',
-          hint: 'Open Governance filtered to relation review activity',
-          run: () => openGovernanceWithFilters('relation', 'all'),
-        },
-        ...(governanceFeed[0]
-          ? [
-              {
-                label: 'Open latest review in notes',
-                hint: `${governanceFeed[0].title ?? governanceFeed[0].entityId} · ${getGovernanceDecisionActionLabel(governanceFeed[0].action)} · ${formatTime(governanceFeed[0].createdAt)}`,
-                run: () => inspectGovernanceFeedItem(governanceFeed[0]),
-              },
-              {
-                label: 'Open latest review in graph',
-                hint: `${governanceFeed[0].title ?? governanceFeed[0].entityId} · graph context`,
-                run: () => openGovernanceFeedGraph(governanceFeed[0]),
-              },
-            ]
-          : []),
-        ...(latestGovernanceIssueFeedItem
-          ? [
-              {
-                label: 'Open latest review issue',
-                hint: `${latestGovernanceIssueFeedItem.title ?? latestGovernanceIssueFeedItem.entityId} · reopen Governance detail`,
-                run: () => handleOpenGovernanceFeedItem(latestGovernanceIssueFeedItem),
-              },
-            ]
-          : []),
-        { label: 'Open Workspace', hint: 'Open backup, import, and safety tools', run: () => selectView('settings') },
-        ...(activeProjectNode
-          ? [
-              {
-                label: `Open ${activeProjectNode.title} project map`,
-                hint: 'Jump straight to the active project graph',
-                run: () => openNodeInGraph(activeProjectNode.id),
-              },
-            ]
-          : []),
-      ].sort((left, right) => left.label.localeCompare(right.label)),
+          { label: 'Review Governance', hint: 'Inspect trust and review signals', run: () => selectView('governance') },
+          {
+            label: 'Review promoted decisions',
+            hint: 'Open Governance filtered to recent promote actions',
+            run: () => openGovernanceWithFilters('all', 'promote'),
+          },
+          {
+            label: 'Review archived decisions',
+            hint: 'Open Governance filtered to recent archive actions',
+            run: () => openGovernanceWithFilters('all', 'archive'),
+          },
+          {
+            label: 'Review contested nodes',
+            hint: 'Open Governance filtered to contested node decisions',
+            run: () => openGovernanceWithFilters('node', 'contest'),
+          },
+          {
+            label: 'Review relation decisions',
+            hint: 'Open Governance filtered to relation review activity',
+            run: () => openGovernanceWithFilters('relation', 'all'),
+          },
+          ...(governanceFeed[0]
+            ? [
+                {
+                  label: 'Open latest review in notes',
+                  hint: `${governanceFeed[0].title ?? governanceFeed[0].entityId} · ${getGovernanceDecisionActionLabel(governanceFeed[0].action)} · ${formatTime(governanceFeed[0].createdAt)}`,
+                  run: () => inspectGovernanceFeedItem(governanceFeed[0]),
+                },
+                {
+                  label: 'Open latest review in graph',
+                  hint: `${governanceFeed[0].title ?? governanceFeed[0].entityId} · graph context`,
+                  run: () => openGovernanceFeedGraph(governanceFeed[0]),
+                },
+              ]
+            : []),
+          ...(latestGovernanceIssueFeedItem
+            ? [
+                {
+                  label: 'Open latest review issue',
+                  hint: `${latestGovernanceIssueFeedItem.title ?? latestGovernanceIssueFeedItem.entityId} · reopen Governance detail`,
+                  run: () => handleOpenGovernanceFeedItem(latestGovernanceIssueFeedItem),
+                },
+              ]
+            : []),
+          { label: 'Open Workspace', hint: 'Open backup, import, and safety tools', run: () => selectView('settings') },
+          ...(activeProjectNode
+            ? [
+                {
+                  label: `Open ${activeProjectNode.title} project map`,
+                  hint: 'Jump straight to the active project graph',
+                  run: () => openNodeInGraph(activeProjectNode.id),
+                },
+              ]
+            : []),
+        ].sort((left, right) => left.label.localeCompare(right.label)),
+      ),
     [activeProjectNode, governanceFeed, latestGovernanceIssueFeedItem],
   );
   const normalizedPaletteQuery = paletteQuery.trim().toLowerCase();
   const filteredPaletteRouteCommands = useMemo(
     () =>
-      commandPaletteRouteCommands.filter((command) =>
-        !normalizedPaletteQuery
-          || [command.label, command.hint].join(' ').toLowerCase().includes(normalizedPaletteQuery),
+      profileHotPath('palette.filteredRouteCommands', () =>
+        commandPaletteRouteCommands.filter((command) =>
+          !normalizedPaletteQuery
+            || [command.label, command.hint].join(' ').toLowerCase().includes(normalizedPaletteQuery),
+        ),
       ),
     [commandPaletteRouteCommands, normalizedPaletteQuery],
   );
