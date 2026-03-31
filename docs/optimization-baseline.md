@@ -1,185 +1,62 @@
-# RecallX - Optimization Baseline
+# RecallX - Hot Path Profiling Baseline
 
-## Purpose
+## Goal
 
-This document defines the first-pass measurement baseline for the feature-freeze optimization phase.
+This document defines the first measurement pass for the feature-freeze optimization cycle.
 
-It exists to keep optimization work grounded in:
+The point is not to produce perfect benchmarking. The point is to make the current hot path observable enough that optimization work is driven by evidence instead of guesswork.
 
-- visible user flows
-- specific code surfaces
-- narrow before/after comparisons
+## How to enable renderer profiling
 
-This is not a full performance lab.
-It is a lightweight checklist for deciding whether a change improved the product in a meaningful way.
+Use either of these while running the source app locally:
 
-## Measurement rules
+1. Open the renderer with `?rxProfile=1` in the URL.
+2. Or set `localStorage["recallx.hot-path-profile"] = "1"` in devtools and refresh.
 
-- measure hot-path behavior before broad refactors
-- prefer the same workspace fixture and same user flow when comparing before and after
-- treat renderer render churn, interaction latency, and repeated derived work as first-class concerns
-- record only a small number of signals that are easy to repeat
+When enabled, the renderer appends samples to `window.__recallxHotPathProfile` and prints short `console.info` lines prefixed with `RecallX hot-path`.
 
-## First-pass hot path checklist
+This profiling is intended for local development only.
 
-### 1. Home re-entry
+## Initial measurement targets
 
-Check:
+Capture a short interaction pass for each of these:
 
-- initial Home render after app load
-- switching back to Home from Governance, Notes, and Graph
-- rendering of recent decisions, recent notes, and project digest slices
+1. Home search entry with an empty query, then with a short query.
+2. Command palette open, filter, and recent-command rendering.
+3. Governance view open, filter change, and recent-feed rendering.
+4. Home follow-up cards that depend on recent governance feed and project continuity.
+5. Notes search transition from empty query to mixed node and activity hits.
 
-Watch for:
+## What to watch first
 
-- repeated feed slicing or mapping
-- avoidable recomputation when only view state changes
-- slow follow-up card updates after governance state changes
+For the first pass, pay attention to:
 
-Primary code surfaces:
+- repeated selector work on the same data set
+- sorting or filtering of large arrays during routine view switches
+- command-palette command construction when unrelated renderer state changes
+- governance feed derivation that recalculates when only detail-panel state changes
+- node-map or recent-node reconstruction on every search response
 
-- `app/renderer/src/App.tsx`
+## Current instrumented labels
 
-### 2. Search panel
+The first baseline pass instruments these synchronous renderer derivations:
 
-Check:
+- `search.filteredResults`
+- `search.nodeMap`
+- `search.recentSelectableNodeIds`
+- `notes.searchableNoteNodes`
+- `home.homeRecentNodes`
+- `palette.routeCommands`
 
-- query change with 0, small, and medium result sets
-- switching scope, source, node-type, and activity filters
-- reopening a previously used search
+These labels are intentionally small and local. They should help identify where O2 and O3 need deeper cleanup without turning profiling into a permanent surface.
 
-Watch for:
+## Recording guidance
 
-- repeated result filtering work
-- unnecessary rebuilding of node maps or option lists
-- summary formatting work that grows with unrelated state changes
+For each target flow, record:
 
-Primary code surfaces:
+- rough sample count
+- largest observed duration for each relevant label
+- whether the work repeated unexpectedly on unrelated interactions
+- whether the work felt hot-path relevant or cold-path acceptable
 
-- `app/renderer/src/App.tsx`
-- `app/renderer/src/lib/searchResults.ts`
-
-### 3. Command palette
-
-Check:
-
-- open latency with no query
-- query filtering with recent commands, recent nodes, and review shortcuts
-- palette reopen after recent search and governance activity updates
-
-Watch for:
-
-- expensive route command rebuilding
-- repeated label and hint normalization
-- palette derivation depending on wider renderer state than needed
-
-Primary code surfaces:
-
-- `app/renderer/src/App.tsx`
-
-### 4. Governance feed and review recall
-
-Check:
-
-- Governance view open with default filters
-- filter changes for entity and action
-- Home follow-up card refresh after a governance action
-- reopening the latest still-open issue from Home or command palette
-
-Watch for:
-
-- repeated feed-to-card shaping across multiple UI surfaces
-- active-issue matching that scans more often than necessary
-- duplicated derivation logic between Home, Governance, and palette views
-
-Primary code surfaces:
-
-- `app/renderer/src/App.tsx`
-- `app/renderer/src/lib/governance.ts`
-
-### 5. Import preview cold path
-
-Check:
-
-- preview load for markdown import
-- preview load for RecallX JSON import
-- switching normalization and duplicate modes before running the real import
-
-Watch for:
-
-- overly dense logic that makes changes risky
-- hard-to-test preview or duplicate code paths
-- cold-path complexity spilling into renderer coordination logic
-
-Primary code surfaces:
-
-- `app/server/workspace-import.ts`
-
-## Current baseline hypotheses
-
-These are the most likely first optimization wins based on code inspection.
-
-### H1. `App.tsx` is doing too much hot-path derivation inline
-
-Likely impact:
-
-- Home, search, command palette, and Governance each depend on nearby memo chains inside one large file
-- small state changes can force broader re-evaluation than necessary
-
-Measure first:
-
-- how often search, Home, and command-palette derivations recompute during normal filter and view changes
-
-### H2. Governance review recall now exists in enough places to justify shared derivation helpers
-
-Likely impact:
-
-- the same feed-shaped data now drives Home cards, Governance detail re-entry, and command-palette shortcuts
-
-Measure first:
-
-- whether repeated active-issue matching and recent-review shaping are happening across surfaces rather than once
-
-### H3. Search result shaping is compact but still centralized
-
-Likely impact:
-
-- filtering, option construction, node-map construction, and recent-selectable node derivation all sit close together in the main renderer shell
-
-Measure first:
-
-- whether node map and filter derivations recompute during palette-only and view-only changes
-
-### H4. Import reliability risk is now more about structure than raw speed
-
-Likely impact:
-
-- import preview is not the hot path, but dense control flow in `workspace-import.ts` raises maintenance cost
-
-Measure first:
-
-- code-size and test-surface pressure rather than raw latency
-
-### H5. CI trust is being taxed by known stderr noise
-
-Likely impact:
-
-- green tests still look noisy because inferred-relation refresh writes hit readonly databases in some test paths
-
-Measure first:
-
-- whether the noise comes from a path that should be disabled in readonly test setups or from a real repository-level expectation mismatch
-
-## Baseline capture template
-
-Use this template before and after an optimization batch:
-
-1. target flow
-2. files touched
-3. what was measured
-4. before signal
-5. after signal
-6. residual risk
-
-Keep the write-up short.
-If the optimization has no visible signal, prefer not to do it.
+Keep the notes compact. This baseline exists to rank follow-up engineering work, not to become a reporting dashboard.
