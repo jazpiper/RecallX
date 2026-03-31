@@ -43,6 +43,14 @@ import {
   pushRecentEntry,
   type SearchResultScope,
 } from './lib/searchResults';
+import {
+  buildHomeRecentNodes,
+  buildHomeSuggestedProjectNode,
+  buildPaletteRecentNodes,
+  buildPinnedProjectNodes,
+  buildSearchNodeTypeOptions,
+  filterPaletteRecentNodes,
+} from './lib/rendererShell.js';
 import { findLatestGovernanceIssueFeedItem, hasOpenGovernanceIssueForFeedItem } from './lib/governance';
 import { profileHotPath } from './lib/hotPathProfile.js';
 import type {
@@ -836,8 +844,7 @@ export default function App() {
     [searchPanel.activities, searchPanel.nodes],
   );
   const searchNodeTypeOptions = useMemo(
-    () =>
-      Array.from(new Set(searchPanel.nodes.map((node) => node.type))).sort((left, right) => left.localeCompare(right)),
+    () => buildSearchNodeTypeOptions(searchPanel.nodes),
     [searchPanel.nodes],
   );
   const filteredSearchResults = useMemo(
@@ -1166,49 +1173,17 @@ export default function App() {
     [detail.activities, notePreviewNode],
   );
   const pinnedProjectNodes = useMemo(() => {
-    const fromPinned = (snapshot?.pinnedProjectIds ?? [])
-      .map((nodeId) => nodeMap.get(nodeId))
-      .filter((node): node is Node => node !== undefined && node.type === 'project');
-
-    if (fromPinned.length) {
-      return fromPinned;
-    }
-
-    return projectNodes.slice(0, 3);
+    return buildPinnedProjectNodes(snapshot?.pinnedProjectIds, nodeMap, projectNodes);
   }, [nodeMap, projectNodes, snapshot?.pinnedProjectIds]);
   const homeRecentNodes = useMemo(() => {
-    return profileHotPath('home.homeRecentNodes', () => {
-      const recentIds = snapshot?.recentNodeIds ?? [];
-      const pinnedIds = new Set(pinnedProjectNodes.map((node) => node.id));
-      const recentNodes = recentIds
-        .map((nodeId) => nodeMap.get(nodeId))
-        .filter((node): node is Node => node !== undefined && !pinnedIds.has(node.id));
-
-      if (recentNodes.length) {
-        return recentNodes.slice(0, 4);
-      }
-
-      return searchableNoteNodes.filter((node) => !pinnedIds.has(node.id)).slice(0, 4);
-    });
+    return profileHotPath('home.homeRecentNodes', () =>
+      buildHomeRecentNodes(snapshot?.recentNodeIds, nodeMap, pinnedProjectNodes, searchableNoteNodes),
+    );
   }, [nodeMap, pinnedProjectNodes, searchableNoteNodes, snapshot?.recentNodeIds]);
   const paletteRecentNodes = useMemo(() => {
-    return profileHotPath('palette.recentNodes', () => {
-      const orderedNodes = [
-        activeProjectNode,
-        ...pinnedProjectNodes,
-        ...homeRecentNodes,
-        ...(snapshot?.recentNodeIds ?? []).map((nodeId) => nodeMap.get(nodeId) ?? null),
-      ].filter((node): node is Node => node !== null);
-
-      const seen = new Set<string>();
-      return orderedNodes.filter((node) => {
-        if (seen.has(node.id)) {
-          return false;
-        }
-        seen.add(node.id);
-        return true;
-      }).slice(0, 6);
-    });
+    return profileHotPath('palette.recentNodes', () =>
+      buildPaletteRecentNodes(activeProjectNode, pinnedProjectNodes, homeRecentNodes, snapshot?.recentNodeIds, nodeMap),
+    );
   }, [activeProjectNode, homeRecentNodes, nodeMap, pinnedProjectNodes, snapshot?.recentNodeIds]);
   const homeSearchNodes = useMemo(
     () => (deferredQuery.trim() ? filteredSearchNodes.slice(0, 5) : []),
@@ -1224,7 +1199,7 @@ export default function App() {
     [governanceFeed, governanceIssues],
   );
   const homeSuggestedProjectNode = useMemo(
-    () => activeProjectNode ?? pinnedProjectNodes[0] ?? projectNodes[0] ?? null,
+    () => buildHomeSuggestedProjectNode(activeProjectNode, pinnedProjectNodes, projectNodes),
     [activeProjectNode, pinnedProjectNodes, projectNodes],
   );
 
@@ -2693,11 +2668,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
     [normalizedPaletteQuery, recentSearches],
   );
   const filteredPaletteRecentNodes = useMemo(
-    () =>
-      paletteRecentNodes.filter((node) =>
-        !normalizedPaletteQuery
-          || [node.title, node.summary, node.type].join(' ').toLowerCase().includes(normalizedPaletteQuery),
-      ),
+    () => filterPaletteRecentNodes(paletteRecentNodes, normalizedPaletteQuery),
     [normalizedPaletteQuery, paletteRecentNodes],
   );
 
