@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildHomeGovernanceFeed,
+  buildReviewActionActivities,
+  findLatestGovernanceFeedItem,
   findLatestGovernanceIssueFeedItem,
   hasOpenGovernanceIssueForFeedItem,
 } from '../app/renderer/src/lib/governance.js';
-import type { GovernanceFeedItem, GovernanceIssueItem } from '../app/renderer/src/lib/types.js';
+import type { Activity, GovernanceFeedItem, GovernanceIssueItem } from '../app/renderer/src/lib/types.js';
 
 function makeGovernanceIssue(overrides: Partial<GovernanceIssueItem> = {}): GovernanceIssueItem {
   return {
@@ -43,7 +46,33 @@ function makeGovernanceFeedItem(overrides: Partial<GovernanceFeedItem> = {}): Go
   };
 }
 
+function makeActivity(overrides: Partial<Activity> = {}): Activity {
+  return {
+    id: overrides.id ?? 'activity_1',
+    activityType: overrides.activityType ?? 'review_action',
+    targetNodeId: overrides.targetNodeId ?? 'node_open',
+    body: overrides.body ?? 'Reviewed manually.',
+    createdBy: overrides.createdBy ?? 'tester',
+    sourceType: overrides.sourceType ?? 'human',
+    sourceLabel: overrides.sourceLabel ?? 'tester',
+    createdAt: overrides.createdAt ?? '2026-03-31T03:02:00.000Z',
+    metadata: overrides.metadata ?? {},
+  };
+}
+
 describe('renderer governance shortcut helpers', () => {
+  it('builds the compact Home governance slice from the latest feed items', () => {
+    const feed = [
+      makeGovernanceFeedItem({ id: 'event_1' }),
+      makeGovernanceFeedItem({ id: 'event_2' }),
+      makeGovernanceFeedItem({ id: 'event_3' }),
+      makeGovernanceFeedItem({ id: 'event_4' }),
+    ];
+
+    expect(buildHomeGovernanceFeed(feed).map((item) => item.id)).toEqual(['event_1', 'event_2', 'event_3']);
+    expect(findLatestGovernanceFeedItem(feed)?.id).toBe('event_1');
+  });
+
   it('only treats matching still-open issues as issue-entry targets', () => {
     const issues = [makeGovernanceIssue({ entityId: 'node_open' })];
     const openEvent = makeGovernanceFeedItem({ entityId: 'node_open' });
@@ -61,5 +90,19 @@ describe('renderer governance shortcut helpers', () => {
     ];
 
     expect(findLatestGovernanceIssueFeedItem(feed, issues)?.id).toBe('event_open');
+  });
+
+  it('filters review_action activities for detail and preview recall', () => {
+    const review = makeActivity({ id: 'activity_review', targetNodeId: 'node_open' });
+    const unrelatedReview = makeActivity({ id: 'activity_other_review', targetNodeId: 'node_other' });
+    const noteAppend = makeActivity({ id: 'activity_append', activityType: 'note_appended' });
+
+    expect(buildReviewActionActivities([review, unrelatedReview, noteAppend]).map((item) => item.id)).toEqual([
+      'activity_review',
+      'activity_other_review',
+    ]);
+    expect(
+      buildReviewActionActivities([review, unrelatedReview, noteAppend], { targetNodeId: 'node_open' }).map((item) => item.id),
+    ).toEqual(['activity_review']);
   });
 });

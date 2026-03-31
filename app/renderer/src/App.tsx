@@ -51,7 +51,13 @@ import {
   buildSearchNodeTypeOptions,
   filterPaletteRecentNodes,
 } from './lib/rendererShell.js';
-import { findLatestGovernanceIssueFeedItem, hasOpenGovernanceIssueForFeedItem } from './lib/governance';
+import {
+  buildHomeGovernanceFeed,
+  buildReviewActionActivities,
+  findLatestGovernanceFeedItem,
+  findLatestGovernanceIssueFeedItem,
+  hasOpenGovernanceIssueForFeedItem,
+} from './lib/governance';
 import { profileHotPath } from './lib/hotPathProfile.js';
 import type {
   Activity,
@@ -1160,16 +1166,16 @@ export default function App() {
     : null;
   const notePreviewSupportsGovernanceActions = isNodeGovernanceCandidate(notePreviewNode, detail.governance.state);
   const detailReviewActions = useMemo(
-    () => detail.activities.filter((activity) => activity.activityType === 'review_action'),
+    () => profileHotPath('governance.detailReviewActions', () => buildReviewActionActivities(detail.activities)),
     [detail.activities],
   );
   const notePreviewReviewActions = useMemo(
     () =>
-      notePreviewNode
-        ? detail.activities.filter(
-            (activity) => activity.targetNodeId === notePreviewNode.id && activity.activityType === 'review_action',
-          )
-        : [],
+      profileHotPath('governance.notePreviewReviewActions', () =>
+        buildReviewActionActivities(detail.activities, {
+          targetNodeId: notePreviewNode?.id ?? null,
+        }),
+      ),
     [detail.activities, notePreviewNode],
   );
   const pinnedProjectNodes = useMemo(() => {
@@ -1193,7 +1199,11 @@ export default function App() {
     () => (deferredQuery.trim() ? filteredSearchActivityHits.slice(0, 4) : []),
     [deferredQuery, filteredSearchActivityHits],
   );
-  const homeGovernanceFeed = useMemo(() => governanceFeed.slice(0, 3), [governanceFeed]);
+  const latestGovernanceFeedItem = useMemo(() => findLatestGovernanceFeedItem(governanceFeed), [governanceFeed]);
+  const homeGovernanceFeed = useMemo(
+    () => profileHotPath('governance.homeFeed', () => buildHomeGovernanceFeed(governanceFeed)),
+    [governanceFeed],
+  );
   const latestGovernanceIssueFeedItem = useMemo(
     () => findLatestGovernanceIssueFeedItem(governanceFeed, governanceIssues),
     [governanceFeed, governanceIssues],
@@ -2601,17 +2611,17 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             hint: 'Open Governance filtered to relation review activity',
             run: () => openGovernanceWithFilters('relation', 'all'),
           },
-          ...(governanceFeed[0]
+          ...(latestGovernanceFeedItem
             ? [
                 {
                   label: 'Open latest review in notes',
-                  hint: `${governanceFeed[0].title ?? governanceFeed[0].entityId} · ${getGovernanceDecisionActionLabel(governanceFeed[0].action)} · ${formatTime(governanceFeed[0].createdAt)}`,
-                  run: () => inspectGovernanceFeedItem(governanceFeed[0]),
+                  hint: `${latestGovernanceFeedItem.title ?? latestGovernanceFeedItem.entityId} · ${getGovernanceDecisionActionLabel(latestGovernanceFeedItem.action)} · ${formatTime(latestGovernanceFeedItem.createdAt)}`,
+                  run: () => inspectGovernanceFeedItem(latestGovernanceFeedItem),
                 },
                 {
                   label: 'Open latest review in graph',
-                  hint: `${governanceFeed[0].title ?? governanceFeed[0].entityId} · graph context`,
-                  run: () => openGovernanceFeedGraph(governanceFeed[0]),
+                  hint: `${latestGovernanceFeedItem.title ?? latestGovernanceFeedItem.entityId} · graph context`,
+                  run: () => openGovernanceFeedGraph(latestGovernanceFeedItem),
                 },
               ]
             : []),
@@ -2636,7 +2646,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
             : []),
         ].sort((left, right) => left.label.localeCompare(right.label)),
       ),
-    [activeProjectNode, governanceFeed, latestGovernanceIssueFeedItem],
+    [activeProjectNode, latestGovernanceFeedItem, latestGovernanceIssueFeedItem],
   );
   const normalizedPaletteQuery = paletteQuery.trim().toLowerCase();
   const filteredPaletteRouteCommands = useMemo(
