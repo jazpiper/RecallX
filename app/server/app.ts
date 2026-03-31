@@ -18,6 +18,9 @@ import {
   createNodesSchema,
   createRelationSchema,
   exportWorkspaceSchema,
+  governanceDecisionActions,
+  governanceEntityTypes,
+  governanceEventsQuerySchema,
   governanceNodeActionSchema,
   governanceRelationActionSchema,
   governanceIssuesQuerySchema,
@@ -3185,6 +3188,27 @@ export function createRecallXApp(params: {
     response.json(
       envelope(response.locals.requestId, {
         items: currentRepository().listGovernanceIssues(input.limit, input.states)
+      })
+    );
+  });
+
+  app.get("/api/v1/governance/events", (request, response) => {
+    const entityTypes = parseCommaSeparatedValues(request.query.entity_types)?.filter(
+      (entityType): entityType is (typeof governanceEntityTypes)[number] =>
+        entityType === "node" || entityType === "relation"
+    );
+    const actions = parseCommaSeparatedValues(request.query.actions)?.filter(
+      (action): action is (typeof governanceDecisionActions)[number] =>
+        action === "promote" || action === "contest" || action === "archive" || action === "accept" || action === "reject"
+    );
+    const input = governanceEventsQuerySchema.parse({
+      entityTypes,
+      actions,
+      limit: Number(request.query.limit ?? 12)
+    });
+    response.json(
+      envelope(response.locals.requestId, {
+        items: currentRepository().listRecentGovernanceEvents(input)
       })
     );
   });

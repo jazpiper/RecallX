@@ -31,7 +31,9 @@ export type ActivityType =
   | 'decision_recorded'
   | 'review_action'
   | 'context_bundle_generated';
+export type GovernanceEntityType = 'node' | 'relation';
 export type GovernanceState = 'healthy' | 'low_confidence' | 'contested';
+export type GovernanceDecisionAction = 'promote' | 'contest' | 'archive' | 'accept' | 'reject';
 export type NodeGovernanceAction = 'promote' | 'contest' | 'archive';
 export type RelationGovernanceAction = 'accept' | 'reject' | 'archive';
 
@@ -209,7 +211,7 @@ export interface ContextBundlePreviewItem {
 }
 
 export interface GovernanceStateRecord {
-  entityType: 'node' | 'relation';
+  entityType: GovernanceEntityType;
   entityId: string;
   state: GovernanceState;
   confidence: number;
@@ -226,7 +228,7 @@ export interface GovernanceIssueItem extends GovernanceStateRecord {
 
 export interface GovernanceEventRecord {
   id: string;
-  entityType: 'node' | 'relation';
+  entityType: GovernanceEntityType;
   entityId: string;
   eventType: 'evaluated' | 'promoted' | 'contested' | 'demoted' | 'migrated';
   previousState: GovernanceState | null;
@@ -237,6 +239,16 @@ export interface GovernanceEventRecord {
   metadata: Record<string, string | number | boolean>;
   title?: string;
   subtitle?: string;
+}
+
+export interface GovernanceFeedItem extends Omit<GovernanceEventRecord, 'title' | 'subtitle'> {
+  action: GovernanceDecisionAction | null;
+  title: string | null;
+  subtitle: string | null;
+  nodeId: string | null;
+  fromNodeId: string | null;
+  toNodeId: string | null;
+  relationType: RelationType | null;
 }
 
 export interface GovernancePayload {

@@ -8192,6 +8192,291 @@ describe("relation governance behavior", () => {
   });
 });
 
+describe("governance feed behavior", () => {
+  it("lists recent manual governance decisions across entities and supports entity and action filters", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "recallx-test"
+    };
+    const suggestedNode = repository.createNode({
+      type: "note",
+      title: "Manual review target",
+      body: "Suggested note body",
+      summary: "Suggested note summary",
+      tags: [],
+      source: {
+        actorType: "agent",
+        actorLabel: "Codex",
+        toolName: "codex"
+      },
+      metadata: {},
+      resolvedCanonicality: "suggested",
+      resolvedStatus: "active"
+    });
+    repository.upsertGovernanceState({
+      entityType: "node",
+      entityId: suggestedNode.id,
+      state: "low_confidence",
+      confidence: 0.51,
+      reasons: ["Node still needs human confirmation."],
+      metadata: {}
+    });
+    const fromNode = repository.createNode({
+      type: "project",
+      title: "Renderer refresh",
+      body: "Project source",
+      summary: "Project source",
+      tags: [],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    const toNode = repository.createNode({
+      type: "decision",
+      title: "Keep governance local-first",
+      body: "Decision target",
+      summary: "Decision target",
+      tags: [],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    const relation = repository.createRelation({
+      fromNodeId: fromNode.id,
+      toNodeId: toNode.id,
+      relationType: "supports",
+      source: {
+        actorType: "agent",
+        actorLabel: "Codex",
+        toolName: "codex"
+      },
+      metadata: {},
+      resolvedStatus: "suggested"
+    });
+    repository.upsertGovernanceState({
+      entityType: "relation",
+      entityId: relation.id,
+      state: "contested",
+      confidence: 0.28,
+      reasons: ["Suggested relation still needs a human decision."],
+      metadata: {}
+    });
+
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      await fetch(`${baseUrl}/nodes/${suggestedNode.id}/governance-action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "promote",
+          note: "Reviewed during governance pass.",
+          source
+        })
+      });
+      await fetch(`${baseUrl}/relations/${relation.id}/governance-action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "reject",
+          note: "This relation was misleading.",
+          source
+        })
+      });
+
+      const allResponse = await fetch(`${baseUrl}/governance/events?limit=10`);
+      const allPayload = await allResponse.json();
+      const relationOnlyResponse = await fetch(`${baseUrl}/governance/events?entity_types=relation&actions=reject&limit=10`);
+      const relationOnlyPayload = await relationOnlyResponse.json();
+
+      expect(allResponse.status).toBe(200);
+      expect(allPayload.data.items).toHaveLength(2);
+      expect(allPayload.data.items.map((item: any) => item.action)).toEqual(["reject", "promote"]);
+      expect(allPayload.data.items[0]).toMatchObject({
+        entityType: "relation",
+        entityId: relation.id,
+        action: "reject",
+        fromNodeId: fromNode.id,
+        toNodeId: toNode.id,
+        relationType: "supports"
+      });
+      expect(allPayload.data.items[0].title).toContain("Renderer refresh");
+      expect(allPayload.data.items[1]).toMatchObject({
+        entityType: "node",
+        entityId: suggestedNode.id,
+        action: "promote",
+        nodeId: suggestedNode.id,
+        title: "Manual review target"
+      });
+
+      expect(relationOnlyResponse.status).toBe(200);
+      expect(relationOnlyPayload.data.items).toHaveLength(1);
+      expect(relationOnlyPayload.data.items[0]).toMatchObject({
+        entityType: "relation",
+        entityId: relation.id,
+        action: "reject"
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+});
+
+describe("governance events feed", () => {
+  it("lists recent manual governance decisions across entities and filters by type and action", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    tempRoots.push(root);
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const repository = workspaceSessionManager.getCurrent().repository;
+    const source = {
+      actorType: "human" as const,
+      actorLabel: "juhwan",
+      toolName: "recallx-test"
+    };
+
+    const node = repository.createNode({
+      type: "note",
+      title: "Imported architecture summary",
+      body: "Needs review",
+      summary: "Needs review",
+      tags: [],
+      source: {
+        actorType: "agent",
+        actorLabel: "Codex",
+        toolName: "codex"
+      },
+      metadata: {},
+      resolvedCanonicality: "suggested",
+      resolvedStatus: "active"
+    });
+    repository.upsertGovernanceState({
+      entityType: "node",
+      entityId: node.id,
+      state: "low_confidence",
+      confidence: 0.42,
+      reasons: ["Suggested node still needs a human decision."],
+      metadata: {}
+    });
+
+    const fromNode = repository.createNode({
+      type: "note",
+      title: "Source note",
+      body: "Source",
+      summary: "Source",
+      tags: [],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    const toNode = repository.createNode({
+      type: "reference",
+      title: "Target reference",
+      body: "Target",
+      summary: "Target",
+      tags: [],
+      source,
+      metadata: {},
+      resolvedCanonicality: "canonical",
+      resolvedStatus: "active"
+    });
+    const relation = repository.createRelation({
+      fromNodeId: fromNode.id,
+      toNodeId: toNode.id,
+      relationType: "supports",
+      source: {
+        actorType: "agent",
+        actorLabel: "Codex",
+        toolName: "codex"
+      },
+      metadata: {},
+      resolvedStatus: "suggested"
+    });
+    repository.upsertGovernanceState({
+      entityType: "relation",
+      entityId: relation.id,
+      state: "low_confidence",
+      confidence: 0.51,
+      reasons: ["Suggested relation still needs review."],
+      metadata: {}
+    });
+
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+
+      await fetch(`${baseUrl}/nodes/${node.id}/governance-action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "promote",
+          note: "Confirmed during architecture cleanup.",
+          source
+        })
+      });
+      await fetch(`${baseUrl}/relations/${relation.id}/governance-action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "reject",
+          note: "This support edge was spurious.",
+          source
+        })
+      });
+
+      const response = await fetch(`${baseUrl}/governance/events?limit=10`);
+      const payload = await response.json();
+      const items = payload.data.items as Array<Record<string, unknown>>;
+
+      expect(response.status).toBe(200);
+      expect(items).toHaveLength(2);
+      expect(items.some((item) => item.entityType === "node" && item.action === "promote")).toBe(true);
+      expect(items.some((item) => item.entityType === "relation" && item.action === "reject")).toBe(true);
+      expect(items.find((item) => item.entityType === "node")?.nodeId).toBe(node.id);
+      expect(items.find((item) => item.entityType === "relation")?.fromNodeId).toBe(fromNode.id);
+      expect(items.find((item) => item.entityType === "relation")?.toNodeId).toBe(toNode.id);
+
+      const nodeOnlyResponse = await fetch(`${baseUrl}/governance/events?entity_types=node&actions=promote&limit=10`);
+      const nodeOnlyPayload = await nodeOnlyResponse.json();
+
+      expect(nodeOnlyResponse.status).toBe(200);
+      expect(nodeOnlyPayload.data.items).toHaveLength(1);
+      expect(nodeOnlyPayload.data.items[0].entityType).toBe("node");
+      expect(nodeOnlyPayload.data.items[0].action).toBe("promote");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+});
+
 describe("service index", () => {
   it("returns a discoverable root index for external agents", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));

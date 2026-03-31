@@ -83,6 +83,54 @@ Recommended scope for the next item:
 - better link-out from recent decisions back into nodes, graph, or relation context
 - no bulk review actions, no queue mechanics, no separate admin surface
 
+That batch shipped:
+
+- a recent manual governance feed on Governance across nodes and relations
+- entity and action filters for recent governance decisions
+- direct jump-back into notes, graph, or the selected governance issue
+- no moderation inbox, no bulk review tools, no new top-level surface
+
+The next recommended product batch is now:
+
+7. review-action retrieval and decision recall polish
+
+Why this is next now:
+
+- governance decisions are now easier to make and revisit inside Governance, but they are still harder to rediscover from normal note or search workflows
+- the next leverage is connecting review actions more clearly to the broader retrieval loop without creating a reporting dashboard
+- this stays aligned with the current local-first, compact-surface product shape
+
+Recommended scope for the next item:
+
+- stronger search or notes visibility for `review_action` activities
+- lightweight jump-back from decision recall into related provenance or node history
+- compact wording polish for decision labels and notes where human actions are revisited later
+- no analytics dashboard, no team workflow layer, no separate history page
+
+That batch shipped:
+
+- a compact recent manual decision feed on Governance
+- entity-type and action filters for cross-session trust recall
+- direct jump-back from feed items into notes, graph, or still-open governance issues
+- no new moderation inbox, no Home takeover, no bulk actions
+
+The next recommended product batch is now:
+
+7. governance follow-up cues on Home
+
+Why this is next now:
+
+- Governance now has compact recall, but the product still drops that trust history once the user leaves the Governance surface
+- the next leverage is a very small re-entry cue on Home, not another review screen
+- this keeps the trust loop visible without broadening navigation
+
+Recommended scope for the next item:
+
+- a small Home card for the most recent manual governance decisions
+- one-click return to reviewed note or graph context
+- optional persistence for the last-used governance feed filters
+- no notifications, badges, or inbox semantics
+
 ## Impact x Effort
 
 ### 1. Active project mode and digest
