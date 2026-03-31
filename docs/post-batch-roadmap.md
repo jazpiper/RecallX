@@ -61,6 +61,11 @@ What this means:
 - the current queued roadmap run is complete
 - any further product work should start from a fresh planning pass or an explicitly approved new queue snapshot
 
+Historical recommendation trail below:
+
+- the remainder of this document is preserved as an audit trail of how the rolling roadmap evolved
+- when the queue snapshot above and the historical trail disagree, treat the queue snapshot above as the current source of truth
+
 ## Recommendation
 
 The recommended follow-up order is:
