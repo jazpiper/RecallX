@@ -3791,6 +3791,7 @@ describe("inferred relation API integration", () => {
     });
 
     const repository = workspaceSessionManager.getCurrent().repository;
+    repository.setSetting("observability.enabled", true);
     const source = {
       actorType: "agent" as const,
       actorLabel: "Codex",
@@ -4042,6 +4043,36 @@ describe("inferred relation API integration", () => {
       expect(payload.data.items.some((item: { resultType: string; activity?: { matchReason?: { strategy: string } } }) =>
         item.resultType === "activity" && item.activity?.matchReason?.strategy === "fallback_token"
       )).toBe(true);
+
+      const telemetryEvent = await waitFor(() => {
+        const telemetryFile = path.join(root, "logs", `telemetry-${new Date().toISOString().slice(0, 10)}.ndjson`);
+        if (!existsSync(telemetryFile)) {
+          return null;
+        }
+
+        const event = readFileSync(telemetryFile, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as { operation: string; details?: Record<string, unknown> })
+          .find((entry) => entry.operation === "workspace.search");
+
+        return event ?? null;
+      });
+
+      expect(telemetryEvent.details).toMatchObject({
+        requestedWindow: 30,
+        queryFallbackTriggered: true,
+        queryFallbackUsed: true,
+        queryFallbackTermCount: 3,
+        totalCountStrategy: "merged_length",
+        rawNodeTotalCount: 0,
+        rawActivityTotalCount: 0,
+        resolvedNodeTotalCount: 1,
+        resolvedActivityTotalCount: 1,
+        mergedCandidateCount: 2,
+        nodeCandidateCount: 1,
+        activityCandidateCount: 1
+      });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
@@ -4172,6 +4203,8 @@ describe("inferred relation API integration", () => {
           }
         ]
       });
+      expect(summaryPayload.data.operationSummaries.some((item: { operation: string }) => item.operation === "workspace.search.nodes.deterministic")).toBe(true);
+      expect(summaryPayload.data.operationSummaries.some((item: { operation: string }) => item.operation === "workspace.search.activities.deterministic")).toBe(true);
       expect(summaryPayload.data.operationSummaries.some((item: { operation: string }) => item.operation === "workspace.search.semantic_fallback")).toBe(true);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));

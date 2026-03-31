@@ -2219,6 +2219,11 @@ export class RecallXRepository {
   async searchWorkspace(
     input: WorkspaceSearchInput,
     options: {
+      runSearchStageSpan?: <T>(
+        operation: string,
+        details: JsonMap,
+        callback: () => Promise<T> | T
+      ) => Promise<T>;
       runSemanticFallbackSpan?: <T>(
         details: JsonMap,
         callback: () => Promise<T>
@@ -2231,33 +2236,78 @@ export class RecallXRepository {
     const queryPresent = Boolean(input.query.trim());
     const searchSort = input.sort === "smart" ? (queryPresent ? "relevance" : "updated_at") : input.sort;
     const normalizedQuery = input.query.trim();
+    const runSearchStage = async <T>(
+      operation: string,
+      details: JsonMap,
+      callback: () => Promise<T> | T
+    ): Promise<T> => {
+      if (!options.runSearchStageSpan) {
+        return await callback();
+      }
+
+      return await options.runSearchStageSpan(operation, details, callback);
+    };
     const nodeResults = includeNodes
-      ? this.searchNodes({
-          query: input.query,
-          filters: input.nodeFilters ?? {},
-          limit: requestedWindow,
-          offset: 0,
-          sort: searchSort
-        })
+      ? await runSearchStage(
+          "workspace.search.nodes.deterministic",
+          {
+            queryPresent,
+            limit: requestedWindow,
+            sort: searchSort
+          },
+          () =>
+            this.searchNodes({
+              query: input.query,
+              filters: input.nodeFilters ?? {},
+              limit: requestedWindow,
+              offset: 0,
+              sort: searchSort
+            })
+        )
       : { items: [], total: 0 };
     const activityResults = includeActivities
-      ? this.searchActivities({
-          query: input.query,
-          filters: input.activityFilters ?? {},
-          limit: requestedWindow,
-          offset: 0,
-          sort: searchSort
-        })
+      ? await runSearchStage(
+          "workspace.search.activities.deterministic",
+          {
+            queryPresent,
+            limit: requestedWindow,
+            sort: searchSort
+          },
+          () =>
+            this.searchActivities({
+              query: input.query,
+              filters: input.activityFilters ?? {},
+              limit: requestedWindow,
+              offset: 0,
+              sort: searchSort
+            })
+        )
       : { items: [], total: 0 };
     const fallbackTriggered = queryPresent && nodeResults.total + activityResults.total === 0;
     const fallbackTokens = fallbackTriggered ? tokenizeSearchQuery(input.query, SEARCH_FALLBACK_TOKEN_LIMIT) : [];
     const resolvedNodeResults =
       fallbackTokens.length >= 2 && includeNodes
-        ? this.searchWorkspaceNodeFallback(fallbackTokens, input.nodeFilters ?? {}, requestedWindow)
+        ? await runSearchStage(
+            "workspace.search.nodes.fallback_token",
+            {
+              fallbackTokenCount: fallbackTokens.length,
+              limit: requestedWindow,
+              queryPresent
+            },
+            () => this.searchWorkspaceNodeFallback(fallbackTokens, input.nodeFilters ?? {}, requestedWindow)
+          )
         : nodeResults;
     const resolvedActivityResults =
       fallbackTokens.length >= 2 && includeActivities
-        ? this.searchWorkspaceActivityFallback(fallbackTokens, input.activityFilters ?? {}, requestedWindow)
+        ? await runSearchStage(
+            "workspace.search.activities.fallback_token",
+            {
+              fallbackTokenCount: fallbackTokens.length,
+              limit: requestedWindow,
+              queryPresent
+            },
+            () => this.searchWorkspaceActivityFallback(fallbackTokens, input.activityFilters ?? {}, requestedWindow)
+          )
         : activityResults;
     const bestNodeLexicalQuality = summarizeLexicalQuality(resolvedNodeResults.items);
     const bestActivityLexicalQuality = summarizeLexicalQuality(resolvedActivityResults.items);
@@ -2266,10 +2316,11 @@ export class RecallXRepository {
       resolvedActivityResults.items,
       input.sort
     );
+    const fallbackTokenUsed = fallbackTokens.length >= 2;
 
     const deterministicResult = {
       total:
-        fallbackTokens.length >= 2
+        fallbackTokenUsed
           ? merged.length
           : resolvedNodeResults.total + resolvedActivityResults.total,
       items: merged.slice(input.offset, input.offset + input.limit)
@@ -2295,15 +2346,23 @@ export class RecallXRepository {
       );
       appendCurrentTelemetryDetails({
         searchHit: result.items.length > 0,
+        requestedWindow,
         candidateCount: requestedWindow,
+        rawNodeTotalCount: nodeResults.total,
+        rawActivityTotalCount: activityResults.total,
+        resolvedNodeTotalCount: resolvedNodeResults.total,
+        resolvedActivityTotalCount: resolvedActivityResults.total,
         nodeCandidateCount: resolvedNodeResults.items.length,
         activityCandidateCount: resolvedActivityResults.items.length,
+        mergedCandidateCount: merged.length,
         nodeResultCount: nodeItems.length,
         activityResultCount: activityItems.length,
         bestNodeLexicalQuality,
         bestActivityLexicalQuality,
         lexicalNodeHit: bestNodeLexicalQuality !== "none",
         strongNodeLexicalHit: bestNodeLexicalQuality === "strong",
+        queryFallbackTriggered: fallbackTriggered,
+        queryFallbackUsed: fallbackTokenUsed,
         resultComposition: computeWorkspaceResultComposition({
           nodeCount: nodeItems.length,
           activityCount: activityItems.length,
@@ -2311,7 +2370,8 @@ export class RecallXRepository {
         }),
         resultCount: result.items.length,
         totalCount: result.total,
-        fallbackTokenCount: fallbackTokens.length,
+        queryFallbackTermCount: fallbackTokens.length,
+        totalCountStrategy: fallbackTokenUsed ? "merged_length" : "source_total_sum",
         semanticFallbackEligible: telemetry.semanticFallbackEligible,
         semanticFallbackAttempted: telemetry.semanticFallbackAttempted,
         semanticFallbackUsed: telemetry.semanticFallbackUsed,
