@@ -1250,6 +1250,23 @@ pre {
   background: rgba(255, 255, 255, 0.025);
 }
 
+.governance-feed-toolbar,
+.governance-feed-list,
+.governance-feed-card {
+  display: grid;
+  gap: 12px;
+}
+
+.governance-filter-chip {
+  cursor: pointer;
+}
+
+.governance-filter-chip.active {
+  border-color: rgba(240, 244, 255, 0.22);
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
 .relation-group-card {
   display: grid;
   align-content: start;

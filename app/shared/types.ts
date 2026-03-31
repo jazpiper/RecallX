@@ -3,6 +3,7 @@ import type {
   BundleMode,
   BundlePreset,
   Canonicality,
+  GovernanceDecisionAction,
   InferredRelationStatus,
   GovernanceEntityType,
   GovernanceEventType,
@@ -281,6 +282,16 @@ export interface GovernanceEventRecord {
   reason: string;
   createdAt: string;
   metadata: JsonMap;
+}
+
+export interface GovernanceFeedItem extends Omit<GovernanceEventRecord, "title" | "subtitle"> {
+  action: GovernanceDecisionAction | null;
+  title: string | null;
+  subtitle: string | null;
+  nodeId: string | null;
+  fromNodeId: string | null;
+  toNodeId: string | null;
+  relationType: RelationType | null;
 }
 
 export interface GovernanceStateRecord {

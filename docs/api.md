@@ -1022,7 +1022,8 @@ Backfill or refresh automatically generated inferred relations across the active
 ### Recent manual pattern
 - node governance actions use `POST /api/v1/nodes/:id/governance-action`
 - relation governance actions use `POST /api/v1/relations/:id/governance-action`
-- both return updated governance payloads so the renderer can refresh trust state in place
+- `GET /api/v1/governance/events` returns recent manual governance decisions across entities for renderer recall surfaces
+- all three endpoints return enough governance context for the renderer to refresh trust state in place
 
 ### Relation governance action
 `POST /api/v1/relations/:id/governance-action`
@@ -1058,14 +1059,32 @@ Purpose:
 ### Purpose
 Return the surfaced automatic-governance issues without exposing a manual review queue.
 
-## 15.2 Get governance state
+## 15.2 List recent governance decisions
+### HTTP
+`GET /api/v1/governance/events?entity_types=node,relation&actions=promote,reject&limit=12`
+
+### Query parameters
+- `entity_types` — optional `node` | `relation`, comma-separated
+- `actions` — optional `promote` | `contest` | `archive` | `accept` | `reject`, comma-separated
+- `limit`
+
+### Purpose
+Return a compact recent feed of manual governance decisions across nodes and relations.
+
+### Notes
+- this endpoint is intentionally limited to manual governance actions, not every automatic evaluation event
+- node items include `nodeId` for note-detail jump-back
+- relation items include `fromNodeId`, `toNodeId`, and `relationType` so the renderer can link back into graph or related note context
+- results are ordered by most recent governance decision first
+
+## 15.3 Get governance state
 ### HTTP
 `GET /api/v1/governance/state/:entityType/:id`
 
 ### Purpose
 Return the current confidence, reasons, and transition timestamps for one node or relation.
 
-## 15.3 Recompute governance
+## 15.4 Recompute governance
 ### HTTP
 `POST /api/v1/governance/recompute`
 

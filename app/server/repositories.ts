@@ -6,6 +6,7 @@ import type {
   ActivityRecord,
   ArtifactRecord,
   GovernanceEventRecord,
+  GovernanceFeedItem,
   GovernanceIssueItem,
   GovernanceStateRecord,
   InferredRelationRecord,
@@ -33,6 +34,7 @@ import type {
   AppendSearchFeedbackInput,
   CreateNodeInput,
   CreateRelationInput,
+  GovernanceDecisionAction,
   GovernanceEntityType,
   GovernanceState,
   RecomputeInferredRelationsInput,
@@ -3796,6 +3798,71 @@ export class RecallXRepository {
       )
       .all(entityType, entityId, limit) as Record<string, unknown>[];
     return rows.map(mapGovernanceEvent);
+  }
+
+  listRecentGovernanceEvents(options?: {
+    limit?: number;
+    entityTypes?: GovernanceEntityType[];
+    actions?: GovernanceDecisionAction[];
+  }): GovernanceFeedItem[] {
+    const limit = options?.limit ?? 12;
+    const entityTypes = options?.entityTypes?.length ? options.entityTypes : undefined;
+    const actions = options?.actions?.length ? options.actions : undefined;
+    const where: string[] = [`json_extract(ge.metadata_json, '$.manualAction') IS NOT NULL`];
+    const params: SqlValue[] = [];
+
+    if (entityTypes?.length) {
+      where.push(`ge.entity_type IN (${entityTypes.map(() => "?").join(", ")})`);
+      params.push(...entityTypes);
+    }
+
+    if (actions?.length) {
+      where.push(`json_extract(ge.metadata_json, '$.manualAction') IN (${actions.map(() => "?").join(", ")})`);
+      params.push(...actions);
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT
+           ge.*,
+           json_extract(ge.metadata_json, '$.manualAction') AS manual_action,
+           CASE
+             WHEN ge.entity_type = 'node' THEN n.title
+             ELSE COALESCE(fn.title, r.from_node_id) || ' ' || r.relation_type || ' ' || COALESCE(tn.title, r.to_node_id)
+           END AS display_title,
+           CASE
+             WHEN ge.entity_type = 'node' THEN n.type
+             ELSE r.status
+           END AS display_subtitle,
+           CASE WHEN ge.entity_type = 'node' THEN ge.entity_id ELSE NULL END AS node_id,
+           CASE WHEN ge.entity_type = 'relation' THEN r.from_node_id ELSE NULL END AS from_node_id,
+           CASE WHEN ge.entity_type = 'relation' THEN r.to_node_id ELSE NULL END AS to_node_id,
+           CASE WHEN ge.entity_type = 'relation' THEN r.relation_type ELSE NULL END AS relation_type
+         FROM governance_events ge
+         LEFT JOIN nodes n
+           ON ge.entity_type = 'node'
+          AND ge.entity_id = n.id
+         LEFT JOIN relations r
+           ON ge.entity_type = 'relation'
+          AND ge.entity_id = r.id
+         LEFT JOIN nodes fn ON fn.id = r.from_node_id
+         LEFT JOIN nodes tn ON tn.id = r.to_node_id
+         WHERE ${where.join(" AND ")}
+         ORDER BY ge.created_at DESC
+         LIMIT ?`
+      )
+      .all(...params, limit) as Record<string, unknown>[];
+
+    return rows.map((row) => ({
+      ...mapGovernanceEvent(row),
+      action: row.manual_action ? (String(row.manual_action) as GovernanceDecisionAction) : null,
+      title: row.display_title ? String(row.display_title) : null,
+      subtitle: row.display_subtitle ? String(row.display_subtitle) : null,
+      nodeId: row.node_id ? String(row.node_id) : null,
+      fromNodeId: row.from_node_id ? String(row.from_node_id) : null,
+      toNodeId: row.to_node_id ? String(row.to_node_id) : null,
+      relationType: row.relation_type ? (String(row.relation_type) as GovernanceFeedItem["relationType"]) : null
+    }));
   }
 
   upsertGovernanceState(params: {

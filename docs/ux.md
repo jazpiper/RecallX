@@ -228,7 +228,8 @@ Governance protects trust without reviving the old review queue.
 - direct promote, contest, and archive actions for node issues from Governance and node detail
 - direct accept, reject, and archive actions for relation issues from Governance
 - optional short decision notes with compact review-action logging
-- recent decision history for the selected governance issue
+- recent manual decision feed across nodes and relations with entity and action filters
+- link-out from recent decisions back into notes, graph, or still-open governance issues
 - bounded recompute/inspection flows backed by automatic governance state, not a manual approval inbox
 
 ### Design rule
@@ -375,7 +376,7 @@ It should not hide the underlying result shape or replace the normal search surf
 2. surfaced governance issues appear when confidence or trust needs inspection
 3. user inspects the issue and decides whether a follow-up action is needed
 4. user can promote, contest, or archive a node in place, or accept, reject, or archive a relation in place
-5. the decision is logged in compact governance history without opening a queue
+5. the decision lands in a compact cross-entity recall feed without opening a queue
 
 ## 9.3 Context inspection flow
 1. user selects a node

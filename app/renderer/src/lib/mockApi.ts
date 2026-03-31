@@ -4,6 +4,7 @@ import type {
   Activity,
   Artifact,
   GovernanceEventRecord,
+  GovernanceFeedItem,
   GovernanceIssueItem,
   GovernancePayload,
   GovernanceStateRecord,
@@ -260,6 +261,20 @@ function mapGovernanceEvent(raw: any): GovernanceEventRecord {
     metadata: raw.metadata ?? {},
     title: raw.title ?? raw.display_title ?? undefined,
     subtitle: raw.subtitle ?? raw.display_subtitle ?? undefined,
+  };
+}
+
+function mapGovernanceFeedItem(raw: any): GovernanceFeedItem {
+  const event = mapGovernanceEvent(raw);
+  return {
+    ...event,
+    action: raw.action ?? raw.manualAction ?? raw.metadata?.manualAction ?? null,
+    title: raw.title ?? raw.display_title ?? null,
+    subtitle: raw.subtitle ?? raw.display_subtitle ?? null,
+    nodeId: raw.nodeId ?? raw.node_id ?? (event.entityType === 'node' ? event.entityId : null),
+    fromNodeId: raw.fromNodeId ?? raw.from_node_id ?? null,
+    toNodeId: raw.toNodeId ?? raw.to_node_id ?? null,
+    relationType: raw.relationType ?? raw.relation_type ?? null,
   };
 }
 
@@ -1264,6 +1279,28 @@ export async function getGovernanceIssues(): Promise<GovernanceIssueItem[]> {
           title: node.title,
           subtitle: node.type,
         })),
+  );
+}
+
+export async function getGovernanceEvents(filters?: {
+  entityTypes?: Array<'node' | 'relation'>;
+  actions?: Array<'promote' | 'contest' | 'archive' | 'accept' | 'reject'>;
+  limit?: number;
+}): Promise<GovernanceFeedItem[]> {
+  return withFallback(
+    async () => {
+      const params = new URLSearchParams();
+      params.set('limit', String(filters?.limit ?? 12));
+      if (filters?.entityTypes?.length) {
+        params.set('entity_types', filters.entityTypes.join(','));
+      }
+      if (filters?.actions?.length) {
+        params.set('actions', filters.actions.join(','));
+      }
+      const payload = await requestJson(`/governance/events?${params.toString()}`);
+      return mapPayloadItems(payload, mapGovernanceFeedItem);
+    },
+    async () => [],
   );
 }
 

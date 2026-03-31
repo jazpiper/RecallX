@@ -45,6 +45,7 @@ export const searchFeedbackResultTypes = ["node", "activity"] as const;
 export const searchFeedbackVerdicts = ["useful", "not_useful", "uncertain"] as const;
 export const governanceEntityTypes = ["node", "relation"] as const;
 export const governanceStates = ["healthy", "low_confidence", "contested"] as const;
+export const governanceDecisionActions = ["promote", "contest", "archive", "accept", "reject"] as const;
 export const governanceEventTypes = [
   "evaluated",
   "promoted",
@@ -177,6 +178,12 @@ export const workspaceSearchSchema = z.object({
 export const governanceIssuesQuerySchema = z.object({
   states: z.array(z.enum(governanceStates)).optional(),
   limit: z.number().int().min(1).max(100).default(20)
+});
+
+export const governanceEventsQuerySchema = z.object({
+  entityTypes: z.array(z.enum(governanceEntityTypes)).optional(),
+  actions: z.array(z.enum(governanceDecisionActions)).optional(),
+  limit: z.number().int().min(1).max(100).default(12)
 });
 
 export const recomputeGovernanceSchema = z.object({
@@ -403,6 +410,7 @@ export type SearchFeedbackResultType = (typeof searchFeedbackResultTypes)[number
 export type SearchFeedbackVerdict = (typeof searchFeedbackVerdicts)[number];
 export type GovernanceEntityType = (typeof governanceEntityTypes)[number];
 export type GovernanceState = (typeof governanceStates)[number];
+export type GovernanceDecisionAction = (typeof governanceDecisionActions)[number];
 export type GovernanceEventType = (typeof governanceEventTypes)[number];
 export type ActivityType = (typeof activityTypes)[number];
 export type CaptureMode = (typeof captureModes)[number];
@@ -413,6 +421,7 @@ export type NodeSearchInput = z.infer<typeof nodeSearchSchema>;
 export type ActivitySearchInput = z.infer<typeof activitySearchSchema>;
 export type WorkspaceSearchInput = z.infer<typeof workspaceSearchSchema>;
 export type GovernanceIssuesQueryInput = z.infer<typeof governanceIssuesQuerySchema>;
+export type GovernanceEventsQueryInput = z.infer<typeof governanceEventsQuerySchema>;
 export type CreateNodeInput = z.infer<typeof createNodeSchema>;
 export type CreateNodesInput = z.infer<typeof createNodesSchema>;
 export type UpdateNodeInput = z.infer<typeof updateNodeSchema>;
