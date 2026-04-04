@@ -1,5 +1,7 @@
 # Item 10 - Relation Governance Follow-Through and Decision-Log Polish
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 Item 09 gave RecallX a compact human decision loop for node governance, but relation issues still remain mostly inspect-only.

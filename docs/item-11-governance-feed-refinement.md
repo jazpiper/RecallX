@@ -1,5 +1,7 @@
 # Item 11 - Governance Feed Refinement and Cross-Entity Review Recall
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 Item 09 and item 10 gave RecallX direct human governance actions for both nodes and relations.
