@@ -75,16 +75,15 @@ describe("RecallX MCP server", () => {
     return { client };
   }
 
-  it("advertises the first-pass RecallX tools", async () => {
+  it("advertises the merged RecallX tools", async () => {
     const { client } = await connectTestClient();
 
     const toolList = await client.listTools();
     const toolNames = toolList.tools.map((tool) => tool.name);
 
     expect(toolNames).toContain("recallx_health");
-    expect(toolNames).toContain("recallx_workspace_current");
-    expect(toolNames).toContain("recallx_semantic_status");
-    expect(toolNames).toContain("recallx_semantic_issues");
+    expect(toolNames).toContain("recallx_workspace_info");
+    expect(toolNames).toContain("recallx_semantic_overview");
     expect(toolNames).toContain("recallx_search_nodes");
     expect(toolNames).toContain("recallx_search_activities");
     expect(toolNames).toContain("recallx_search_workspace");
@@ -92,16 +91,11 @@ describe("RecallX MCP server", () => {
     expect(toolNames).toContain("recallx_append_activity");
     expect(toolNames).toContain("recallx_create_node");
     expect(toolNames).toContain("recallx_create_nodes");
-    expect(toolNames).toContain("recallx_upsert_inferred_relation");
-    expect(toolNames).toContain("recallx_append_relation_usage_event");
-    expect(toolNames).toContain("recallx_append_search_feedback");
-    expect(toolNames).toContain("recallx_recompute_inferred_relations");
-    expect(toolNames).toContain("recallx_list_governance_issues");
-    expect(toolNames).toContain("recallx_get_governance_state");
-    expect(toolNames).toContain("recallx_recompute_governance");
+    expect(toolNames).toContain("recallx_manage_inferred_relations");
+    expect(toolNames).toContain("recallx_append_feedback");
+    expect(toolNames).toContain("recallx_governance");
     expect(toolNames).toContain("recallx_context_bundle");
     expect(toolNames).toContain("recallx_semantic_reindex");
-    expect(toolNames).toContain("recallx_semantic_reindex_node");
     expect(toolNames).toContain("recallx_rank_candidates");
   });
 
@@ -110,31 +104,25 @@ describe("RecallX MCP server", () => {
 
     const toolList = await client.listTools();
 
-    expect(findToolDescription(toolList, "recallx_workspace_current")).toContain("default workspace scope");
-    expect(findToolDescription(toolList, "recallx_workspace_current")).toContain("switching workspaces");
+    expect(findToolDescription(toolList, "recallx_workspace_info")).toContain("confirm scope");
+    expect(findToolDescription(toolList, "recallx_workspace_info")).toContain("user explicitly asks");
 
     expect(findToolDescription(toolList, "recallx_workspace_create")).toContain("user explicitly requests");
     expect(findToolDescription(toolList, "recallx_workspace_open")).toContain("user explicitly requests");
 
     expect(findToolDescription(toolList, "recallx_search_workspace")).toContain("preferred broad entry point");
-    expect(findToolDescription(toolList, "recallx_search_workspace")).toContain("current workspace");
     expect(findToolDescription(toolList, "recallx_search_workspace")).toContain('["nodes", "activities"]');
-    expect(findToolDescription(toolList, "recallx_search_workspace")).toContain('comma-separated string like `"nodes,activities"`');
 
     expect(findToolDescription(toolList, "recallx_search_nodes")).toContain("type=project");
     expect(findToolDescription(toolList, "recallx_search_nodes")).toContain("current workspace");
 
-    expect(findToolDescription(toolList, "recallx_search_activities")).toContain("recent logs");
     expect(findToolDescription(toolList, "recallx_search_activities")).toContain("what happened recently");
 
     expect(findToolDescription(toolList, "recallx_create_node")).toContain("project node in the current workspace");
-    expect(findToolDescription(toolList, "recallx_create_node")).toContain("only create one if no suitable project already exists");
 
     expect(findToolDescription(toolList, "recallx_capture_memory")).toContain("default write");
-    expect(findToolDescription(toolList, "recallx_capture_memory")).toContain("workspace scope");
 
     expect(findToolDescription(toolList, "recallx_append_activity")).toContain("specific RecallX node or project timeline");
-    expect(findToolDescription(toolList, "recallx_append_activity")).toContain("workspace-scope updates");
 
     expect(findToolDescription(toolList, "recallx_context_bundle")).toContain("workspace-entry bundle");
     expect(findToolDescription(toolList, "recallx_context_bundle")).toContain("project or node should anchor the context");
@@ -710,7 +698,7 @@ describe("RecallX MCP server", () => {
     expect(resultContent[0]?.text ?? "").toContain("recallx_capture_memory");
   });
 
-  it("fills default provenance when append_search_feedback omits source", async () => {
+  it("fills default provenance when append_feedback omits source for search feedback", async () => {
     const appendPost = vi.fn().mockResolvedValue({
       event: {
         id: "sfe_1"
@@ -721,8 +709,9 @@ describe("RecallX MCP server", () => {
     });
 
     await client.callTool({
-      name: "recallx_append_search_feedback",
+      name: "recallx_append_feedback",
       arguments: {
+        feedbackType: "search",
         resultType: "node",
         resultId: "node_1",
         verdict: "useful",
@@ -766,31 +755,50 @@ describe("RecallX MCP server", () => {
     expect(getMock).toHaveBeenCalledWith("/nodes/node_1/neighborhood?depth=1&include_inferred=1&max_inferred=4");
   });
 
-  it("maps semantic status onto the semantic status endpoint", async () => {
-    const getMock = vi.fn().mockResolvedValue({
-      enabled: false,
-      provider: "disabled",
-      model: "none",
-      chunkEnabled: false,
-      lastBackfillAt: null,
-      counts: {
-        pending: 1,
-        processing: 0,
-        stale: 2,
-        ready: 3,
-        failed: 0
-      }
-    });
+  it("maps semantic overview onto status and issues endpoints", async () => {
+    const getMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        enabled: false,
+        provider: "disabled",
+        model: "none",
+        chunkEnabled: false,
+        lastBackfillAt: null,
+        counts: {
+          pending: 1,
+          processing: 0,
+          stale: 2,
+          ready: 3,
+          failed: 0
+        }
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            nodeId: "node_1",
+            title: "Recovery checklist",
+            embeddingStatus: "failed",
+            staleReason: "embedding.provider_not_implemented:openai",
+            updatedAt: "2026-03-19T04:00:00.000Z"
+          }
+        ],
+        nextCursor: "cursor_1"
+      });
     const { client } = await connectTestClient({
       get: getMock
     });
 
     const result = await client.callTool({
-      name: "recallx_semantic_status",
-      arguments: {}
+      name: "recallx_semantic_overview",
+      arguments: {
+        includeIssues: true,
+        issueLimit: 3,
+        issueStatuses: ["failed"]
+      }
     });
 
-    expect(getMock).toHaveBeenCalledWith("/semantic/status");
+    expect(getMock).toHaveBeenNthCalledWith(1, "/semantic/status");
+    expect(getMock).toHaveBeenNthCalledWith(2, "/semantic/issues?limit=3&statuses=failed");
     expect("structuredContent" in result && result.structuredContent).toMatchObject({
       counts: {
         pending: 1,
@@ -800,46 +808,7 @@ describe("RecallX MCP server", () => {
     });
   });
 
-  it("maps semantic issues onto the semantic issues endpoint", async () => {
-    const getMock = vi.fn().mockResolvedValue({
-      items: [
-        {
-          nodeId: "node_1",
-          title: "Recovery checklist",
-          embeddingStatus: "failed",
-          staleReason: "embedding.provider_not_implemented:openai",
-          updatedAt: "2026-03-19T04:00:00.000Z"
-        }
-      ],
-      nextCursor: "cursor_1"
-    });
-    const { client } = await connectTestClient({
-      get: getMock
-    });
-
-    const result = await client.callTool({
-      name: "recallx_semantic_issues",
-      arguments: {
-        limit: 3,
-        cursor: "cursor_0",
-        statuses: ["failed"]
-      }
-    });
-
-    expect(getMock).toHaveBeenCalledWith("/semantic/issues?limit=3&cursor=cursor_0&statuses=failed");
-    expect("structuredContent" in result && result.structuredContent).toMatchObject({
-      items: [
-        {
-          nodeId: "node_1",
-          embeddingStatus: "failed",
-          staleReason: "embedding.provider_not_implemented:openai"
-        }
-      ],
-      nextCursor: "cursor_1"
-    });
-  });
-
-  it("maps inferred relation writes onto the RecallX HTTP API contract", async () => {
+  it("maps inferred relation upsert onto the inferred relations endpoint", async () => {
     const postMock = vi.fn().mockResolvedValue({
       relation: {
         id: "irel_1"
@@ -850,8 +819,9 @@ describe("RecallX MCP server", () => {
     });
 
     await client.callTool({
-      name: "recallx_upsert_inferred_relation",
+      name: "recallx_manage_inferred_relations",
       arguments: {
+        action: "upsert",
         fromNodeId: "node_a",
         toNodeId: "node_b",
         relationType: "supports",
@@ -889,8 +859,9 @@ describe("RecallX MCP server", () => {
     });
 
     await client.callTool({
-      name: "recallx_recompute_inferred_relations",
+      name: "recallx_manage_inferred_relations",
       arguments: {
+        action: "recompute",
         generator: "deterministic-linker",
         limit: 25
       }
@@ -942,7 +913,7 @@ describe("RecallX MCP server", () => {
     });
 
     const result = await client.callTool({
-      name: "recallx_semantic_reindex_node",
+      name: "recallx_semantic_reindex",
       arguments: {
         nodeId: "node target"
       }

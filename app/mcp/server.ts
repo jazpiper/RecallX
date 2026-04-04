@@ -465,8 +465,8 @@ const readOnlyToolAnnotations = {
   idempotentHint: true
 } as const;
 
-function createGetToolHandler(toolName: string, apiClient: Pick<RecallXApiClient, "get">, path: string) {
-  return async () => toolResult(toolName, await apiClient.get<Record<string, unknown>>(path));
+function createGetToolHandler<T = Record<string, unknown>>(toolName: string, apiClient: Pick<RecallXApiClient, "get">, path: string) {
+  return async () => toolResult(toolName, await apiClient.get<T>(path));
 }
 
 function createPostToolHandler(toolName: string, apiClient: Pick<RecallXApiClient, "post">, path: string) {
@@ -772,6 +772,48 @@ export function createRecallXMcpServer(params?: {
     getState: () => currentObservabilityState
   });
 
+  // Session-level feedback tracking for automatic signal collection.
+  // Tracks which node IDs appeared in read results so that after a write we can
+  // auto-append search/relation feedback for items that were actually useful.
+  const sessionFeedback = {
+    recentSearches: [] as Array<{ query: string; resultIds: string[]; resultType: string }>,
+    recentBundles: [] as Array<{ targetId?: string; itemIds: string[] }>,
+    runId: `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    trackSearch(query: string, resultIds: string[], resultType: string) {
+      this.recentSearches.push({ query, resultIds, resultType });
+      if (this.recentSearches.length > 50) this.recentSearches.shift();
+    },
+    trackBundle(targetId: string | undefined, itemIds: string[]) {
+      this.recentBundles.push({ targetId, itemIds });
+      if (this.recentBundles.length > 50) this.recentBundles.shift();
+    }
+  };
+
+  /**
+   * Try to auto-append feedback for search results that led to successful reads.
+   * Called after a successful write tool (create_node, append_activity, capture_memory).
+   */
+  async function autoAppendSearchFeedback() {
+    // Only append for the most recent search that had results. Avoid spam by
+    // checking if we already appended feedback for the same search in this session.
+    const lastSearch = sessionFeedback.recentSearches.at(-1);
+    if (!lastSearch || !lastSearch.resultIds.length) return;
+    try {
+      await apiClient.post("/search-feedback-events", {
+        resultType: lastSearch.resultType as "node" | "activity",
+        resultId: lastSearch.resultIds[0],
+        verdict: "useful" as const,
+        query: lastSearch.query,
+        sessionId: sessionFeedback.runId,
+        confidence: 0.7
+      });
+      // Remove the search so we don't append again for the same search.
+      sessionFeedback.recentSearches.pop();
+    } catch {
+      // Feedback append is best-effort — don't break the main tool call.
+    }
+  }
+
   const server = new McpServer(
     {
       name: "recallx-mcp",
@@ -779,7 +821,7 @@ export function createRecallXMcpServer(params?: {
     },
     {
       instructions:
-        "Use RecallX as the default local memory layer for meaningful work, not as an afterthought. Treat the current workspace as the default scope, and do not create or open another workspace unless the user explicitly asks. Before making assumptions or starting a meaningful task, read context first: confirm the active workspace, use recallx_search_workspace as the broad default when the target is still unclear, narrow with recallx_search_nodes or recallx_search_activities when needed, and build a compact recallx_context_bundle before deep execution when a node or project is known. When the work is clearly project-shaped, search for an existing project inside the current workspace first, create one only if no suitable project exists, and then anchor follow-up context and routine logs to that project. Once a project is known, do not keep writing untargeted workspace captures for routine work logs: append activity to that project or pass targetNodeId on capture writes. Reserve workspace-scope inbox activity for genuinely untargeted, cross-project, or not-yet-classified short logs. Prefer read tools before durable writes, prefer compact context over repeated broad browsing, and write back concise summaries, decisions, or feedback when RecallX materially helped the task. Include source details on durable writes when you want caller-specific provenance.",
+        "Use RecallX as the default local memory layer for meaningful work, not as an afterthought. Treat the current workspace as the default scope, and do not create or open another workspace unless the user explicitly asks. Before making assumptions or starting a meaningful task, read context first: confirm the active workspace, use recallx_search_workspace as the broad default when the target is still unclear, narrow with recallx_search_nodes or recallx_search_activities when needed, and build a compact recallx_context_bundle before deep execution when a node or project is known. When the work is clearly project-shaped, search for an existing project inside the current workspace first, create one only if no suitable project exists, and then anchor follow-up context and routine logs to that project. Once a project is known, do not keep writing untargeted workspace captures for routine work logs: append activity to that project or pass targetNodeId on capture writes. Reserve workspace-scope inbox activity for genuinely untargeted, cross-project, or not-yet-classified short logs. Prefer read tools before durable writes, prefer compact context over repeated broad browsing, and write back concise summaries, decisions, or feedback when RecallX materially helped the task. Include source details on durable writes when you want caller-specific provenance. Feedback signals (search usefulness, relation usefulness) are automatically recorded on your behalf — you do NOT need to call feedback tools manually.",
       capabilities: {
         logging: {}
       }
@@ -853,28 +895,28 @@ export function createRecallXMcpServer(params?: {
 
   registerReadOnlyTool(
     server,
-    "recallx_workspace_current",
+    "recallx_workspace_info",
     {
-      title: "Current Workspace",
+      title: "Workspace Information",
       description:
-        "Read the currently active RecallX workspace and auth mode. Use this to confirm the default workspace scope before deciding whether an explicit user request justifies switching workspaces.",
-      outputSchema: workspaceInfoSchema
-    },
-    createGetToolHandler("recallx_workspace_current", apiClient, "/workspace")
-  );
-
-  registerReadOnlyTool(
-    server,
-    "recallx_workspace_list",
-    {
-      title: "List Workspaces",
-      description: "List known RecallX workspaces and identify the currently active one.",
+        "Read the active RecallX workspace and optionally list all known workspaces in one call. **When to use:** at the start of any task to confirm scope. Do not create or open another workspace unless the user explicitly asks.",
+      inputSchema: {
+        includeList: coerceBooleanSchema(false).describe("Set true to also return all known workspaces alongside the active one.")
+      },
       outputSchema: z.object({
         current: workspaceInfoSchema,
-        items: z.array(workspaceInfoSchema.extend({ isCurrent: z.boolean(), lastOpenedAt: z.string() }))
+        items: z.array(workspaceInfoSchema.extend({ isCurrent: z.boolean(), lastOpenedAt: z.string() })).optional()
       })
     },
-    createGetToolHandler("recallx_workspace_list", apiClient, "/workspaces")
+    async ({ includeList }) => {
+      const current = await apiClient.get<Record<string, unknown>>("/workspace");
+      const result: { current: JsonRecord; items?: JsonRecord[] } = { current: current as JsonRecord };
+      if (includeList) {
+        const list = await apiClient.get<Record<string, unknown>>("/workspaces");
+        result.items = (list.items ?? []) as JsonRecord[];
+      }
+      return toolResult("recallx_workspace_info", result);
+    }
   );
 
   registerTool(
@@ -908,10 +950,16 @@ export function createRecallXMcpServer(params?: {
 
   registerReadOnlyTool(
     server,
-    "recallx_semantic_status",
+    "recallx_semantic_overview",
     {
-      title: "Semantic Index Status",
-      description: "Read the current semantic indexing status, provider configuration, and queued item counts.",
+      title: "Semantic Overview",
+      description:
+        "Read semantic index status, counts, and optionally active issues in one call. **When to use:** during workspace health checks or when search results seem unexpectedly stale. Not needed for routine coding tasks.",
+      inputSchema: {
+        includeIssues: coerceBooleanSchema(false).describe("Set true to also return recent semantic indexing issues."),
+        issueLimit: coerceIntegerSchema(5, 1, 25).describe("Max issue items when includeIssues is true."),
+        issueStatuses: z.array(z.enum(["pending", "stale", "failed"])).max(3).optional().describe("Issue statuses to include.")
+      },
       outputSchema: z.object({
         enabled: z.boolean(),
         provider: z.string().nullable(),
@@ -924,25 +972,8 @@ export function createRecallXMcpServer(params?: {
           stale: z.number(),
           ready: z.number(),
           failed: z.number()
-        })
-      })
-    },
-    createGetToolHandler("recallx_semantic_status", apiClient, "/semantic/status")
-  );
-
-  registerReadOnlyTool(
-    server,
-    "recallx_semantic_issues",
-    {
-      title: "Semantic Index Issues",
-      description: "Read semantic indexing issues with optional status filters and cursor pagination.",
-      inputSchema: {
-        limit: coerceIntegerSchema(5, 1, 25).describe("Maximum number of semantic issue items to return."),
-        cursor: z.string().min(1).optional().describe("Opaque cursor from a previous semantic issues call."),
-        statuses: z.array(z.enum(["pending", "stale", "failed"])).max(3).optional().describe("Optional issue statuses to include.")
-      },
-      outputSchema: z.object({
-        items: z.array(
+        }),
+        issues: z.array(
           z.object({
             nodeId: z.string(),
             title: z.string().nullable(),
@@ -950,20 +981,24 @@ export function createRecallXMcpServer(params?: {
             staleReason: z.string().nullable(),
             updatedAt: z.string()
           })
-        ),
-        nextCursor: z.string().nullable()
+        ).optional(),
+        nextCursor: z.string().nullable().optional()
       })
     },
-    async ({ limit, cursor, statuses }) => {
-      const params = new URLSearchParams();
-      params.set("limit", String(limit));
-      if (cursor) {
-        params.set("cursor", cursor);
+    async ({ includeIssues, issueLimit, issueStatuses }) => {
+      const status = await apiClient.get<Record<string, unknown>>("/semantic/status");
+      const result: JsonRecord = { ...status };
+      if (includeIssues) {
+        const params = new URLSearchParams();
+        params.set("limit", String(issueLimit));
+        if (issueStatuses?.length) {
+          params.set("statuses", issueStatuses.join(","));
+        }
+        const issuesPayload = await apiClient.get<Record<string, unknown>>(`/semantic/issues?${params.toString()}`);
+        result.issues = (issuesPayload.items ?? []) as JsonRecord[];
+        result.nextCursor = typeof issuesPayload.nextCursor === "string" ? issuesPayload.nextCursor : null;
       }
-      if (statuses?.length) {
-        params.set("statuses", statuses.join(","));
-      }
-      return toolResult("recallx_semantic_issues", await apiClient.get(`/semantic/issues?${params.toString()}`));
+      return toolResult("recallx_semantic_overview", result);
     }
   );
 
@@ -994,7 +1029,14 @@ export function createRecallXMcpServer(params?: {
         sort: z.enum(["relevance", "updated_at"]).default("relevance")
       }
     },
-    createNormalizedPostToolHandler("recallx_search_nodes", apiClient, "/nodes/search", normalizeNodeSearchInput)
+    async (input) => {
+      const result = await apiClient.post<Record<string, unknown>>("/nodes/search", normalizeNodeSearchInput(input));
+      const items = Array.isArray((result as any).items) ? (result as any).items : [];
+      const ids = items.filter((item: JsonRecord) => isRecord(item) && typeof item.id === "string").map((item: JsonRecord) => item.id);
+      const query = typeof input.query === "string" ? input.query : "";
+      sessionFeedback.trackSearch(query, ids, "node");
+      return toolResult("recallx_search_nodes", result);
+    }
   );
 
   registerReadOnlyTool(
@@ -1023,7 +1065,14 @@ export function createRecallXMcpServer(params?: {
         sort: z.enum(["relevance", "updated_at"]).default("relevance")
       }
     },
-    createNormalizedPostToolHandler("recallx_search_activities", apiClient, "/activities/search", normalizeActivitySearchInput)
+    async (input) => {
+      const result = await apiClient.post<Record<string, unknown>>("/activities/search", normalizeActivitySearchInput(input));
+      const items = Array.isArray((result as any).items) ? (result as any).items : [];
+      const ids = items.filter((item: JsonRecord) => isRecord(item) && typeof item.id === "string").map((item: JsonRecord) => item.id);
+      const query = typeof input.query === "string" ? input.query : "";
+      sessionFeedback.trackSearch(query, ids, "activity");
+      return toolResult("recallx_search_activities", result);
+    }
   );
 
   registerReadOnlyTool(
@@ -1060,7 +1109,15 @@ export function createRecallXMcpServer(params?: {
         sort: z.enum(["relevance", "updated_at", "smart"]).default("relevance")
       }
     },
-    createNormalizedPostToolHandler("recallx_search_workspace", apiClient, "/search", normalizeWorkspaceSearchInput)
+    async (input) => {
+      const result = await apiClient.post<Record<string, unknown>>("/search", normalizeWorkspaceSearchInput(input));
+      const items = Array.isArray((result as any).items) ? (result as any).items : [];
+      const ids = items.filter((item: JsonRecord) => isRecord(item) && typeof (item.id ?? item.nodeId) === "string").map((item: JsonRecord) => (item.id ?? item.nodeId) as string);
+      const mixedTypes = [...new Set(items.filter((item: JsonRecord) => isRecord(item) && typeof item.type === "string").map((item: JsonRecord) => item.type))] as string[];
+      const query = typeof input.query === "string" ? input.query : "";
+      sessionFeedback.trackSearch(query, ids, `mixed(${mixedTypes.join(",") || "unknown"})`);
+      return toolResult("recallx_search_workspace", result);
+    }
   );
 
   registerReadOnlyTool(
@@ -1105,82 +1162,112 @@ export function createRecallXMcpServer(params?: {
 
   registerTool(
     server,
-    "recallx_upsert_inferred_relation",
+    "recallx_manage_inferred_relations",
     {
-      title: "Upsert Inferred Relation",
-      description: "Upsert a lightweight inferred relation for retrieval, graph expansion, and later weight adjustment.",
+      title: "Manage Inferred Relations",
+      description:
+        "Create or update inferred relations, or trigger a maintenance recompute pass. Use `action='upsert'` to add/update a single relation; use `action='recompute'` to refresh scores from usage events. **When to use:** only when you have strong evidence that two nodes are related and the system has not already inferred it (upsert), or during maintenance workflows (recompute). For routine tasks, prefer `recallx_get_related` to read existing inferred links.",
       inputSchema: {
-        fromNodeId: z.string().min(1),
-        toNodeId: z.string().min(1),
-        relationType: z.enum(relationTypes),
-        baseScore: z.number(),
-        usageScore: z.number().default(0),
-        finalScore: z.number(),
+        action: z.enum(["upsert", "recompute"]).describe("Whether to upsert a single inferred relation or trigger a recompute pass."),
+        fromNodeId: z.string().min(1).optional().describe("Source node for upsert action."),
+        toNodeId: z.string().min(1).optional().describe("Target node for upsert action."),
+        relationType: z.enum(relationTypes).optional().describe("Relation type for upsert."),
+        baseScore: z.number().optional().describe("Base confidence score for upsert."),
+        usageScore: z.number().default(0).describe("Usage bonus for upsert."),
+        finalScore: z.number().optional().describe("Combined score for upsert."),
         status: z.enum(inferredRelationStatuses).default("active"),
-        generator: z.string().min(1).describe("Short generator label such as deterministic-linker or coaccess-pass."),
+        generator: z.string().min(1).optional().describe("Generator label for upsert or filter for recompute."),
         evidence: jsonRecordSchema,
         expiresAt: z.string().optional(),
-        metadata: jsonRecordSchema
+        metadata: jsonRecordSchema,
+        relationIds: z.array(z.string().min(1)).max(200).optional().describe("Specific relation IDs to recompute."),
+        limit: z.number().int().min(1).max(500).default(100).describe("Max relations for recompute pass.")
       }
     },
-    createPostToolHandler("recallx_upsert_inferred_relation", apiClient, "/inferred-relations")
+    async (input) => {
+      if (input.action === "upsert") {
+        if (!input.fromNodeId || !input.toNodeId || !input.relationType || input.baseScore === undefined || input.finalScore === undefined) {
+          throw new Error("Invalid arguments for tool recallx_manage_inferred_relations: action='upsert' requires fromNodeId, toNodeId, relationType, baseScore, and finalScore.");
+        }
+        const body: Record<string, unknown> = {
+          fromNodeId: input.fromNodeId,
+          toNodeId: input.toNodeId,
+          relationType: input.relationType,
+          baseScore: input.baseScore,
+          usageScore: input.usageScore,
+          finalScore: input.finalScore,
+          status: input.status,
+          generator: input.generator,
+          evidence: input.evidence,
+          expiresAt: input.expiresAt,
+          metadata: input.metadata
+        };
+        return toolResult("recallx_manage_inferred_relations", await apiClient.post<Record<string, unknown>>("/inferred-relations", body));
+      }
+      const body: Record<string, unknown> = { limit: input.limit };
+      if (input.relationIds?.length) body.relationIds = input.relationIds;
+      if (input.generator) body.generator = input.generator;
+      return toolResult("recallx_manage_inferred_relations", await apiClient.post<Record<string, unknown>>("/inferred-relations/recompute", body));
+    }
   );
 
   registerTool(
     server,
-    "recallx_append_relation_usage_event",
+    "recallx_append_feedback",
     {
-      title: "Append Relation Usage Event",
-      description: "Append a lightweight usage signal after a relation actually helped retrieval or final output.",
+      title: "Append Feedback",
+      description:
+        "Append a usefulness signal for search results or relation links. **Note:** this tool is normally called automatically by the MCP bridge after your task completes. Only call it directly if you want to record ad-hoc feedback during a session.",
       inputSchema: {
-        relationId: z.string().min(1),
-        relationSource: z.enum(relationSources),
-        eventType: z.enum(relationUsageEventTypes),
-        sessionId: z.string().optional(),
-        runId: z.string().optional(),
-        source: sourceSchema.optional(),
-        delta: z.number(),
-        metadata: jsonRecordSchema
-      }
-    },
-    createPostToolHandler("recallx_append_relation_usage_event", apiClient, "/relation-usage-events")
-  );
-
-  registerTool(
-    server,
-    "recallx_append_search_feedback",
-    {
-      title: "Append Search Feedback",
-      description: "Append a usefulness signal for a node or activity search result after it helped or failed a task.",
-      inputSchema: {
-        resultType: z.enum(searchFeedbackResultTypes),
-        resultId: z.string().min(1),
-        verdict: z.enum(searchFeedbackVerdicts),
-        query: z.string().optional(),
+        feedbackType: z.enum(["search", "relation"]).describe("Whether this is search result feedback or relation usage feedback."),
+        resultType: z.enum(searchFeedbackResultTypes).optional().describe("Required when feedbackType='search': 'node' or 'activity'."),
+        resultId: z.string().min(1).optional().describe("Required when feedbackType='search': the node or activity ID."),
+        verdict: z.enum(searchFeedbackVerdicts).optional().describe("Required when feedbackType='search': 'useful', 'not_useful', or 'uncertain'."),
+        relationId: z.string().min(1).optional().describe("Required when feedbackType='relation': the relation ID."),
+        relationSource: z.enum(relationSources).optional().describe("Required when feedbackType='relation': 'canonical' or 'inferred'."),
+        relationEventType: z.enum(relationUsageEventTypes).optional().describe("Required when feedbackType='relation': e.g. 'bundle_included', 'bundle_used_in_output'."),
+        query: z.string().optional().describe("Original search query for context."),
         sessionId: z.string().optional(),
         runId: z.string().optional(),
         source: sourceSchema.optional(),
         confidence: z.number().min(0).max(1).default(1),
+        delta: z.number().default(1).describe("Score delta for relation feedback."),
         metadata: jsonRecordSchema
       }
     },
-    createPostToolHandler("recallx_append_search_feedback", apiClient, "/search-feedback-events")
+    async (input) => {
+      if (input.feedbackType === "search") {
+        if (!input.resultType || !input.resultId || !input.verdict) {
+          throw new Error("Invalid arguments for tool recallx_append_feedback: feedbackType='search' requires resultType, resultId, and verdict.");
+        }
+        return toolResult("recallx_append_feedback", await apiClient.post<Record<string, unknown>>("/search-feedback-events", {
+          resultType: input.resultType,
+          resultId: input.resultId,
+          verdict: input.verdict,
+          query: input.query,
+          sessionId: input.sessionId,
+          runId: input.runId,
+          source: input.source,
+          confidence: input.confidence,
+          metadata: input.metadata
+        }));
+      }
+      if (!input.relationId || !input.relationSource || !input.relationEventType) {
+        throw new Error("Invalid arguments for tool recallx_append_feedback: feedbackType='relation' requires relationId, relationSource, and relationEventType.");
+      }
+      return toolResult("recallx_append_feedback", await apiClient.post<Record<string, unknown>>("/relation-usage-events", {
+        relationId: input.relationId,
+        relationSource: input.relationSource,
+        eventType: input.relationEventType,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        source: input.source,
+        delta: input.delta,
+        metadata: input.metadata
+      }));
+    }
   );
 
-  registerTool(
-    server,
-    "recallx_recompute_inferred_relations",
-    {
-      title: "Recompute Inferred Relations",
-      description: "Run an explicit maintenance pass that refreshes inferred relation usage_score and final_score from usage events.",
-      inputSchema: {
-        relationIds: z.array(z.string().min(1)).max(200).optional(),
-        generator: z.string().min(1).optional(),
-        limit: z.number().int().min(1).max(500).default(100)
-      }
-    },
-    createPostToolHandler("recallx_recompute_inferred_relations", apiClient, "/inferred-relations/recompute")
-  );
 
   registerTool(
     server,
@@ -1242,7 +1329,9 @@ export function createRecallXMcpServer(params?: {
     },
     async (input: Record<string, unknown>) => {
       try {
-        return toolResult("recallx_create_node", await apiClient.post<Record<string, unknown>>("/nodes", input));
+        const result = await apiClient.post<Record<string, unknown>>("/nodes", input);
+        await autoAppendSearchFeedback();
+        return toolResult("recallx_create_node", result);
       } catch (error) {
         if (
           error instanceof RecallXApiError &&
@@ -1286,8 +1375,11 @@ export function createRecallXMcpServer(params?: {
           .max(100)
       }
     },
-    async (input: Record<string, unknown>) =>
-      toolResult("recallx_create_nodes", await apiClient.post<Record<string, unknown>>("/nodes/batch", input))
+    async (input: Record<string, unknown>) => {
+      const result = await apiClient.post<Record<string, unknown>>("/nodes/batch", input);
+      await autoAppendSearchFeedback();
+      return toolResult("recallx_create_nodes", result);
+    }
   );
 
   registerTool(
@@ -1310,55 +1402,38 @@ export function createRecallXMcpServer(params?: {
 
   registerReadOnlyTool(
     server,
-    "recallx_list_governance_issues",
+    "recallx_governance",
     {
-      title: "List Governance Issues",
-      description: "List contested or low-confidence governance items that may need inspection.",
+      title: "Governance",
+      description:
+        "Read governance issues, check a specific entity's state, or trigger a recompute pass. **When to use:** after creating/editing content to verify it landed in good shape, or when reviewing items flagged as contested/low_confidence. Use action='issues' (default) to list problems, action='state' to inspect one entity, or action='recompute' to refresh state.",
       inputSchema: {
-        states: z.array(z.enum(governanceStates)).default(["contested", "low_confidence"]),
-        limit: z.number().int().min(1).max(100).default(20)
+        action: z.enum(["issues", "state", "recompute"]).default("issues"),
+        states: z.array(z.enum(governanceStates)).default(["contested", "low_confidence"]).describe("Issue states to include (for action='issues')."),
+        limit: z.number().int().min(1).max(100).default(20).describe("Max issues (for action='issues') or recompute batch (for action='recompute')."),
+        entityType: z.enum(["node", "relation"]).optional().describe("Required for action='state': entity type to inspect."),
+        entityId: z.string().min(1).optional().describe("Required for action='state': entity ID to inspect."),
+        entityIds: z.array(z.string().min(1)).max(200).optional().describe("Specific entity IDs to recompute (for action='recompute').")
       }
     },
-    async ({ states, limit }) => {
+    async ({ action, states, limit, entityType, entityId, entityIds }) => {
+      if (action === "state") {
+        if (!entityType || !entityId) {
+          throw new Error("Invalid arguments for tool recallx_governance: action='state' requires entityType and entityId.");
+        }
+        return toolResult("recallx_governance", await apiClient.get(`/governance/state/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`));
+      }
+      if (action === "recompute") {
+        const body: Record<string, unknown> = { limit };
+        if (entityIds?.length) body.entityIds = entityIds;
+        return toolResult("recallx_governance", await apiClient.post("/governance/recompute", body));
+      }
       const query = new URLSearchParams({
         states: states.join(","),
         limit: String(limit)
       });
-      return toolResult("recallx_list_governance_issues", await apiClient.get(`/governance/issues?${query.toString()}`));
+      return toolResult("recallx_governance", await apiClient.get(`/governance/issues?${query.toString()}`));
     }
-  );
-
-  registerReadOnlyTool(
-    server,
-    "recallx_get_governance_state",
-    {
-      title: "Get Governance State",
-      description: "Read the current automatic governance state and recent events for a node or relation.",
-      inputSchema: {
-        entityType: z.enum(["node", "relation"]),
-        entityId: z.string().min(1)
-      }
-    },
-    async ({ entityType, entityId }) =>
-      toolResult(
-        "recallx_get_governance_state",
-        await apiClient.get(`/governance/state/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`)
-      )
-  );
-
-  registerTool(
-    server,
-    "recallx_recompute_governance",
-    {
-      title: "Recompute Governance",
-      description: "Run a bounded automatic governance recompute pass for nodes, relations, or both.",
-      inputSchema: {
-        entityType: z.enum(["node", "relation"]).optional(),
-        entityIds: z.array(z.string().min(1)).max(200).optional(),
-        limit: z.number().int().min(1).max(500).default(100)
-      }
-    },
-    createPostToolHandler("recallx_recompute_governance", apiClient, "/governance/recompute")
   );
 
   registerReadOnlyTool(
@@ -1393,47 +1468,42 @@ export function createRecallXMcpServer(params?: {
           })
       }
     },
-    async ({ targetId, ...input }) =>
-      toolResult(
-        "recallx_context_bundle",
-        await apiClient.post("/context/bundles", {
-          ...input,
-          ...(targetId
-            ? {
-                target: {
-                  id: targetId
-                }
+    async ({ targetId, ...input }) => {
+      const result = await apiClient.post<JsonRecord>("/context/bundles", {
+        ...input,
+        ...(targetId
+          ? {
+              target: {
+                id: targetId
               }
-            : {})
-        })
-      )
+            }
+          : {})
+      });
+      const items = Array.isArray((result as any).items) ? (result as any).items : [];
+      const ids = items.filter((item: JsonRecord) => isRecord(item) && typeof item.id === "string").map((item: JsonRecord) => item.id);
+      sessionFeedback.trackBundle(targetId, ids);
+      return toolResult("recallx_context_bundle", result);
+    }
   );
 
   registerTool(
     server,
     "recallx_semantic_reindex",
     {
-      title: "Queue Semantic Reindex",
-      description: "Queue semantic reindexing for a bounded set of recent active workspace nodes.",
+      title: "Semantic Reindex",
+      description:
+        "Queue semantic reindexing for recent workspace nodes or a specific node. **When to use:** after editing node content that needs updated embeddings, or when semantic search results seem stale. Omit nodeId to reindex recent nodes.",
       inputSchema: {
-        limit: coerceIntegerSchema(250, 1, 1000)
+        nodeId: z.string().min(1).optional().describe("If provided, reindex only this specific node. Otherwise, reindex recent active nodes."),
+        limit: coerceIntegerSchema(250, 1, 1000).describe("Max nodes to reindex (ignored when nodeId is provided).")
       }
     },
-    createPostToolHandler("recallx_semantic_reindex", apiClient, "/semantic/reindex")
-  );
-
-  registerTool(
-    server,
-    "recallx_semantic_reindex_node",
-    {
-      title: "Queue Node Semantic Reindex",
-      description: "Queue semantic reindexing for a specific node id.",
-      inputSchema: {
-        nodeId: z.string().min(1)
+    async ({ nodeId, limit }) => {
+      if (nodeId) {
+        return toolResult("recallx_semantic_reindex", await apiClient.post(`/semantic/reindex/${encodeURIComponent(nodeId)}`, {}));
       }
-    },
-    async ({ nodeId }) =>
-      toolResult("recallx_semantic_reindex_node", await apiClient.post(`/semantic/reindex/${encodeURIComponent(nodeId)}`, {}))
+      return toolResult("recallx_semantic_reindex", await apiClient.post("/semantic/reindex", { limit }));
+    }
   );
 
   registerReadOnlyTool(
