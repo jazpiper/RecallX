@@ -1,5 +1,7 @@
 # Item 01 - Home Re-entry Refresh
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 RecallX Home should be the fastest way back into useful memory, not a sparse launch pad.
