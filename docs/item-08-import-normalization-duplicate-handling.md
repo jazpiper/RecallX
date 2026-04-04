@@ -1,5 +1,7 @@
 # Item 08 - Import Normalization and Duplicate Handling
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 Item 04 gave RecallX its first inbound import path, which is enough for onboarding but still too blunt for repeated real-world use.

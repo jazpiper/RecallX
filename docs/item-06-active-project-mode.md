@@ -1,5 +1,7 @@
 # Item 06 - Active Project Mode
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 RecallX now supports project-aware capture, but the renderer still treats project context as something the user has to keep reselecting.
