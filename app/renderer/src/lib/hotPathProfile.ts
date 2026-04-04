@@ -9,6 +9,10 @@ type HotPathProfileSample = {
   ts: string;
 };
 
+function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
+  return typeof value === 'object' && value !== null && 'then' in value;
+}
+
 declare global {
   interface Window {
     __recallxHotPathProfile?: HotPathProfileSample[];
@@ -42,13 +46,7 @@ function appendSample(sample: HotPathProfileSample) {
   window[HOT_PATH_PROFILE_WINDOW_KEY] = current.slice(-200);
 }
 
-export function profileHotPath<T>(label: string, compute: () => T) {
-  if (!isHotPathProfilingEnabled()) {
-    return compute();
-  }
-
-  const startedAt = performance.now();
-  const value = compute();
+function recordSample(label: string, startedAt: number) {
   const durationMs = Number((performance.now() - startedAt).toFixed(2));
   const sample = {
     label,
@@ -60,6 +58,32 @@ export function profileHotPath<T>(label: string, compute: () => T) {
   if (durationMs >= HOT_PATH_PROFILE_THRESHOLD_MS) {
     console.info(`RecallX hot-path ${label}`, sample);
   }
+}
+
+export function profileHotPath<T>(label: string, compute: () => Promise<T>): Promise<T>;
+export function profileHotPath<T>(label: string, compute: () => T): T;
+export function profileHotPath<T>(label: string, compute: () => T | Promise<T>) {
+  if (!isHotPathProfilingEnabled()) {
+    return compute();
+  }
+
+  const startedAt = performance.now();
+  const value = compute();
+
+  if (isPromiseLike(value)) {
+    return value.then(
+      (resolvedValue) => {
+        recordSample(label, startedAt);
+        return resolvedValue;
+      },
+      (error) => {
+        recordSample(label, startedAt);
+        throw error;
+      },
+    );
+  }
+
+  recordSample(label, startedAt);
 
   return value;
 }
