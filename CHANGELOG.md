@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.0
+
+### Minor Changes
+
+- 175e0b1: Consolidate the MCP tool surface, add auto-feedback tracking and compact-context hot-path profiling, and refresh the supporting optimization and documentation flows.
+
 ## 1.2.0
 
 ### Minor Changes
