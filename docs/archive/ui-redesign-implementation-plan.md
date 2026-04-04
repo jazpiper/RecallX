@@ -36,8 +36,8 @@ Deliverables:
 
 Output files:
 
-- update `docs/ui-redesign-plan.md`
-- update `docs/ui-redesign-wireframes.md`
+- update `ui-redesign-plan.md`
+- update `ui-redesign-wireframes.md`
 
 ## Phase 1. Shell extraction
 

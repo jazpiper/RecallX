@@ -17,7 +17,7 @@ The goal is to preserve RecallX's core product intent while upgrading the shell,
 - more modular to evolve
 - more consistent across Home, Memory, Graph, Governance, and Workspace flows
 
-This plan assumes the Figma direction should be adopted as strongly as possible while still respecting the existing product guardrails in `docs/guardrails.md` and `docs/ux.md`.
+This plan assumes the Figma direction should be adopted as strongly as possible while still respecting the existing product guardrails in `../guardrails.md` and `../ux.md`.
 
 ## 1.2 Visual direction lock
 

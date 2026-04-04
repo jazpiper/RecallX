@@ -33,6 +33,26 @@ During the current feature freeze, these planning artifacts are the maintainer-f
 - `release-workflow.md` for the Changesets and npm publish flow
 - `semantic-sidecar.md` for semantic sidecar design and local development notes
 - `sync-backup.md` for backup and sync strategy
+- `archive/README.md` for archived planning and design references that are no longer part of the current product contract
+
+### Historical shipped item docs
+
+These completed batch records are kept for maintainer context, not as the current optimization plan.
+
+1. `item-01-home-reentry.md`
+2. `item-02-project-aware-capture.md`
+3. `item-03-lightweight-curation.md`
+4. `item-04-import-onboarding.md`
+5. `item-05-safety-automation.md`
+6. `item-06-active-project-mode.md`
+7. `item-07-search-refinement-command-palette.md`
+8. `item-08-import-normalization-duplicate-handling.md`
+9. `item-09-lightweight-governance-actions.md`
+10. `item-10-relation-governance-follow-through.md`
+11. `item-11-governance-feed-refinement.md`
+12. `item-12-governance-home-followup.md`
+13. `item-13-review-action-retrieval-polish.md`
+14. `item-14-review-action-shortcuts-provenance.md`
 
 ### Historical shipped item docs
 
