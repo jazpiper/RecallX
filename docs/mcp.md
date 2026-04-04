@@ -73,38 +73,46 @@ Rules:
 
 ---
 
-## 4. First-pass tool surface
+## 4. Tool surface
 
 | Tool | Purpose | HTTP mapping |
 | --- | --- | --- |
 | `recallx_health` | Check local API health | `GET /health` |
-| `recallx_workspace_current` | Read current workspace | `GET /workspace` |
-| `recallx_workspace_list` | List known workspaces | `GET /workspaces` |
+| `recallx_workspace_info` | Read active workspace; optionally list all | `GET /workspace`, `GET /workspaces` |
 | `recallx_workspace_create` | Create and switch workspace | `POST /workspaces` |
 | `recallx_workspace_open` | Switch to existing workspace | `POST /workspaces/open` |
-| `recallx_semantic_status` | Read semantic index status and queue counts | `GET /semantic/status` |
-| `recallx_semantic_issues` | Read semantic issue details with optional status filters and cursor pagination | `GET /semantic/issues` |
-| `recallx_capture_memory` | Safely capture memory without choosing node vs activity first | `POST /capture` |
+| `recallx_semantic_overview` | Status, counts, and optional issues | `GET /semantic/status`, `GET /semantic/issues` |
 | `recallx_search_nodes` | Search durable nodes with filters | `POST /nodes/search` |
 | `recallx_search_activities` | Search activity timeline events | `POST /activities/search` |
 | `recallx_search_workspace` | Search nodes and activities together | `POST /search` |
 | `recallx_get_node` | Read node detail bundle | `GET /nodes/:id` |
-| `recallx_get_related` | Read canonical plus inferred neighborhood items | `GET /nodes/:id/neighborhood` |
-| `recallx_upsert_inferred_relation` | Upsert inferred relation | `POST /inferred-relations` |
-| `recallx_append_relation_usage_event` | Append relation usage signal | `POST /relation-usage-events` |
-| `recallx_append_search_feedback` | Append usefulness feedback for search results | `POST /search-feedback-events` |
-| `recallx_recompute_inferred_relations` | Recompute inferred relation scores | `POST /inferred-relations/recompute` |
+| `recallx_get_related` | Read canonical plus inferred neighborhood | `GET /nodes/:id/neighborhood` |
+| `recallx_manage_inferred_relations` | Upsert inferred or trigger recompute | `POST /inferred-relations`, `POST /inferred-relations/recompute` |
+| `recallx_append_feedback` | Search or relation usefulness signal | `POST /search-feedback-events`, `POST /relation-usage-events` |
 | `recallx_append_activity` | Append node activity | `POST /activities` |
 | `recallx_create_node` | Create durable node | `POST /nodes` |
-| `recallx_create_nodes` | Create multiple durable nodes with partial success | `POST /nodes/batch` |
+| `recallx_create_nodes` | Create multiple durable nodes | `POST /nodes/batch` |
 | `recallx_create_relation` | Create relation | `POST /relations` |
-| `recallx_list_governance_issues` | Read surfaced contested or low-confidence entities | `GET /governance/issues` |
-| `recallx_get_governance_state` | Read governance state for one entity | `GET /governance/state/:entityType/:id` |
-| `recallx_recompute_governance` | Recompute bounded governance state | `POST /governance/recompute` |
+| `recallx_capture_memory` | Safely capture memory (auto-routed) | `POST /capture` |
 | `recallx_context_bundle` | Build compact agent context | `POST /context/bundles` |
-| `recallx_rank_candidates` | Rank candidate nodes with relation and semantic request-time signals | `POST /retrieval/rank-candidates` |
-| `recallx_semantic_reindex` | Queue workspace semantic reindex | `POST /semantic/reindex` |
-| `recallx_semantic_reindex_node` | Queue semantic reindex for one node | `POST /semantic/reindex/:nodeId` |
+| `recallx_governance` | List issues, check state, or recompute | `GET /governance/issues`, `GET /governance/state/*`, `POST /governance/recompute` |
+| `recallx_semantic_reindex` | Queue semantic reindex (workspace or node) | `POST /semantic/reindex`, `POST /semantic/reindex/:nodeId` |
+| `recallx_rank_candidates` | Rank candidate nodes | `POST /retrieval/rank-candidates` |
+
+### What changed in this version
+
+Six groups of tools were merged to reduce cognitive load:
+
+| Merged into | Replaces |
+| --- | --- |
+| `recallx_workspace_info` | ~~`recallx_workspace_current`~~, ~~`recallx_workspace_list`~~ |
+| `recallx_semantic_overview` | ~~`recallx_semantic_status`~~, ~~`recallx_semantic_issues`~~ |
+| `recallx_manage_inferred_relations` | ~~`recallx_upsert_inferred_relation`~~, ~~`recallx_recompute_inferred_relations`~~ |
+| `recallx_append_feedback` | ~~`recallx_append_relation_usage_event`~~, ~~`recallx_append_search_feedback`~~ |
+| `recallx_governance` | ~~`recallx_list_governance_issues`~~, ~~`recallx_get_governance_state`~~, ~~`recallx_recompute_governance`~~ |
+| `recallx_semantic_reindex` | ~~`recallx_semantic_reindex`~~, ~~`recallx_semantic_reindex_node`~~ |
+
+**Automatic feedback collection**: search tools (`recallx_search_*`) and `recallx_context_bundle` now automatically track which node IDs appeared in results. After a successful write (`create_node`, `create_nodes`), the MCP bridge appends a `useful` feedback signal for the most recent search on your behalf. You do not need to call feedback tools manually.
 
 ### Tool design notes
 
@@ -324,12 +332,14 @@ Connecting RecallX over MCP is not enough by itself. The best results come when 
 
 ### Default operating loop for coding agents
 
-1. Confirm the current workspace with `recallx_workspace_current`.
+1. Confirm the current workspace with `recallx_workspace_info`.
 2. If the target is still unclear, start broad with `recallx_search_workspace`.
 3. If the work is clearly project-shaped, search for an existing project with `recallx_search_nodes` and `type=project`.
 4. Once the relevant node or project is known, build a compact `recallx_context_bundle`.
 5. Do the real task.
 6. Write back a concise result with `recallx_append_activity` or targeted `recallx_capture_memory`.
+
+Feedback signals (search usefulness, relation usefulness) are automatically collected by the MCP bridge — you do not need to call them manually.
 
 ### Behaviors worth encouraging in the agent prompt
 
@@ -366,3 +376,4 @@ Avoid prompting the agent in ways that cause these behaviors:
 - staying at workspace scope after a project node is already known
 - repeatedly searching broadly instead of anchoring on a known node with a context bundle
 - switching workspaces during a task without an explicit user request
+- manually calling feedback tools (they are now auto-collected)
