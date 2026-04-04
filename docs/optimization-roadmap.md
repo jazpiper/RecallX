@@ -45,15 +45,15 @@ Leave feature-freeze mode only when all of the following are true:
 
 Queued for this finite optimization run:
 
-- O1. hot-path profiling checklist and baseline capture
+- O1. hot-path profiling checklist and baseline capture — shipped (see `docs/optimization-baseline.md`)
 - O2. renderer shell simplification around `App.tsx`
 - O3. governance and review recall derivation tightening
 - O4. import cold-path structure cleanup
 - O5. test-noise reduction and confidence-gap coverage
 
-Stop rule for this queue:
+Queue discipline for this snapshot:
 
-- the run is complete when O1 through O5 are shipped or intentionally deferred
+- treat O1 through O5 as the fixed optimization queue for this pass
 - any new optimization idea discovered during this run should be recorded as a later candidate unless it clearly blocks one of O1 through O5
 
 ## Optimization principles
@@ -274,13 +274,13 @@ This optimization pass is complete when:
 
 ## First recommended execution slice
 
-Start with `Batch O1`.
+Start with `Batch O2`.
 
 Concrete first step:
 
-1. document the profiling checklist
-2. inspect `App.tsx` hot-path derivation for Home, command palette, and Governance feed
-3. record the first bounded optimization queue before writing code
+1. use `docs/optimization-baseline.md` to anchor the hot-path comparison points that O1 already captured
+2. inspect `App.tsx` hot-path derivation for Home, command palette, Governance feed, and compact-context re-entry flows
+3. extract only the smallest repeated selector or helper boundaries that reduce renderer shell risk without changing behavior
 
 Supporting baseline document:
 

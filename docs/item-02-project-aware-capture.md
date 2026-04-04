@@ -1,5 +1,7 @@
 # Item 02 - Project-aware Capture
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 RecallX is strongest when durable notes, decisions, and questions stay attached to the project context they belong to.
@@ -40,7 +42,7 @@ The capture form should still feel like one short move:
 
 If a project is already obvious from the current context, the UI may preselect it, but the user should be able to clear it easily.
 
-## Storage direction
+## Implementation notes
 
 - store the chosen project id in node metadata for attribution and debugging
 - create a `relevant_to` relation at write time so existing project graph and membership logic can see the node immediately

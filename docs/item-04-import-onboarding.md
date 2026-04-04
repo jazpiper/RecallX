@@ -1,5 +1,7 @@
 # Item 04 - Import Onboarding
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 RecallX already protects existing work with backup, export, and restore, but it still asks new users to arrive empty-handed.

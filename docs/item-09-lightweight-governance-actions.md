@@ -1,5 +1,7 @@
 # Item 09 - Lightweight Governance Actions Beyond Archive
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 Item 08 made it easier to import content safely, but RecallX still leaves too much cleanup work stranded after suggested or low-confidence nodes appear.

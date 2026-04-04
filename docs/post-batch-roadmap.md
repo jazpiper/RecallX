@@ -2,7 +2,7 @@
 
 ## Current status
 
-The product-shaped follow-up queue described in this document is complete.
+The product-shaped follow-up queue described in this document is complete, and this file now serves as a completed handoff plus historical audit trail.
 
 RecallX is now in a temporary `feature freeze` mode for normal product work.
 
@@ -16,24 +16,14 @@ What this means:
 - new default work should prefer optimization, simplification, and reliability over new product surface area
 - open a fresh product queue only when the optimization pass is complete or a clear product gap justifies it
 
-This document captures the recommended next batch after item 01 through item 05 shipped:
-
-- Home re-entry refresh
-- project-aware capture
-- lightweight note curation
-- import onboarding
-- workspace safety automation
-
-The goal is to keep the next step small, product-shaped, and aligned with the current renderer and local-first guardrails.
-
 ## Roadmap mode
 
-This document is currently a rolling roadmap, not a fixed backlog.
+This document was originally maintained as a rolling roadmap, not a fixed backlog.
 
 - Each shipped batch can add one more "next recommended product batch".
 - That is useful for iterative product shaping, but it does not give a natural stop point for an "implement everything" run.
 
-When a user wants end-to-end execution until the current roadmap is done, treat this document in snapshot mode:
+When this roadmap was active and a user wanted end-to-end execution until the current roadmap was done, it should have been treated in snapshot mode:
 
 - freeze the currently queued items before implementation starts
 - finish only that queued set unless the user explicitly asks for rolling mode
@@ -96,7 +86,7 @@ This order keeps the product focused on the shortest continuity loop:
 2. find the right memory quickly
 3. bring outside material in without making a mess
 
-## Current status
+## Historical status updates
 
 Items 1 through 3 in the original follow-up order have now shipped:
 
@@ -160,7 +150,7 @@ That batch shipped:
 - persistence for the last-used governance feed filters across Home and Governance
 - cleanup of duplicated Governance feed presentation instead of adding another review surface
 
-The next recommended product batch is now:
+The next recommended product batch at that point was:
 
 8. review-action retrieval and decision recall polish
 
@@ -170,7 +160,7 @@ Why this is next now:
 - the next leverage is making `review_action` activity more visible in retrieval without adding a dashboard
 - this extends the same compact trust loop instead of creating another top-level surface
 
-Recommended scope for the next item:
+Recommended scope for that historical next item:
 
 - stronger search or notes visibility for `review_action` activities
 - lightweight jump-back from decision recall into related provenance or node history
@@ -184,7 +174,7 @@ That batch shipped:
 - compact review recall inside note detail with quick return paths into Governance or graph
 - no reporting dashboard, no separate provenance browser, no new top-level surface
 
-The next recommended product batch is now:
+The next recommended product batch at that point was:
 
 9. review-action shortcuts and provenance cues
 
@@ -194,7 +184,7 @@ Why this is next now:
 - the next leverage is a few tiny affordances that make manual trust history feel first-class without expanding the information architecture
 - this keeps the trust loop compact and retrieval-first
 
-Recommended scope for the next item:
+Recommended scope for that historical next item:
 
 - command-palette shortcuts for recent review decisions or Governance re-entry
 - lightweight provenance wording cues near manual review history
@@ -269,9 +259,9 @@ Recommended scope for the next item:
 - Why it stays later:
   the complexity is real, and the current import flow already covers the highest-signal text path.
 
-## Recommended next implementation batch
+## Historical recommended next implementation batch
 
-If only one more batch should be done next, use this scope:
+At that point in the roadmap, if only one more batch had been done next, this was the recommended scope:
 
 ### Batch A
 

@@ -1,5 +1,7 @@
 # Item 03 - Lightweight Curation
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 RecallX already exposes update and archive primitives, but the renderer still makes basic curation feel indirect.
