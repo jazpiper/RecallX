@@ -23,11 +23,35 @@ These documents best match the shipped product surface.
 
 These are useful for maintainers and contributors working on the product.
 
+During the current feature freeze, these planning artifacts are the maintainer-facing guide to the optimization stream.
+
 - `guardrails.md` for product and architecture decision constraints
+- `optimization-roadmap.md` for the active optimization plan and current execution slice during feature freeze
+- `optimization-baseline.md` for the Batch O1 baseline evidence artifact that anchors optimization comparisons
+- `post-batch-roadmap.md` for the completed product-batch handoff and historical audit trail that preceded the optimization pass
 - `release-checklist.md` for release verification and packaging checks
 - `release-workflow.md` for the Changesets and npm publish flow
 - `semantic-sidecar.md` for semantic sidecar design and local development notes
 - `sync-backup.md` for backup and sync strategy
+
+### Historical shipped item docs
+
+These completed batch records are kept for maintainer context, not as the current optimization plan.
+
+1. `item-01-home-reentry.md`
+2. `item-02-project-aware-capture.md`
+3. `item-03-lightweight-curation.md`
+4. `item-04-import-onboarding.md`
+5. `item-05-safety-automation.md`
+6. `item-06-active-project-mode.md`
+7. `item-07-search-refinement-command-palette.md`
+8. `item-08-import-normalization-duplicate-handling.md`
+9. `item-09-lightweight-governance-actions.md`
+10. `item-10-relation-governance-follow-through.md`
+11. `item-11-governance-feed-refinement.md`
+12. `item-12-governance-home-followup.md`
+13. `item-13-review-action-retrieval-polish.md`
+14. `item-14-review-action-shortcuts-provenance.md`
 
 ## Reading Order
 
