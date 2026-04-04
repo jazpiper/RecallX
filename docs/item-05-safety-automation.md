@@ -1,5 +1,7 @@
 # Item 05 - Safety Automation
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 RecallX already warns about risky multi-device patterns, but the product still leaves too much of the safe sequence in the user's head.

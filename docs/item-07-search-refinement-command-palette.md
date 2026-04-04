@@ -1,5 +1,7 @@
 # Item 07 - Search Refinement and Command Palette
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 Item 01 made Home search-first, but the retrieval loop is still missing a faster power path and lightweight refinement controls.
