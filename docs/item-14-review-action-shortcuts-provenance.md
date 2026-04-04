@@ -1,5 +1,7 @@
 # Item 14 - Review-Action Shortcuts and Provenance Cues
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 Item 13 made review decisions easier to rediscover from search and note history.
@@ -29,7 +31,6 @@ This batch keeps the same lightweight review loop while making recent trust hist
 - no separate provenance browser
 - no notification system
 - no new dashboard or reporting page
-- no Figma work for this batch
 
 ## UX direction
 
@@ -48,3 +49,7 @@ This should feel like a shortcut layer, not a new review workflow.
 - `npm run build`
 - `npm test`
 - `npm run release:verify`
+
+## Figma
+
+Figma was intentionally skipped for this batch because the work adds shortcuts and wording refinements to existing renderer surfaces rather than introducing a new standalone flow.
