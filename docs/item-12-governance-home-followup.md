@@ -1,5 +1,7 @@
 # Item 12 - Governance Follow-Up Cues on Home
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 Item 11 made manual governance decisions easier to revisit inside Governance, but that trust history still disappears as soon as the user returns to Home.

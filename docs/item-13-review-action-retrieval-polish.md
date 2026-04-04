@@ -1,5 +1,7 @@
 # Item 13 - Review-Action Retrieval and Decision Recall Polish
 
+> Historical shipped record kept for maintainer context. For current guidance, see `README.md` and `optimization-roadmap.md`.
+
 ## Why this exists
 
 Items 11 and 12 made manual governance decisions easier to revisit from Governance and Home.
