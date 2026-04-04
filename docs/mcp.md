@@ -123,7 +123,7 @@ Six groups of tools were merged to reduce cognitive load:
 - We do not expose low-level retrieval fragments or settings mutation in the first pass.
 - `recallx_get_related` defaults to including inferred relations because that is the most useful shape for downstream LLMs; agents can disable inferred items when they specifically need only canonical links.
 - Usage feedback is intentionally a separate write. Do not append a relation usage event for every read; reserve it for cases where a canonical or inferred relation actually helped retrieval or final output.
-- Score recomputation is also explicit. Use `recallx_recompute_inferred_relations` in maintenance flows or automations, not in the latency-sensitive request path.
+- Score recomputation is also explicit. Use `recallx_manage_inferred_relations` with `action="recompute"` in maintenance flows or automations, not in the latency-sensitive request path.
 - The search tools normalize common alias mistakes such as `type`, `activityType`, `targetNodeId`, `scope`, and single-string arrays before forwarding to HTTP.
 - For `recallx_search_workspace`, prefer `scopes: ["nodes", "activities"]` for mixed search, or `scope: "activities"` for a single scope. Do not send `"nodes,activities"` as one string.
 - When you do not already know the target node, prefer `recallx_search_workspace` as the default entry point. Use `recallx_search_nodes` for durable-only narrowing and `recallx_search_activities` for recent operational narrowing.
@@ -159,7 +159,7 @@ This keeps MCP compatible for clients that want `structuredContent` while reduci
 
 When the work is clearly project-shaped, keep the flow inside the current workspace:
 
-1. Read `recallx_workspace_current` to confirm the active workspace.
+1. Read `recallx_workspace_info` to confirm the active workspace.
 2. Search for an existing project with `recallx_search_nodes` and `type=project`.
 3. If you need broader context before deciding, widen the search with `recallx_search_workspace`.
 4. Create a new project with `recallx_create_node` and `type=project` only when no suitable project already exists.
@@ -258,7 +258,7 @@ Empty-query browse is explicit at the MCP layer:
 
 ### Governance reads
 
-`recallx_recompute_governance` accepts:
+`recallx_governance` with `action="recompute"` accepts:
 - optional `entityType`
 - optional bounded `entityIds`
 - optional `limit`
@@ -302,7 +302,7 @@ RECALLX_API_TOKEN=<optional>
 Operational expectation:
 - reuse the existing running RecallX service
 - do not start a second API instance unless the configured one is unavailable
-- prefer `recallx_workspace_current` and `recallx_search_workspace` before creating new data
+- prefer `recallx_workspace_info` and `recallx_search_workspace` before creating new data
 - pass `RECALLX_API_TOKEN` directly to the MCP process when bearer auth is enabled; do not rely on renderer/browser token storage
 
 Codex / JetBrains MCP JSON example:

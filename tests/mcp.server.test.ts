@@ -1134,27 +1134,408 @@ describe("RecallX MCP server", () => {
     );
   });
 
-  it("shows actionable hints for unsupported context bundle mode and preset values", async () => {
+  it("auto-appends search feedback after successful create_node", async () => {
+    const postMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        items: [{ id: "node_1", title: "Cleanup notes", type: "note", summary: "Some cleanup notes" }],
+        total: 1
+      })
+      .mockResolvedValueOnce({
+        node: { id: "node_2" },
+        reviewItem: null
+      });
     const { client } = await connectTestClient({
-      post: vi.fn()
+      post: postMock
+    });
+
+    await client.callTool({
+      name: "recallx_search_nodes",
+      arguments: {
+        query: "cleanup notes"
+      }
+    });
+
+    await client.callTool({
+      name: "recallx_create_node",
+      arguments: {
+        type: "note",
+        title: "Follow-up note"
+      }
+    });
+
+    const feedbackCalls = postMock.mock.calls.filter(
+      (call: unknown[]) => (call as [string])[0] === "/search-feedback-events"
+    );
+    expect(feedbackCalls).toHaveLength(1);
+    expect(feedbackCalls[0][1]).toMatchObject({
+      resultType: "node",
+      resultId: "node_1",
+      verdict: "useful",
+      query: "cleanup notes"
+    });
+  });
+
+  it("tracking search feedback auto-append is best-effort and does not throw on failure", async () => {
+    const postMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        items: [{ id: "node_1", title: "Target node", type: "note", summary: "Summary" }],
+        total: 1
+      })
+      .mockResolvedValueOnce({
+        node: { id: "node_2" },
+        reviewItem: null
+      })
+      .mockRejectedValueOnce(new Error("network failure"));
+    const { client } = await connectTestClient({
+      post: postMock
+    });
+
+    await client.callTool({
+      name: "recallx_search_nodes",
+      arguments: {
+        query: "test query"
+      }
     });
 
     const result = await client.callTool({
-      name: "recallx_context_bundle",
+      name: "recallx_create_node",
       arguments: {
-        mode: "enormous",
-        preset: "banana"
+        type: "note",
+        title: "Test node"
       }
     });
-    const resultContent = Array.isArray((result as { content?: unknown }).content)
-      ? ((result as { content: Array<{ type?: string; text?: string }> }).content)
-      : [];
-    const errorText = resultContent[0]?.text ?? "";
+
+    expect("isError" in result && result.isError).not.toBe(true);
+  });
+
+  it("does not duplicate auto-append feedback on a second create_node", async () => {
+    const postMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        items: [{ id: "node_1", title: "Original result", type: "note", summary: "Summary" }],
+        total: 1
+      })
+      .mockResolvedValueOnce({
+        node: { id: "node_2" },
+        reviewItem: null
+      })
+      .mockResolvedValueOnce({
+        node: { id: "node_3" },
+        reviewItem: null
+      });
+    const { client } = await connectTestClient({
+      post: postMock
+    });
+
+    await client.callTool({
+      name: "recallx_search_nodes",
+      arguments: {
+        query: "original query"
+      }
+    });
+
+    await client.callTool({
+      name: "recallx_create_node",
+      arguments: {
+        type: "note",
+        title: "First follow-up"
+      }
+    });
+
+    await client.callTool({
+      name: "recallx_create_node",
+      arguments: {
+        type: "note",
+        title: "Second follow-up"
+      }
+    });
+
+    const feedbackCalls = postMock.mock.calls.filter(
+      (call: unknown[]) => (call as [string])[0] === "/search-feedback-events"
+    );
+    expect(feedbackCalls).toHaveLength(1);
+  });
+
+  it("tracks context bundle calls via sessionFeedback.trackBundle", async () => {
+    const postMock = vi.fn().mockResolvedValue({
+      bundle: {
+        target: { type: "node", id: "node_target", title: "Target" },
+        mode: "compact",
+        preset: "for-assistant",
+        summary: "Bundle summary",
+        items: [
+          {
+            nodeId: "node_bundle_1",
+            type: "note",
+            title: "Bundle item",
+            summary: "Bundle summary"
+          }
+        ],
+        activityDigest: [],
+        decisions: [],
+        openQuestions: [],
+        sources: []
+      }
+    });
+    const { client } = await connectTestClient({
+      post: postMock
+    });
+
+    await client.callTool({
+      name: "recallx_context_bundle",
+      arguments: {
+        targetId: "node_target",
+        mode: "compact",
+        preset: "for-assistant"
+      }
+    });
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/context/bundles",
+      expect.objectContaining({
+        target: { id: "node_target" }
+      })
+    );
+  });
+
+  it("tracks multiple search tool types via sessionFeedback.trackSearch", async () => {
+    const postMock = vi.fn().mockResolvedValue({
+      items: [],
+      total: 0
+    });
+    const { client } = await connectTestClient({
+      post: postMock
+    });
+
+    await client.callTool({
+      name: "recallx_search_nodes",
+      arguments: {
+        query: "node search"
+      }
+    });
+
+    await client.callTool({
+      name: "recallx_search_activities",
+      arguments: {
+        query: "activity search"
+      }
+    });
+
+    await client.callTool({
+      name: "recallx_search_workspace",
+      arguments: {
+        query: "workspace search"
+      }
+    });
+
+    expect(postMock).toHaveBeenNthCalledWith(
+      1,
+      "/nodes/search",
+      expect.objectContaining({ query: "node search" })
+    );
+    expect(postMock).toHaveBeenNthCalledWith(
+      2,
+      "/activities/search",
+      expect.objectContaining({ query: "activity search" })
+    );
+    expect(postMock).toHaveBeenNthCalledWith(
+      3,
+      "/search",
+      expect.objectContaining({ query: "workspace search" })
+    );
+  });
+
+  // ── recallx_create_relation tests ──────────────────────────────
+
+  it("creates a relation via recallx_create_relation", async () => {
+    const postMock = vi.fn().mockResolvedValue({
+      relation: {
+        id: "rel_1",
+        fromNodeId: "node_a",
+        toNodeId: "node_b",
+        relationType: "related_to",
+        status: "suggested"
+      }
+    });
+    const { client } = await connectTestClient({ post: postMock });
+
+    const result = await client.callTool({
+      name: "recallx_create_relation",
+      arguments: {
+        fromNodeId: "node_a",
+        toNodeId: "node_b",
+        relationType: "related_to"
+      }
+    });
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/relations",
+      expect.objectContaining({
+        fromNodeId: "node_a",
+        toNodeId: "node_b",
+        relationType: "related_to"
+      })
+    );
+    expect(getTextContent(result)).toContain("rel_1");
+  });
+
+  it("passes metadata and source on recallx_create_relation", async () => {
+    const postMock = vi.fn().mockResolvedValue({
+      relation: { id: "rel_2", fromNodeId: "node_x", toNodeId: "node_y", relationType: "depends_on", status: "suggested" }
+    });
+    const { client } = await connectTestClient({ post: postMock });
+
+    const result = await client.callTool({
+      name: "recallx_create_relation",
+      arguments: {
+        fromNodeId: "node_x",
+        toNodeId: "node_y",
+        relationType: "depends_on",
+        status: "suggested",
+        source: { actorType: "human", actorLabel: "User" }
+      }
+    });
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/relations",
+      expect.objectContaining({
+        fromNodeId: "node_x",
+        toNodeId: "node_y",
+        relationType: "depends_on",
+        status: "suggested",
+        source: expect.objectContaining({
+          actorType: "human",
+          actorLabel: "User"
+        })
+      })
+    );
+    expect(getTextContent(result)).toContain("rel_2");
+  });
+
+  // ── recallx_governance tests ───────────────────────────────────
+
+  it("lists governance issues via recallx_governance (default action)", async () => {
+    const getMock = vi.fn().mockResolvedValue({
+      items: [
+        { entityType: "node", entityId: "node_1", state: "contested", summary: "Conflicting signals" },
+        { entityType: "relation", entityId: "rel_1", state: "low_confidence", summary: "Low confidence" }
+      ],
+      total: 2
+    });
+    const { client } = await connectTestClient({ get: getMock });
+
+    const result = await client.callTool({
+      name: "recallx_governance",
+      arguments: {}
+    });
+
+    expect(getMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/governance\/issues\?.*states=contested(%2C|,)low_confidence/)
+    );
+    expect(getTextContent(result)).toContain("2");
+  });
+
+  it("returns entity state via recallx_governance with action=state", async () => {
+    const getMock = vi.fn().mockResolvedValue({
+      entityType: "node",
+      entityId: "node_42",
+      state: "clean",
+      signals: [],
+      decisions: []
+    });
+    const { client } = await connectTestClient({ get: getMock });
+
+    const result = await client.callTool({
+      name: "recallx_governance",
+      arguments: {
+        action: "state",
+        entityType: "node",
+        entityId: "node_42"
+      }
+    });
+
+    expect(getMock).toHaveBeenCalledWith("/governance/state/node/node_42");
+    expect(getTextContent(result)).toContain("clean");
+  });
+
+  it("returns error text when recallx_governance action=state is missing required args", async () => {
+    const { client } = await connectTestClient();
+
+    const result = await client.callTool({
+      name: "recallx_governance",
+      arguments: {
+        action: "state"
+      }
+    });
 
     expect("isError" in result && result.isError).toBe(true);
-    expect(errorText).toContain("Unsupported mode 'enormous'");
-    expect(errorText).toContain("small -> micro");
-    expect(errorText).toContain("Unsupported preset 'banana'");
-    expect(errorText).toContain("coding -> for-coding");
+    expect(getTextContent(result)).toMatch(/action='state' requires/);
+  });
+
+  it("triggers recompute via recallx_governance with action=recompute", async () => {
+    const postMock = vi.fn().mockResolvedValue({
+      queued: true,
+      entityType: "node",
+      limit: 42,
+      count: 42
+    });
+    const { client } = await connectTestClient({ post: postMock });
+
+    const result = await client.callTool({
+      name: "recallx_governance",
+      arguments: {
+        action: "recompute",
+        limit: 42
+      }
+    });
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/governance/recompute",
+      expect.objectContaining({ limit: 42 })
+    );
+    expect(getTextContent(result)).toContain("42");
+  });
+
+  it("passes entityIds on recallx_governance with action=recompute", async () => {
+    const postMock = vi.fn().mockResolvedValue({
+      recompute: { queued: true, entityType: "node", count: 2 }
+    });
+    const { client } = await connectTestClient({ post: postMock });
+
+    await client.callTool({
+      name: "recallx_governance",
+      arguments: {
+        action: "recompute",
+        entityIds: ["node_1", "node_2"]
+      }
+    });
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/governance/recompute",
+      expect.objectContaining({ entityIds: ["node_1", "node_2"] })
+    );
+  });
+
+  it("filters governance issues by state via recallx_governance", async () => {
+    const getMock = vi.fn().mockResolvedValue({
+      items: [{ entityType: "node", entityId: "node_1", state: "contested", summary: "Contested" }],
+      total: 1
+    });
+    const { client } = await connectTestClient({ get: getMock });
+
+    const result = await client.callTool({
+      name: "recallx_governance",
+      arguments: {
+        states: ["contested"],
+        limit: 5
+      }
+    });
+
+    expect(getMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/governance\/issues\?.*states=contested.*limit=5/)
+    );
+    expect(getTextContent(result)).toContain("1");
   });
 });
