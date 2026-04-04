@@ -1050,7 +1050,7 @@ export default function App() {
       try {
         const [nodeDetail, bundleItems] = await Promise.all([
           getNodeDetail(nodeId),
-          getContextBundlePreview(nodeId),
+          profileHotPath('compactContext.graphDetailPreview', () => getContextBundlePreview(nodeId)),
         ]);
 
         if (!mounted) return;
@@ -1268,7 +1268,7 @@ export default function App() {
       try {
         const [nodeDetail, bundleItems] = await Promise.all([
           getNodeDetail(targetNodeId),
-          getContextBundlePreview(targetNodeId),
+          profileHotPath('compactContext.recentNotePreview', () => getContextBundlePreview(targetNodeId)),
         ]);
 
         if (!mounted) return;
@@ -1556,7 +1556,7 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       try {
         const [nodeDetail, bundleItems] = await Promise.all([
           getNodeDetail(currentActiveProjectId),
-          getContextBundlePreview(currentActiveProjectId),
+          profileHotPath('compactContext.activeProjectDigest', () => getContextBundlePreview(currentActiveProjectId)),
         ]);
         if (!mounted) return;
         setActiveProjectDigest({
