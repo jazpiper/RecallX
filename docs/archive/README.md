@@ -4,16 +4,7 @@ This directory contains historical planning and design-reference documents that 
 
 Use these files only for background context, earlier reasoning, or implementation history.
 
-For the current shipped surface, start from:
-
-- `../../README.md`
-- `../README.md`
-- `../api.md`
-- `../mcp.md`
-- `../schema.md`
-- `../retrieval.md`
-- `../ux.md`
-- `../workflows.md`
+For the current shipped surface, start from `../README.md` and the root `../../README.md`.
 
 ## Archived Docs
 
@@ -24,3 +15,6 @@ For the current shipped surface, start from:
 - `mvp.md`
 - `relation-evolution.md`
 - `scalable-retrieval-architecture.md`
+- `ui-redesign-plan.md`
+- `ui-redesign-implementation-plan.md`
+- `ui-redesign-wireframes.md`

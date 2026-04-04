@@ -33,6 +33,7 @@ During the current feature freeze, these planning artifacts are the maintainer-f
 - `release-workflow.md` for the Changesets and npm publish flow
 - `semantic-sidecar.md` for semantic sidecar design and local development notes
 - `sync-backup.md` for backup and sync strategy
+- `archive/README.md` for archived planning and design references that are no longer part of the current product contract
 
 ### Historical shipped item docs
 
