@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.1
+
+### Patch Changes
+
+- 8b76ebb: Add a Home semantic operations card that surfaces status, issue triage, and workspace reindex controls without introducing a separate semantic admin page.
+
 ## 1.3.0
 
 ### Minor Changes
