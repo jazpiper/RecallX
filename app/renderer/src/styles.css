@@ -515,6 +515,10 @@ pre {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.info-grid.five {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 .info-block {
   display: grid;
   gap: 8px;
@@ -795,6 +799,12 @@ pre {
   color: var(--info);
   border-color: rgba(137, 185, 255, 0.24);
   background: rgba(137, 185, 255, 0.08);
+}
+
+.tone-danger {
+  color: var(--danger);
+  border-color: rgba(210, 103, 103, 0.24);
+  background: rgba(210, 103, 103, 0.08);
 }
 
 .tone-muted {
@@ -1386,7 +1396,8 @@ pre {
   }
 
   .info-grid.three,
-  .info-grid.two {
+  .info-grid.two,
+  .info-grid.five {
     grid-template-columns: 1fr;
   }
 
@@ -1890,8 +1901,37 @@ body::before {
 .home-hero-card,
 .home-summary-card,
 .home-digest-card,
-.home-governance-card {
+.home-governance-card,
+.home-semantic-card {
   gap: 14px;
+}
+
+.semantic-count-grid {
+  gap: 10px;
+}
+
+.semantic-count-card {
+  padding: 12px;
+}
+
+.semantic-count-card strong {
+  font-size: 0.96rem;
+}
+
+.semantic-card-toolbar,
+.semantic-issue-list,
+.semantic-issue-card {
+  display: grid;
+  gap: 12px;
+}
+
+.semantic-card-actions,
+.semantic-card-footer {
+  justify-content: flex-start;
+}
+
+.semantic-issue-card .meta-row {
+  margin-top: 4px;
 }
 
 .home-hero-card {

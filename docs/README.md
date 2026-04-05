@@ -28,6 +28,7 @@ During the current feature freeze, these planning artifacts are the maintainer-f
 - `guardrails.md` for product and architecture decision constraints
 - `optimization-roadmap.md` for the active optimization plan and current execution slice during feature freeze
 - `optimization-baseline.md` for the Batch O1 baseline evidence artifact that anchors optimization comparisons
+- `commercial-readiness-handoff.md` for the current bounded hardening queue and next continuation packet during feature freeze
 - `post-batch-roadmap.md` for the completed product-batch handoff and historical audit trail that preceded the optimization pass
 - `release-checklist.md` for release verification and packaging checks
 - `release-workflow.md` for the Changesets and npm publish flow
