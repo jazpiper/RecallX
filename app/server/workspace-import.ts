@@ -71,6 +71,16 @@ function slugify(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "import";
 }
 
+function resolveUniqueImportStem(baseStem: string, extension: string, importsDir: string): string {
+  let candidate = baseStem;
+  let suffix = 2;
+  while (existsSync(path.join(importsDir, `${candidate}${extension}`))) {
+    candidate = `${baseStem}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
 function buildImportSource(label: string): ImportSource {
   return {
     actorType: "import",
@@ -92,8 +102,11 @@ function copyImportSource(paths: WorkspacePaths, sourcePath: string, label: stri
   const entry = lstatSync(sourcePath);
   const stamp = now.replace(/[-:.TZ]/g, "").slice(0, 14);
   const extension = entry.isDirectory() ? "" : path.extname(sourcePath);
-  const destination = path.join(paths.importsDir, `${stamp}-${slugify(label)}${extension}`);
   mkdirSync(paths.importsDir, { recursive: true });
+  const destination = path.join(
+    paths.importsDir,
+    `${resolveUniqueImportStem(`${stamp}-${slugify(label)}`, extension, paths.importsDir)}${extension}`
+  );
   if (entry.isDirectory()) {
     cpSync(sourcePath, destination, { recursive: true });
   } else {
