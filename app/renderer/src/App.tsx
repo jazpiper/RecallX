@@ -17,6 +17,8 @@ import {
   getSettings,
   getGraphNeighborhood,
   getProjectGraph,
+  getSemanticIssues,
+  getSemanticStatus,
   getSnapshot,
   getWorkspaceCatalog,
   getWorkspace,
@@ -30,6 +32,7 @@ import {
   saveRendererToken,
   searchWorkspace,
   subscribeWorkspaceEvents,
+  queueSemanticReindex,
   updateSettings,
   updateNode as updateNodeRequest,
   archiveNode as archiveNodeRequest,
@@ -85,6 +88,9 @@ import type {
   RelationDetail,
   RelationGovernanceAction,
   RelationType,
+  SemanticIssue,
+  SemanticIssueFilter,
+  SemanticStatus,
   SearchNodeHit,
   WorkspaceBackupRecord,
   WorkspaceCatalogItem,
@@ -134,6 +140,7 @@ const GOVERNANCE_FEED_ACTION_FILTER_STORAGE_KEY = 'recallx.governance-feed-actio
 const searchActivityTypeFilterOptions = ['all', 'review_action'] as const;
 const governanceFeedEntityFilterOptions = ['all', 'node', 'relation'] as const;
 const governanceFeedActionFilterOptions = ['all', 'promote', 'contest', 'archive', 'accept', 'reject'] as const;
+const semanticIssueFilterOptions = ['all', 'failed', 'stale', 'pending'] as const;
 const EMPTY_ACTIVE_PROJECT_DIGEST = {
   bundleItems: [] as ContextBundlePreviewItem[],
   activities: [] as Activity[],
@@ -217,6 +224,26 @@ function formatTime(iso: string) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(iso));
+}
+
+function semanticIssueTone(status: SemanticIssue['embeddingStatus']) {
+  switch (status) {
+    case 'failed':
+      return 'tone-danger';
+    case 'stale':
+      return 'tone-info';
+    default:
+      return 'tone-warn';
+  }
+}
+
+function buildSemanticIssueStatuses(filter: SemanticIssueFilter): SemanticIssue['embeddingStatus'][] | undefined {
+  return filter === 'all' ? undefined : [filter];
+}
+
+function mergeSemanticIssuePages(current: SemanticIssue[], incoming: SemanticIssue[]) {
+  const seen = new Set(current.map((item) => item.nodeId));
+  return [...current, ...incoming.filter((item) => !seen.has(item.nodeId))];
 }
 
 function governanceStateRank(state: GovernanceIssueItem['state']) {
@@ -561,6 +588,16 @@ export default function App() {
   const [isGovernanceDetailLoading, setIsGovernanceDetailLoading] = useState(false);
   const [governanceFeed, setGovernanceFeed] = useState<GovernanceFeedItem[]>([]);
   const [isGovernanceFeedLoading, setIsGovernanceFeedLoading] = useState(false);
+  const [semanticStatus, setSemanticStatus] = useState<SemanticStatus | null>(null);
+  const [semanticIssues, setSemanticIssues] = useState<SemanticIssue[]>([]);
+  const [semanticIssueFilter, setSemanticIssueFilter] = useState<SemanticIssueFilter>('all');
+  const [semanticIssuesCursor, setSemanticIssuesCursor] = useState<string | null>(null);
+  const [isSemanticStatusLoading, setIsSemanticStatusLoading] = useState(false);
+  const [isSemanticIssuesLoading, setIsSemanticIssuesLoading] = useState(false);
+  const [isSemanticIssuesLoadingMore, setIsSemanticIssuesLoadingMore] = useState(false);
+  const [isSemanticReindexing, setIsSemanticReindexing] = useState(false);
+  const [semanticError, setSemanticError] = useState<string | null>(null);
+  const [semanticNotice, setSemanticNotice] = useState<string | null>(null);
   const [governanceFeedEntityFilter, setGovernanceFeedEntityFilter] = useState<GovernanceFeedEntityFilter>(() =>
     readStoredChoice(GOVERNANCE_FEED_ENTITY_FILTER_STORAGE_KEY, governanceFeedEntityFilterOptions, 'all')
   );
@@ -671,6 +708,22 @@ export default function App() {
       limit: 12,
     });
     return items.slice().sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  async function loadSemanticOverview(filter: SemanticIssueFilter, cursor?: string | null) {
+    const [status, issuesPage] = await Promise.all([
+      getSemanticStatus(),
+      getSemanticIssues({
+        limit: 5,
+        cursor,
+        statuses: buildSemanticIssueStatuses(filter),
+      }),
+    ]);
+
+    return {
+      status,
+      issuesPage,
+    };
   }
 
   function handleRequestFailure(error: unknown, fallbackMessage: string) {
@@ -1364,6 +1417,45 @@ export default function App() {
   }, [governanceFeedActionFilter, governanceFeedEntityFilter, view]);
 
   useEffect(() => {
+    if (isLoading || authRequired || view !== 'home' || deferredQuery.trim()) {
+      setIsSemanticStatusLoading(false);
+      setIsSemanticIssuesLoading(false);
+      setIsSemanticIssuesLoadingMore(false);
+      return;
+    }
+
+    let mounted = true;
+    setIsSemanticStatusLoading(true);
+    setIsSemanticIssuesLoading(true);
+
+    async function loadSemanticCard() {
+      try {
+        const { status, issuesPage } = await loadSemanticOverview(semanticIssueFilter);
+        if (!mounted) return;
+        setSemanticStatus(status);
+        setSemanticIssues(issuesPage.items);
+        setSemanticIssuesCursor(issuesPage.nextCursor);
+        setSemanticError(null);
+      } catch (error) {
+        if (!mounted) return;
+        handleRequestFailure(error, 'Failed to load semantic status.');
+        setSemanticError(error instanceof Error ? error.message : 'Failed to load semantic status.');
+      } finally {
+        if (mounted) {
+          setIsSemanticStatusLoading(false);
+          setIsSemanticIssuesLoading(false);
+        }
+      }
+    }
+
+    void loadSemanticCard();
+
+    return () => {
+      mounted = false;
+    };
+  }, [authRequired, deferredQuery, isLoading, semanticIssueFilter, view]);
+
+  useEffect(() => {
     writeStoredChoice(GOVERNANCE_FEED_ENTITY_FILTER_STORAGE_KEY, governanceFeedEntityFilter);
   }, [governanceFeedEntityFilter]);
 
@@ -1824,6 +1916,16 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
       }, {}),
     [governanceIssues],
   );
+  const semanticCountCards = useMemo(
+    () => [
+      { key: 'pending', label: 'Pending', value: semanticStatus?.counts.pending ?? 0 },
+      { key: 'processing', label: 'Processing', value: semanticStatus?.counts.processing ?? 0 },
+      { key: 'stale', label: 'Stale', value: semanticStatus?.counts.stale ?? 0 },
+      { key: 'ready', label: 'Ready', value: semanticStatus?.counts.ready ?? 0 },
+      { key: 'failed', label: 'Failed', value: semanticStatus?.counts.failed ?? 0 },
+    ],
+    [semanticStatus],
+  );
   const activeGovernanceNode =
     activeGovernanceIssue?.entityType === 'node'
       ? governanceDetail.node ?? nodeMap.get(activeGovernanceIssue.entityId) ?? null
@@ -1909,6 +2011,48 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
 
       return [...current, relationType].sort((left, right) => left.localeCompare(right));
     });
+  }
+
+  async function handleLoadMoreSemanticIssues() {
+    if (!semanticIssuesCursor) {
+      return;
+    }
+
+    setIsSemanticIssuesLoadingMore(true);
+    try {
+      const issuesPage = await getSemanticIssues({
+        limit: 5,
+        cursor: semanticIssuesCursor,
+        statuses: buildSemanticIssueStatuses(semanticIssueFilter),
+      });
+      setSemanticIssues((current) => mergeSemanticIssuePages(current, issuesPage.items));
+      setSemanticIssuesCursor(issuesPage.nextCursor);
+      setSemanticError(null);
+    } catch (error) {
+      handleRequestFailure(error, 'Failed to load more semantic issues.');
+      setSemanticError(error instanceof Error ? error.message : 'Failed to load more semantic issues.');
+    } finally {
+      setIsSemanticIssuesLoadingMore(false);
+    }
+  }
+
+  async function handleSemanticReindex() {
+    setSemanticNotice(null);
+    setSemanticError(null);
+    setIsSemanticReindexing(true);
+    try {
+      const result = await queueSemanticReindex();
+      const { status, issuesPage } = await loadSemanticOverview(semanticIssueFilter);
+      setSemanticStatus(status);
+      setSemanticIssues(issuesPage.items);
+      setSemanticIssuesCursor(issuesPage.nextCursor);
+      setSemanticNotice(result.queuedCount ? `Queued ${result.queuedCount} nodes for semantic rebuild.` : 'No semantic rebuild work was queued.');
+    } catch (error) {
+      handleRequestFailure(error, 'Failed to queue semantic reindex.');
+      setSemanticError(error instanceof Error ? error.message : 'Failed to queue semantic reindex.');
+    } finally {
+      setIsSemanticReindexing(false);
+    }
   }
 
   async function handleBundlePreviewClick(item: ContextBundlePreviewItem) {
@@ -4814,6 +4958,93 @@ curl${apiAuthHeader} ${apiBase}/workspace`;
                   <div className="empty-state compact">No recent manual governance decisions are available for Home yet.</div>
                 ) : null}
               </div>
+            </section>
+
+            <section className="card page-card home-semantic-card">
+              <div className="section-head section-head--compact">
+                <div>
+                  <span className="eyebrow">Semantic</span>
+                  <h3>Index status</h3>
+                </div>
+                <span className={`pill ${semanticStatus?.enabled ? 'tone-good' : 'tone-muted'}`}>
+                  {semanticStatus?.enabled ? 'enabled' : 'disabled'}
+                </span>
+              </div>
+              <div className="chip-row">
+                <span className="chip chip-static">{semanticStatus?.provider ?? 'loading'} </span>
+                <span className="chip chip-static">{semanticStatus?.model ?? 'loading'} </span>
+                <span className="chip chip-static">{semanticStatus?.indexBackend ?? 'sqlite'}</span>
+                <span className="chip chip-static">
+                  {semanticStatus?.lastBackfillAt ? `last reindex ${formatTime(semanticStatus.lastBackfillAt)}` : 'no reindex yet'}
+                </span>
+              </div>
+              <div className="info-grid five semantic-count-grid">
+                {semanticCountCards.map((item) => (
+                  <article key={item.key} className="info-block semantic-count-card">
+                    <span className="info-label">{item.label}</span>
+                    <strong>{item.value}</strong>
+                  </article>
+                ))}
+              </div>
+              <div className="semantic-card-toolbar">
+                <div className="chip-row">
+                  {semanticIssueFilterOptions.map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className={`tool-chip ${semanticIssueFilter === value ? 'tool-chip--active' : ''}`}
+                      onClick={() => setSemanticIssueFilter(value)}
+                      disabled={isSemanticIssuesLoading || isSemanticStatusLoading || isSemanticReindexing}
+                    >
+                      {value === 'all' ? 'All' : value.charAt(0).toUpperCase() + value.slice(1)}
+                    </button>
+                  ))}
+                </div>
+                <div className="action-row semantic-card-actions">
+                  <button type="button" onClick={() => void handleSemanticReindex()} disabled={isSemanticReindexing}>
+                    {isSemanticReindexing ? 'Queueing...' : 'Reindex workspace'}
+                  </button>
+                </div>
+              </div>
+              {semanticNotice ? <div className="notice">{semanticNotice}</div> : null}
+              {semanticError ? <div className="empty-state compact">{semanticError}</div> : null}
+              {isSemanticStatusLoading || isSemanticIssuesLoading ? (
+                <div className="empty-state compact">Loading semantic status...</div>
+              ) : null}
+              {!isSemanticStatusLoading && !isSemanticIssuesLoading ? (
+                <div className="card-stack compact-stack semantic-issue-list">
+                  {semanticIssues.map((item) => (
+                    <article key={item.nodeId} className="mini-card semantic-issue-card">
+                      <div className="result-card__top">
+                        <div>
+                          <strong>{item.title}</strong>
+                          <p>{item.staleReason ?? 'Semantic work is queued for this note.'}</p>
+                        </div>
+                        <span className={`pill ${semanticIssueTone(item.embeddingStatus)}`}>{item.embeddingStatus}</span>
+                      </div>
+                      <div className="meta-row">
+                        <span>{formatCompactId(item.nodeId)}</span>
+                        <span>{formatTime(item.updatedAt)}</span>
+                      </div>
+                    </article>
+                  ))}
+                  {!semanticIssues.length ? (
+                    <div className="empty-state compact">No semantic issues match this filter.</div>
+                  ) : null}
+                </div>
+              ) : null}
+              {semanticIssuesCursor ? (
+                <div className="action-row semantic-card-footer">
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => void handleLoadMoreSemanticIssues()}
+                    disabled={isSemanticIssuesLoadingMore || isSemanticReindexing}
+                  >
+                    {isSemanticIssuesLoadingMore ? 'Loading...' : 'Load more'}
+                  </button>
+                </div>
+              ) : null}
             </section>
 
             <section className="card page-card">
