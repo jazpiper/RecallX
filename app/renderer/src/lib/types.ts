@@ -36,6 +36,8 @@ export type GovernanceState = 'healthy' | 'low_confidence' | 'contested';
 export type GovernanceDecisionAction = 'promote' | 'contest' | 'archive' | 'accept' | 'reject';
 export type NodeGovernanceAction = 'promote' | 'contest' | 'archive';
 export type RelationGovernanceAction = 'accept' | 'reject' | 'archive';
+export type SemanticEmbeddingStatus = 'pending' | 'processing' | 'stale' | 'ready' | 'failed';
+export type SemanticIssueFilter = 'all' | 'failed' | 'stale' | 'pending';
 
 export interface Workspace {
   name: string;
@@ -155,6 +157,40 @@ export interface WorkspaceImportRecord {
   skippedRelations: number;
   skippedActivities: number;
   warnings: string[];
+}
+
+export interface SemanticStatus {
+  enabled: boolean;
+  provider: string;
+  model: string;
+  indexBackend: string;
+  configuredIndexBackend: string;
+  extensionStatus: 'loaded' | 'fallback' | 'disabled';
+  extensionLoadError: string | null;
+  chunkEnabled: boolean;
+  workspaceFallbackEnabled: boolean;
+  workspaceFallbackMode: string;
+  lastBackfillAt: string | null;
+  counts: {
+    pending: number;
+    processing: number;
+    stale: number;
+    ready: number;
+    failed: number;
+  };
+}
+
+export interface SemanticIssue {
+  nodeId: string;
+  title: string;
+  embeddingStatus: Extract<SemanticEmbeddingStatus, 'pending' | 'stale' | 'failed'>;
+  staleReason: string | null;
+  updatedAt: string;
+}
+
+export interface SemanticIssuePage {
+  items: SemanticIssue[];
+  nextCursor: string | null;
 }
 
 export interface WorkspaceRestoreResult {

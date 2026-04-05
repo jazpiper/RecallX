@@ -5,7 +5,7 @@ import type {
   Node,
   Relation,
   WorkspaceSeed,
-} from './types';
+} from './types.js';
 
 const now = '2026-03-18T01:13:09.680Z';
 

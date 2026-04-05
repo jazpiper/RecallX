@@ -1,4 +1,4 @@
-import { mockWorkspace } from './mockWorkspace';
+import { mockWorkspace } from './mockWorkspace.js';
 import type {
   ActivitySearchHit,
   Activity,
@@ -17,6 +17,9 @@ import type {
   RelationDetail,
   RelationGovernanceAction,
   Relation,
+  SemanticIssue,
+  SemanticIssuePage,
+  SemanticStatus,
   ContextBundlePreviewItem,
   SearchNodeHit,
   Workspace,
@@ -30,9 +33,9 @@ import type {
   WorkspaceImportRecord,
   WorkspaceRestoreResult,
   WorkspaceSeed,
-} from './types';
-import { RECALLX_VERSION } from '../../../shared/version';
-import { mapSearchNodeHit } from './searchResults';
+} from './types.js';
+import { RECALLX_VERSION } from '../../../shared/version.js';
+import { mapSearchNodeHit } from './searchResults.js';
 
 type LandingInfo = {
   storedAs: 'node' | 'relation' | 'activity';
@@ -52,6 +55,49 @@ const DEFAULT_SOURCE = {
 } as const;
 let rendererToken: string | null = null;
 const fallbackSettings = new Map<string, unknown>();
+const fallbackSemanticStatusState: SemanticStatus = {
+  enabled: true,
+  provider: 'local-ngram',
+  model: 'chargram-v1',
+  indexBackend: 'sqlite',
+  configuredIndexBackend: 'sqlite-vec',
+  extensionStatus: 'fallback',
+  extensionLoadError: null,
+  chunkEnabled: false,
+  workspaceFallbackEnabled: false,
+  workspaceFallbackMode: 'strict_zero',
+  lastBackfillAt: '2026-03-18T02:10:00.000Z',
+  counts: {
+    pending: 1,
+    processing: 1,
+    stale: 1,
+    ready: 4,
+    failed: 1,
+  },
+};
+const fallbackSemanticIssuesState: SemanticIssue[] = [
+  {
+    nodeId: 'node_retrieval',
+    title: 'Retrieval should be summary-first',
+    embeddingStatus: 'failed',
+    staleReason: 'embedding.provider_not_implemented:openai',
+    updatedAt: '2026-03-18T03:14:00.000Z',
+  },
+  {
+    nodeId: 'node_api_surface',
+    title: 'Local API surface',
+    embeddingStatus: 'stale',
+    staleReason: 'content.changed',
+    updatedAt: '2026-03-18T02:55:00.000Z',
+  },
+  {
+    nodeId: 'node_governance_policy',
+    title: 'How should governance issues be surfaced?',
+    embeddingStatus: 'pending',
+    staleReason: 'manual.reindex',
+    updatedAt: '2026-03-18T02:31:00.000Z',
+  },
+];
 
 class ApiRequestError extends Error {
   kind: 'http' | 'network';
@@ -283,6 +329,69 @@ function mapGovernancePayload(raw: any): GovernancePayload {
     state: raw?.state ? mapGovernanceState(raw.state) : null,
     events: Array.isArray(raw?.events) ? raw.events.map(mapGovernanceEvent) : [],
   };
+}
+
+function mapSemanticStatus(raw: any): SemanticStatus {
+  return {
+    enabled: Boolean(raw?.enabled),
+    provider: raw?.provider ?? 'disabled',
+    model: raw?.model ?? 'none',
+    indexBackend: raw?.indexBackend ?? 'sqlite',
+    configuredIndexBackend: raw?.configuredIndexBackend ?? 'sqlite-vec',
+    extensionStatus: raw?.extensionStatus === 'loaded' || raw?.extensionStatus === 'disabled' ? raw.extensionStatus : 'fallback',
+    extensionLoadError: typeof raw?.extensionLoadError === 'string' ? raw.extensionLoadError : null,
+    chunkEnabled: Boolean(raw?.chunkEnabled),
+    workspaceFallbackEnabled: Boolean(raw?.workspaceFallbackEnabled),
+    workspaceFallbackMode: raw?.workspaceFallbackMode ?? 'strict_zero',
+    lastBackfillAt: typeof raw?.lastBackfillAt === 'string' ? raw.lastBackfillAt : null,
+    counts: {
+      pending: typeof raw?.counts?.pending === 'number' ? raw.counts.pending : 0,
+      processing: typeof raw?.counts?.processing === 'number' ? raw.counts.processing : 0,
+      stale: typeof raw?.counts?.stale === 'number' ? raw.counts.stale : 0,
+      ready: typeof raw?.counts?.ready === 'number' ? raw.counts.ready : 0,
+      failed: typeof raw?.counts?.failed === 'number' ? raw.counts.failed : 0,
+    },
+  };
+}
+
+function mapSemanticIssue(raw: any): SemanticIssue {
+  return {
+    nodeId: raw?.nodeId ?? raw?.node_id ?? 'unknown-node',
+    title: raw?.title ?? 'Untitled semantic item',
+    embeddingStatus: raw?.embeddingStatus === 'failed' || raw?.embeddingStatus === 'stale' ? raw.embeddingStatus : 'pending',
+    staleReason: typeof raw?.staleReason === 'string' ? raw.staleReason : null,
+    updatedAt: raw?.updatedAt ?? raw?.updated_at ?? new Date().toISOString(),
+  };
+}
+
+function cloneFallbackSemanticStatus(): SemanticStatus {
+  return structuredClone(fallbackSemanticStatusState);
+}
+
+function cloneFallbackSemanticIssues(): SemanticIssue[] {
+  return structuredClone(fallbackSemanticIssuesState);
+}
+
+function paginateFallbackSemanticIssues(input: {
+  limit: number;
+  cursor?: string | null;
+  statuses?: SemanticIssue['embeddingStatus'][];
+}): SemanticIssuePage {
+  const filtered = cloneFallbackSemanticIssues().filter((item) =>
+    input.statuses?.length ? input.statuses.includes(item.embeddingStatus) : true,
+  );
+  const start = input.cursor ? Number.parseInt(input.cursor, 10) || 0 : 0;
+  const items = filtered.slice(start, start + input.limit);
+  return {
+    items,
+    nextCursor: start + input.limit < filtered.length ? String(start + input.limit) : null,
+  };
+}
+
+function recalculateFallbackSemanticCounts() {
+  fallbackSemanticStatusState.counts.pending = fallbackSemanticIssuesState.filter((item) => item.embeddingStatus === 'pending').length;
+  fallbackSemanticStatusState.counts.stale = fallbackSemanticIssuesState.filter((item) => item.embeddingStatus === 'stale').length;
+  fallbackSemanticStatusState.counts.failed = fallbackSemanticIssuesState.filter((item) => item.embeddingStatus === 'failed').length;
 }
 
 function mapArtifact(raw: any): Artifact {
@@ -712,6 +821,88 @@ export async function getSettings(keys?: string[]): Promise<Record<string, unkno
         }
         return acc;
       }, {});
+    },
+  );
+}
+
+export async function getSemanticStatus(): Promise<SemanticStatus> {
+  return withFallback(
+    async () => {
+      const payload = await requestJson('/semantic/status');
+      return mapSemanticStatus(readPayloadData(payload));
+    },
+    async () => cloneFallbackSemanticStatus(),
+  );
+}
+
+export async function getSemanticIssues(options?: {
+  limit?: number;
+  cursor?: string | null;
+  statuses?: SemanticIssue['embeddingStatus'][];
+}): Promise<SemanticIssuePage> {
+  return withFallback(
+    async () => {
+      const params = new URLSearchParams();
+      params.set('limit', String(options?.limit ?? 5));
+      if (options?.cursor) {
+        params.set('cursor', options.cursor);
+      }
+      if (options?.statuses?.length) {
+        params.set('statuses', options.statuses.join(','));
+      }
+      const payload = await requestJson(`/semantic/issues?${params.toString()}`);
+      const data = readPayloadData(payload);
+      return {
+        items: Array.isArray(data?.items) ? data.items.map(mapSemanticIssue) : [],
+        nextCursor: typeof data?.nextCursor === 'string' && data.nextCursor.trim() ? data.nextCursor : null,
+      };
+    },
+    async () =>
+      paginateFallbackSemanticIssues({
+        limit: options?.limit ?? 5,
+        cursor: options?.cursor ?? null,
+        statuses: options?.statuses,
+      }),
+  );
+}
+
+export async function queueSemanticReindex(limit = 250): Promise<{ queuedNodeIds: string[]; queuedCount: number }> {
+  return withFallback(
+    async () => {
+      const payload = await requestJson('/semantic/reindex', {
+        method: 'POST',
+        body: JSON.stringify({ limit }),
+      });
+      const data = readPayloadData(payload);
+      return {
+        queuedNodeIds: Array.isArray(data?.queuedNodeIds) ? data.queuedNodeIds : [],
+        queuedCount: typeof data?.queuedCount === 'number' ? data.queuedCount : 0,
+      };
+    },
+    async () => {
+      const now = new Date().toISOString();
+      const queuedNodeIds = getFallbackState().nodes
+        .slice(0, Math.max(1, Math.min(limit, 3)))
+        .map((node) => node.id);
+      queuedNodeIds.forEach((nodeId) => {
+        if (fallbackSemanticIssuesState.some((item) => item.nodeId === nodeId)) {
+          return;
+        }
+        const node = getFallbackState().nodes.find((item) => item.id === nodeId);
+        fallbackSemanticIssuesState.push({
+          nodeId,
+          title: node?.title ?? nodeId,
+          embeddingStatus: 'pending',
+          staleReason: 'manual.reindex',
+          updatedAt: now,
+        });
+      });
+      fallbackSemanticStatusState.lastBackfillAt = now;
+      recalculateFallbackSemanticCounts();
+      return {
+        queuedNodeIds,
+        queuedCount: queuedNodeIds.length,
+      };
     },
   );
 }
