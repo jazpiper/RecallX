@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0
+
+### Minor Changes
+
+- 175e0b1: Consolidate the MCP tool surface, add auto-feedback tracking and compact-context hot-path profiling, and refresh the supporting optimization and documentation flows.
+
+### Patch Changes
+
+- 89acdf1: Harden workspace backup, export, import, and restore reliability so artifact creation avoids same-second collisions and malformed backups fail safely before restore.
+- 9001adf: Persist the known workspace catalog across restarts so workspace switching stays trustworthy and failed catalog writes do not leave the active session in a partial state.
+
 ## 1.2.0
 
 ### Minor Changes
