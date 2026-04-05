@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7317,6 +7317,51 @@ describe("workspace switching", () => {
       expect(existsSync(importBody.data.import.backupPath as string)).toBe(true);
       expect(existsSync(importBody.data.import.importedPath as string)).toBe(true);
       expect(searchBody.data.items.filter((item: { title: string }) => item.title === "Architecture Overview")).toHaveLength(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("rejects restore requests for incomplete backups without switching the current workspace", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "recallx-test-"));
+    const restoreParent = mkdtempSync(path.join(tmpdir(), "recallx-restore-target-"));
+    tempRoots.push(root, restoreParent);
+
+    const workspaceSessionManager = createWorkspaceSessionManager(root);
+    const currentWorkspaceRoot = workspaceSessionManager.getCurrent().workspaceRoot;
+    const backup = workspaceSessionManager.createBackup("Before restore");
+    unlinkSync(path.join(backup.backupPath, "workspace.db"));
+
+    const app = createRecallXApp({
+      workspaceSessionManager,
+      apiToken: null,
+    });
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Failed to resolve test server address");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/api/v1`;
+      const targetRoot = path.join(restoreParent, "restored-workspace");
+
+      const restoreResponse = await fetch(`${baseUrl}/workspaces/restore`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          backupId: backup.id,
+          targetRootPath: targetRoot,
+          workspaceName: "Recovered Workspace"
+        }),
+      });
+      const restoreBody = await restoreResponse.json();
+
+      expect(restoreResponse.status).toBe(409);
+      expect(restoreBody.error.code).toBe("INVALID_BACKUP");
+      expect(workspaceSessionManager.getCurrent().workspaceRoot).toBe(currentWorkspaceRoot);
+      expect(existsSync(targetRoot)).toBe(false);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
