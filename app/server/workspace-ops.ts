@@ -1,4 +1,4 @@
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { WorkspaceBackupRecord, WorkspaceExportRecord, WorkspaceSafetyStatus, WorkspaceSafetyWarning } from "../shared/types.js";
@@ -32,6 +32,12 @@ const BACKUP_MANIFEST_FILE = "manifest.json";
 const SESSION_METADATA_FILE = "workspace-session.json";
 const LOCK_METADATA_FILE = "workspace.lock.json";
 const WORKSPACE_ACTIVITY_THRESHOLD_MS = 10 * 60 * 1000;
+const BACKUP_RESTORE_REQUIRED_ENTRIES = [
+  { name: "workspace.db", type: "file" },
+  { name: "artifacts", type: "directory" },
+  { name: "exports", type: "directory" },
+  { name: "config", type: "directory" }
+] as const;
 
 function readJsonFile<T>(filePath: string): T | null {
   if (!existsSync(filePath)) {
@@ -57,6 +63,60 @@ function sanitizeLabel(value: string | undefined, fallback: string): string {
   }
 
   return trimmed.replace(/[<>:"/\\|?*\x00-\x1f]+/g, "-").replace(/\s+/g, " ").trim() || fallback;
+}
+
+function resolveUniqueArtifactStem(baseStem: string, isTaken: (candidate: string) => boolean): string {
+  let candidate = baseStem;
+  let suffix = 2;
+  while (isTaken(candidate)) {
+    candidate = `${baseStem}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function validateBackupSnapshot(backupPath: string, options: {
+  requireManifest: boolean;
+}) {
+  const missing: string[] = [];
+  const invalidType: string[] = [];
+
+  if (options.requireManifest && !existsSync(path.join(backupPath, BACKUP_MANIFEST_FILE))) {
+    missing.push(BACKUP_MANIFEST_FILE);
+  }
+
+  for (const entry of BACKUP_RESTORE_REQUIRED_ENTRIES) {
+    const entryPath = path.join(backupPath, entry.name);
+    if (!existsSync(entryPath)) {
+      missing.push(entry.name);
+      continue;
+    }
+
+    const stats = statSync(entryPath);
+    if (entry.type === "file" ? !stats.isFile() : !stats.isDirectory()) {
+      invalidType.push(entry.name);
+    }
+  }
+
+  if (missing.length || invalidType.length) {
+    throw new AppError(409, "INVALID_BACKUP", "Backup is incomplete or malformed and cannot be restored.", {
+      backupPath,
+      missing,
+      invalidType
+    });
+  }
+}
+
+function buildRestoreStagingRoot(targetRoot: string): string {
+  const parentDir = path.dirname(targetRoot);
+  const baseName = `.${path.basename(targetRoot)}-restore-${Date.now()}`;
+  let candidate = path.join(parentDir, baseName);
+  let suffix = 2;
+  while (existsSync(candidate)) {
+    candidate = path.join(parentDir, `${baseName}-${suffix}`);
+    suffix += 1;
+  }
+  return candidate;
 }
 
 function sessionMetadataPath(paths: WorkspacePaths): string {
@@ -228,11 +288,11 @@ export function createWorkspaceBackup(paths: WorkspacePaths, params: {
   label?: string;
   now: string;
 }): WorkspaceBackupRecord {
-  const id = `${params.now.replace(/[-:.TZ]/g, "").slice(0, 14)}-${sanitizeLabel(params.label, "snapshot").replace(/\s+/g, "-").toLowerCase()}`;
+  const id = resolveUniqueArtifactStem(
+    `${params.now.replace(/[-:.TZ]/g, "").slice(0, 14)}-${sanitizeLabel(params.label, "snapshot").replace(/\s+/g, "-").toLowerCase()}`,
+    (candidate) => existsSync(path.join(paths.backupsDir, candidate))
+  );
   const backupDir = path.join(paths.backupsDir, id);
-  if (existsSync(backupDir)) {
-    throw new AppError(409, "BACKUP_EXISTS", `Backup already exists: ${id}`);
-  }
 
   copyWorkspaceSnapshot(paths, backupDir);
   const manifest: BackupManifest = {
@@ -274,26 +334,38 @@ export function restoreWorkspaceBackup(paths: WorkspacePaths, params: {
     throw new AppError(400, "INVALID_INPUT", "Restore target must be a different workspace root.");
   }
 
+  validateBackupSnapshot(manifest.backupPath, { requireManifest: true });
+
   if (existsSync(targetRoot)) {
     const existingEntries = readdirSync(targetRoot);
     if (existingEntries.length > 0) {
       throw new AppError(409, "RESTORE_TARGET_NOT_EMPTY", "Restore target root must be empty or not exist.");
     }
-  } else {
-    mkdirSync(targetRoot, { recursive: true });
   }
 
-  for (const entry of ["workspace.db", "artifacts", "exports", "config"] as const) {
-    const sourcePath = path.join(manifest.backupPath, entry);
-    const destinationPath = path.join(targetRoot, entry);
-    if (!existsSync(sourcePath)) {
-      continue;
+  const stagingRoot = buildRestoreStagingRoot(targetRoot);
+  mkdirSync(stagingRoot, { recursive: true });
+
+  try {
+    for (const entry of BACKUP_RESTORE_REQUIRED_ENTRIES) {
+      const sourcePath = path.join(manifest.backupPath, entry.name);
+      const destinationPath = path.join(stagingRoot, entry.name);
+      if (entry.type === "file") {
+        copyFileSync(sourcePath, destinationPath);
+      } else {
+        cpSync(sourcePath, destinationPath, { recursive: true });
+      }
     }
-    if (entry === "workspace.db") {
-      copyFileSync(sourcePath, destinationPath);
-    } else {
-      cpSync(sourcePath, destinationPath, { recursive: true });
+
+    validateBackupSnapshot(stagingRoot, { requireManifest: false });
+
+    if (existsSync(targetRoot)) {
+      rmSync(targetRoot, { recursive: true, force: true });
     }
+    renameSync(stagingRoot, targetRoot);
+  } catch (error) {
+    rmSync(stagingRoot, { recursive: true, force: true });
+    throw error;
   }
 
   return manifest;
@@ -307,8 +379,13 @@ export function exportWorkspaceSnapshot(paths: WorkspacePaths, params: {
   payload: unknown;
   markdown: string;
 }): WorkspaceExportRecord {
-  const id = `${params.now.replace(/[-:.TZ]/g, "").slice(0, 14)}-workspace-export`;
   const extension = params.format === "json" ? "json" : "md";
+  const id = resolveUniqueArtifactStem(
+    `${params.now.replace(/[-:.TZ]/g, "").slice(0, 14)}-workspace-export`,
+    (candidate) =>
+      existsSync(path.join(paths.exportsDir, `${candidate}.${extension}`)) ||
+      existsSync(path.join(paths.exportsDir, `${candidate}.manifest.json`))
+  );
   const exportPath = path.join(paths.exportsDir, `${id}.${extension}`);
   const body = params.format === "json" ? `${JSON.stringify(params.payload, null, 2)}\n` : `${params.markdown}\n`;
   writeFileSync(exportPath, body, "utf8");
