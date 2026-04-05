@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -17,7 +17,7 @@ import {
   restoreWorkspaceBackup,
 } from "./workspace-ops.js";
 import { importIntoWorkspace, previewImportIntoWorkspace } from "./workspace-import.js";
-import { defaultWorkspaceName, ensureWorkspace, type WorkspacePaths } from "./workspace.js";
+import { defaultWorkspaceName, ensureWorkspace, recallxHomeDir, type WorkspacePaths } from "./workspace.js";
 import type {
   WorkspaceBackupRecord,
   WorkspaceCatalogItem,
@@ -42,6 +42,85 @@ type RestoreWorkspaceResult = {
   autoBackup: WorkspaceBackupRecord;
 };
 
+type PersistedWorkspaceCatalog = {
+  version: 1;
+  items: PersistedWorkspaceCatalogItem[];
+};
+
+type PersistedWorkspaceCatalogItem = {
+  rootPath: string;
+  workspaceName: string;
+  lastOpenedAt: string;
+};
+
+const WORKSPACE_CATALOG_FILE = "workspace-catalog.json";
+
+function workspaceCatalogFilePath(): string {
+  return path.join(recallxHomeDir(), WORKSPACE_CATALOG_FILE);
+}
+
+function buildWorkspaceCatalogPaths(rootPath: string): WorkspaceInfo["paths"] {
+  const resolvedRoot = path.resolve(rootPath);
+  return {
+    dbPath: path.join(resolvedRoot, "workspace.db"),
+    artifactsDir: path.join(resolvedRoot, "artifacts"),
+    exportsDir: path.join(resolvedRoot, "exports"),
+    importsDir: path.join(resolvedRoot, "imports"),
+    backupsDir: path.join(resolvedRoot, "backups"),
+    configDir: path.join(resolvedRoot, "config"),
+    cacheDir: path.join(resolvedRoot, "cache"),
+  };
+}
+
+function isValidCatalogTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function readPersistedWorkspaceCatalog(filePath: string): PersistedWorkspaceCatalogItem[] {
+  if (!existsSync(filePath)) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, "utf8")) as Partial<PersistedWorkspaceCatalog>;
+    if (parsed?.version !== 1 || !Array.isArray(parsed.items)) {
+      return [];
+    }
+
+    return parsed.items.flatMap((item) => {
+      const rootPath = typeof item?.rootPath === "string" ? path.resolve(item.rootPath) : null;
+      const workspaceName = typeof item?.workspaceName === "string" && item.workspaceName.trim()
+        ? item.workspaceName.trim()
+        : null;
+      if (!rootPath || !workspaceName || !isValidCatalogTimestamp(item?.lastOpenedAt)) {
+        return [];
+      }
+
+      return [{
+        rootPath,
+        workspaceName,
+        lastOpenedAt: item.lastOpenedAt,
+      }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function writePersistedWorkspaceCatalog(filePath: string, items: PersistedWorkspaceCatalogItem[]): void {
+  const parentDir = path.dirname(filePath);
+  mkdirSync(parentDir, { recursive: true });
+  const tempFilePath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+
+  try {
+    writeFileSync(tempFilePath, `${JSON.stringify({ version: 1, items }, null, 2)}\n`, "utf8");
+    renameSync(tempFilePath, filePath);
+  } catch (error) {
+    rmSync(tempFilePath, { force: true });
+    throw error;
+  }
+}
+
 export class WorkspaceSessionManager {
   private currentState: WorkspaceSessionState;
 
@@ -58,6 +137,7 @@ export class WorkspaceSessionManager {
       workspaceName: serverConfig.workspaceName,
       requireExistingRoot: false,
     });
+    this.hydrateHistory();
     this.remember(this.currentState);
   }
 
@@ -66,6 +146,7 @@ export class WorkspaceSessionManager {
   }
 
   listWorkspaces(): WorkspaceCatalogItem[] {
+    this.pruneMissingHistory();
     const currentRoot = this.currentState.workspaceRoot;
     return [...this.history.values()]
       .map((item) => ({
@@ -201,10 +282,16 @@ export class WorkspaceSessionManager {
   ): WorkspaceCatalogItem {
     const nextState = this.loadWorkspace(rootPath, options);
     const previousState = this.currentState;
-    this.currentState = nextState;
-    this.remember(nextState);
-    this.closeState(previousState);
-    return this.getWorkspaceCatalogItem(nextState);
+
+    try {
+      this.remember(nextState, nextState.workspaceRoot);
+      this.currentState = nextState;
+      this.closeState(previousState);
+      return this.getWorkspaceCatalogItem(nextState);
+    } catch (error) {
+      this.closeState(nextState);
+      throw error;
+    }
   }
 
   private loadWorkspace(
@@ -312,8 +399,78 @@ export class WorkspaceSessionManager {
     state.db.close();
   }
 
-  private remember(state: WorkspaceSessionState): void {
+  private remember(state: WorkspaceSessionState, currentRoot = this.currentState.workspaceRoot): void {
+    const previous = this.history.get(state.workspaceRoot);
     this.history.set(state.workspaceRoot, this.getWorkspaceCatalogItem(state));
+
+    try {
+      this.persistHistory(currentRoot);
+    } catch (error) {
+      if (previous) {
+        this.history.set(state.workspaceRoot, previous);
+      } else {
+        this.history.delete(state.workspaceRoot);
+      }
+      throw error;
+    }
+  }
+
+  private hydrateHistory(): void {
+    for (const item of readPersistedWorkspaceCatalog(workspaceCatalogFilePath())) {
+      if (!existsSync(item.rootPath)) {
+        continue;
+      }
+
+      const existing = this.history.get(item.rootPath);
+      if (existing && existing.lastOpenedAt >= item.lastOpenedAt) {
+        continue;
+      }
+
+      this.history.set(item.rootPath, {
+        ...workspaceInfo(
+          item.rootPath,
+          {
+            ...this.serverConfig,
+            workspaceName: item.workspaceName,
+          },
+          this.authMode,
+          buildWorkspaceCatalogPaths(item.rootPath),
+        ),
+        isCurrent: false,
+        lastOpenedAt: item.lastOpenedAt,
+      });
+    }
+  }
+
+  private pruneMissingHistory(): void {
+    const currentRoot = this.currentState.workspaceRoot;
+    let changed = false;
+    for (const rootPath of [...this.history.keys()]) {
+      if (rootPath === currentRoot) {
+        continue;
+      }
+      if (!existsSync(rootPath)) {
+        this.history.delete(rootPath);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      this.persistHistory();
+    }
+  }
+
+  private persistHistory(currentRoot = this.currentState.workspaceRoot): void {
+    const items = [...this.history.values()]
+      .filter((item) => item.rootPath === currentRoot || existsSync(item.rootPath))
+      .sort((left, right) => right.lastOpenedAt.localeCompare(left.lastOpenedAt))
+      .map((item) => ({
+        rootPath: item.rootPath,
+        workspaceName: item.workspaceName,
+        lastOpenedAt: item.lastOpenedAt,
+      }));
+
+    writePersistedWorkspaceCatalog(workspaceCatalogFilePath(), items);
   }
 
   private getWorkspaceCatalogItem(state: WorkspaceSessionState): WorkspaceCatalogItem {
